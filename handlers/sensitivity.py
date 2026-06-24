@@ -51,10 +51,11 @@ async def show_sens_packs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         back = 'sens_mobile'
 
     if not packs:
-        from keyboards import cancel_keyboard
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 بازگشت', callback_data=back)]])
         await query.edit_message_text(
             f"{title}\n\n❌ پکی در این دسته موجود نیست. به‌زودی اضافه میشه!",
-            parse_mode='Markdown', reply_markup=cancel_keyboard()
+            parse_mode='Markdown', reply_markup=kb
         )
         return
 

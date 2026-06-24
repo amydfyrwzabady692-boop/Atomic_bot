@@ -8,11 +8,13 @@ from db import create_ticket, get_or_create_user
 
 CHOOSE_CATEGORY, WRITE_SUBJECT, WRITE_MESSAGE = range(3)
 
+# callback → (برچسب نمایشی، کد دسته در دیتابیس)
 CATEGORIES = {
-    'ticket_pay': 'مشکل پرداخت',
-    'ticket_delivery': 'مشکل تحویل',
-    'ticket_account': 'مشکل اکانت',
-    'ticket_other': 'سایر',
+    'ticket_diamond': ('مشکل جم', 'diamond'),
+    'ticket_payment': ('مشکل پرداخت', 'payment'),
+    'ticket_order': ('مشکل سفارش', 'other'),
+    'ticket_account': ('مشکل اکانت', 'account'),
+    'ticket_other': ('سایر', 'other'),
 }
 
 
@@ -45,9 +47,11 @@ async def new_ticket_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def choose_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    ctx.user_data['ticket_category'] = CATEGORIES.get(query.data, 'سایر')
+    label, code = CATEGORIES.get(query.data, ('سایر', 'other'))
+    ctx.user_data['ticket_category'] = label
+    ctx.user_data['ticket_category_code'] = code
     await query.edit_message_text(
-        f"✅ دسته: *{ctx.user_data['ticket_category']}*\n\n"
+        f"✅ دسته: *{label}*\n\n"
         "✏️ حالا موضوع تیکتت رو بنویس (یه جمله کوتاه):",
         parse_mode='Markdown',
         reply_markup=cancel_keyboard()
@@ -79,12 +83,13 @@ async def write_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     subject = ctx.user_data.get('ticket_subject', 'بدون موضوع')
     category = ctx.user_data.get('ticket_category', 'سایر')
-    full_msg = f"[{category}]\n{msg_text}"
+    category_code = ctx.user_data.get('ticket_category_code', 'other')
 
-    ticket_id = create_ticket(db_id, subject, full_msg)
+    ticket_id = create_ticket(db_id, subject, msg_text, category=category_code)
 
     ctx.user_data.pop('ticket_subject', None)
     ctx.user_data.pop('ticket_category', None)
+    ctx.user_data.pop('ticket_category_code', None)
 
     await update.message.reply_text(
         f"✅ *تیکت #{ticket_id} ثبت شد!*\n\n"

@@ -45,15 +45,17 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         STATUS_FA = {
             'pending': '⏳ در انتظار پرداخت',
             'paid': '✅ پرداخت شده',
+            'delivered': '🎉 تحویل شده',
             'processing': '🔄 در حال پردازش',
             'completed': '🎉 تکمیل شده',
+            'canceled': '❌ لغو شده',
             'cancelled': '❌ لغو شده',
             'failed': '❌ ناموفق',
         }
-        lines = ["📦 *سفارش‌های من:*\n"]
-        for o in orders[:10]:  # o = (Id, CreatedAt, TotalAmount, Status)
-            status_fa = STATUS_FA.get(o[3], o[3])
-            lines.append(f"🔹 سفارش #{o[0]} | {o[2]:,} ت | {status_fa}")
+        lines = ["📦 *سفارش‌های من*", "━━━━━━━━━━━━━━━"]
+        for o in orders[:10]:  # o = (Id, TotalAmount, Status, CreatedAt)
+            status_fa = STATUS_FA.get(o[2], o[2])
+            lines.append(f"🔹 سفارش #{o[0]} • {o[1]:,} ت • {status_fa}")
         text = "\n".join(lines)
 
     if update.callback_query:

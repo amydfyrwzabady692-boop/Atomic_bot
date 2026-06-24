@@ -13,10 +13,10 @@ from telegram.ext import (
 
 from handlers.start import start_handler, help_handler
 from handlers.store import store_menu, show_category, show_product
-from handlers.gems import gems_menu, show_gem
+from handlers.gems import gems_menu, gem_choose_type, gem_filter_plan, show_gem, gem_conversation_handler
 from handlers.sensitivity import sens_menu, sens_mobile_menu, show_sens_packs
 from handlers.cart import show_cart, add_to_cart, clear_cart
-from handlers.payment import checkout, verify
+from handlers.payment import checkout, cancel_order, payment_conversation_handler
 from handlers.support import support_menu, support_conversation_handler
 from handlers.account import my_account, my_orders
 
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 
 MENU_TEXTS = {
-    '🛍 فروشگاه': store_menu,
+    '🛍 فروشگاه اکانت': store_menu,
     '💎 جم فری‌فایر': gems_menu,
     '🎯 پک سنس': sens_menu,
     '🛒 سبد خرید': show_cart,
@@ -37,12 +37,11 @@ MENU_TEXTS = {
 
 
 async def text_router(update, ctx):
-    text = update.message.text
-    handler = MENU_TEXTS.get(text)
+    handler = MENU_TEXTS.get(update.message.text)
     if handler:
         await handler(update, ctx)
     else:
-        await update.message.reply_text("❓ متوجه نشدم. از منوی پایین انتخاب کن.")
+        await update.message.reply_text("❓ متوجه نشدم. از منوی پایین انتخاب کن 👇")
 
 
 def main():
@@ -52,35 +51,43 @@ def main():
 
     app = ApplicationBuilder().token(token).build()
 
-    # Commands
+    # دستورها
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))
 
-    # ConversationHandler برای تیکت (باید قبل از callback های عام باشه)
+    # گفتگوها (باید قبل از هندلرهای عمومی باشند)
     app.add_handler(support_conversation_handler())
+    app.add_handler(gem_conversation_handler())
+    app.add_handler(payment_conversation_handler())
 
-    # Callback handlers — ترتیب مهمه (خاص‌تر اول)
-    app.add_handler(CallbackQueryHandler(show_category, pattern='^cat_'))
-    app.add_handler(CallbackQueryHandler(show_product, pattern='^prod_'))
-    app.add_handler(CallbackQueryHandler(show_gem, pattern='^gem_'))
-    app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern='^sens_mobile$'))
-    app.add_handler(CallbackQueryHandler(show_sens_packs, pattern='^sens_'))
-    app.add_handler(CallbackQueryHandler(add_to_cart, pattern='^add_'))
-    app.add_handler(CallbackQueryHandler(show_cart, pattern='^cart$'))
-    app.add_handler(CallbackQueryHandler(clear_cart, pattern='^cart_clear$'))
-    app.add_handler(CallbackQueryHandler(checkout, pattern='^checkout$'))
-    app.add_handler(CallbackQueryHandler(verify, pattern='^verify_pay$'))
-    app.add_handler(CallbackQueryHandler(support_menu, pattern='^support$'))
-    app.add_handler(CallbackQueryHandler(my_orders, pattern='^my_orders$'))
-    app.add_handler(CallbackQueryHandler(my_account, pattern='^my_account$'))
-    app.add_handler(CallbackQueryHandler(store_menu, pattern='^store$'))
-    app.add_handler(CallbackQueryHandler(gems_menu, pattern='^gems$'))
-    app.add_handler(CallbackQueryHandler(sens_menu, pattern='^sens$'))
+    # ─── فروشگاه ───
+    app.add_handler(CallbackQueryHandler(show_category, pattern=r'^cat_'))
+    app.add_handler(CallbackQueryHandler(show_product, pattern=r'^prod_\d+$'))
+    # ─── جم ───
+    app.add_handler(CallbackQueryHandler(gems_menu, pattern=r'^gems$'))
+    app.add_handler(CallbackQueryHandler(gem_choose_type, pattern=r'^gtype_'))
+    app.add_handler(CallbackQueryHandler(gem_filter_plan, pattern=r'^gp_'))
+    app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
+    # ─── پک سنس ───
+    app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern=r'^sens_mobile$'))
+    app.add_handler(CallbackQueryHandler(show_sens_packs, pattern=r'^sens_(pc|mob_)'))
+    app.add_handler(CallbackQueryHandler(sens_menu, pattern=r'^sens$'))
+    # ─── سبد و پرداخت ───
+    app.add_handler(CallbackQueryHandler(add_to_cart, pattern=r'^add_[ps]_\d+$'))
+    app.add_handler(CallbackQueryHandler(show_cart, pattern=r'^cart$'))
+    app.add_handler(CallbackQueryHandler(clear_cart, pattern=r'^cart_clear$'))
+    app.add_handler(CallbackQueryHandler(checkout, pattern=r'^checkout$'))
+    app.add_handler(CallbackQueryHandler(cancel_order, pattern=r'^cancel_order$'))
+    # ─── سایر ───
+    app.add_handler(CallbackQueryHandler(support_menu, pattern=r'^support$'))
+    app.add_handler(CallbackQueryHandler(my_orders, pattern=r'^my_orders$'))
+    app.add_handler(CallbackQueryHandler(my_account, pattern=r'^my_account$'))
+    app.add_handler(CallbackQueryHandler(store_menu, pattern=r'^store$'))
 
-    # Text message router
+    # روتر پیام متنی منو
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
-    logging.info("Bot Atomic Shop started!")
+    logging.info("Atomic Shop bot started!")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     app.run_polling(drop_pending_updates=True)

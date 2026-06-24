@@ -1,7 +1,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from keyboards import cart_keyboard, main_menu
-from db import get_product, get_gem, get_sensitivity_packs
+from keyboards import cart_keyboard
+from db import get_product, get_sensitivity_pack
+
+KIND_ICONS = {'p': '🎮', 'g': '💎', 's': '🎯'}
 
 
 def _get_cart(ctx) -> dict:
@@ -12,56 +14,68 @@ def _cart_total(cart):
     return sum(v['price'] * v['qty'] for v in cart.values())
 
 
+def cart_add(ctx, kind, pk, name, price, meta=None, unique=False):
+    """افزودن آیتم به سبد. unique=True یعنی هر بار یک خط جدا (مثل جم با UID مجزا)."""
+    cart = _get_cart(ctx)
+    if unique:
+        n = 1
+        while f"{kind}_{pk}_{n}" in cart:
+            n += 1
+        key = f"{kind}_{pk}_{n}"
+        cart[key] = {'kind': kind, 'pk': pk, 'name': name, 'price': price, 'qty': 1,
+                     'meta': meta or {}}
+    else:
+        key = f"{kind}_{pk}"
+        if key in cart:
+            cart[key]['qty'] += 1
+        else:
+            cart[key] = {'kind': kind, 'pk': pk, 'name': name, 'price': price, 'qty': 1,
+                         'meta': meta or {}}
+    return cart
+
+
 def _cart_text(cart):
     if not cart:
-        return "🛒 *سبد خرید خالیه*\n\nبرو یه چیزی بخر 😊"
-    lines = ["🛒 *سبد خرید شما:*\n"]
-    for key, item in cart.items():
+        return "🛒 *سبد خرید خالیه*\n\nیه بسته جم یا محصول انتخاب کن تا اینجا اضافه بشه 😊"
+    lines = ["🛒 *سبد خرید شما*", "━━━━━━━━━━━━━━━"]
+    for item in cart.values():
+        icon = KIND_ICONS.get(item['kind'], '•')
         subtotal = item['price'] * item['qty']
-        lines.append(f"• {item['name']} × {item['qty']} = *{subtotal:,} ت*")
+        qty = f" × {item['qty']}" if item['qty'] > 1 else ""
+        lines.append(f"{icon} {item['name']}{qty}")
+        # خط اطلاعات اختصاصی جم
+        meta = item.get('meta') or {}
+        if meta.get('game_uid'):
+            lines.append(f"    └ 🆔 آیدی: `{meta['game_uid']}`")
+        elif meta.get('login_email'):
+            lines.append(f"    └ 🔐 اکانت: `{meta['login_email']}`")
+        lines.append(f"    └ 💰 {subtotal:,} تومان")
     total = _cart_total(cart)
-    lines.append(f"\n💰 *جمع کل: {total:,} تومان*")
+    lines.append("━━━━━━━━━━━━━━━")
+    lines.append(f"💵 *جمع کل: {total:,} تومان*")
     return "\n".join(lines)
 
 
 async def add_to_cart(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """افزودن محصول فروشگاه یا پک سنس به سبد (add_p_5 | add_s_2)."""
     query = update.callback_query
-    await query.answer("✅ به سبد اضافه شد!")
-    data = query.data  # add_p_5 | add_g_3 | add_s_2
-
+    data = query.data
     parts = data.split('_')
-    kind = parts[1]   # p | g | s
+    kind = parts[1]   # p | s
     pk = int(parts[2])
 
-    cart = _get_cart(ctx)
-    key = f"{kind}_{pk}"
+    if kind == 'p':
+        item = get_product(pk)
+        name, price = item[1], item[2]
+    else:  # s
+        row = get_sensitivity_pack(pk)
+        name, price = row[1], row[2]
 
-    if key in cart:
-        cart[key]['qty'] += 1
-        msg = f"✅ *{cart[key]['name']}* — تعداد: {cart[key]['qty']}"
-    else:
-        if kind == 'p':
-            item = get_product(pk)
-            name, price = item[1], item[2]
-        elif kind == 'g':
-            item = get_gem(pk)
-            name, price = item[1], item[4]
-        else:  # s
-            # sensitivity packs — fetch by id
-            from db import get_conn
-            with get_conn() as conn:
-                row = conn.cursor().execute(
-                    "SELECT Id, Title, Price FROM SensitivityPacks WHERE Id=?", pk
-                ).fetchone()
-            name, price = row[1], row[2]
-
-        cart[key] = {'name': name, 'price': price, 'qty': 1, 'kind': kind}
-        msg = f"✅ *{name}* به سبد اضافه شد!"
-
-    ctx.user_data['cart'] = cart
-    await query.answer(msg.replace('*', ''), show_alert=False)
+    cart = cart_add(ctx, kind, pk, name, price)
+    await query.answer("✅ به سبد اضافه شد!")
     await query.edit_message_text(
-        msg + f"\n\n🛒 سبد شما: *{len(cart)} آیتم* | جمع: *{_cart_total(cart):,} ت*",
+        f"✅ *{name}* به سبد اضافه شد!\n\n"
+        f"🛒 سبد شما: *{len(cart)} آیتم* | جمع: *{_cart_total(cart):,} تومان*",
         parse_mode='Markdown',
         reply_markup=cart_keyboard(has_items=True)
     )
