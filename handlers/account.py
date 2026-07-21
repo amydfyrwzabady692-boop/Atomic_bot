@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from keyboards import main_menu
-from db import get_or_create_user, get_user_orders
+from keyboards import main_menu, wallet_keyboard
+from db import get_or_create_user, get_user_orders, get_wallet_balance
 
 
 async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -15,16 +15,21 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     name = f"{tg_user.first_name or ''} {tg_user.last_name or ''}".strip() or 'کاربر'
     username = f"@{tg_user.username}" if tg_user.username else "—"
+    balance = get_wallet_balance(db_id)
 
     text = (
-        f"👤 *حساب من*\n\n"
+        f"👤 *حساب من*\n"
+        f"━━━━━━━━━━━━━━━\n"
         f"🧑 نام: {name}\n"
         f"🆔 یوزرنیم: {username}\n"
         f"🔢 شناسه تلگرام: `{tg_user.id}`\n"
+        f"💰 موجودی کیف پول: *{balance:,} تومان*"
     )
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=None)
+        await update.callback_query.edit_message_text(
+            text, parse_mode='Markdown', reply_markup=wallet_keyboard()
+        )
     else:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
 
@@ -43,7 +48,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = "📦 *سفارش‌های من*\n\nهنوز سفارشی ثبت نکردی!"
     else:
         STATUS_FA = {
-            'pending': '⏳ در انتظار پرداخت',
+            'pending': '⏳ در انتظار پرداخت/تایید',
             'paid': '✅ پرداخت شده',
             'delivered': '🎉 تحویل شده',
             'processing': '🔄 در حال پردازش',
@@ -53,7 +58,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'failed': '❌ ناموفق',
         }
         lines = ["📦 *سفارش‌های من*", "━━━━━━━━━━━━━━━"]
-        for o in orders[:10]:  # o = (Id, TotalAmount, Status, CreatedAt)
+        for o in orders[:10]:
             status_fa = STATUS_FA.get(o[2], o[2])
             lines.append(f"🔹 سفارش #{o[0]} • {o[1]:,} ت • {status_fa}")
         text = "\n".join(lines)

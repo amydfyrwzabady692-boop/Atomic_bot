@@ -1,0 +1,16 @@
+{$BOT_DOMAIN:bot.atomicshop.ir} {
+	encode gzip
+
+	# زرین‌پال بعد از پرداخت به این مسیرها برمی‌گردد
+	handle /payment/* {
+		reverse_proxy bot:8080
+	}
+
+	handle /health {
+		reverse_proxy bot:8080
+	}
+
+	handle {
+		respond "Atomic Bot payment proxy is up" 200
+	}
+}

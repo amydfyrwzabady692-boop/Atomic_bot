@@ -1,0 +1,61 @@
+services:
+  bot:
+    build: .
+    container_name: atomic_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    expose:
+      - "8080"
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      ZARINPAL_MERCHANT_ID: ${ZARINPAL_MERCHANT_ID:-}
+      ZARINPAL_SANDBOX: ${ZARINPAL_SANDBOX:-0}
+      G2BULK_API_KEY: ${G2BULK_API_KEY:-}
+      G2BULK_GAME_CODE: ${G2BULK_GAME_CODE:-freefire_me}
+      CARD_TRANSFER_NUMBER: ${CARD_TRANSFER_NUMBER:-}
+      CARD_TRANSFER_HOLDER: ${CARD_TRANSFER_HOLDER:-}
+      CARD_TRANSFER_BANK: ${CARD_TRANSFER_BANK:-سامان}
+      CARD_NUMBER: ${CARD_NUMBER:-}
+      CARD_HOLDER: ${CARD_HOLDER:-}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
+      PAYMENT_CALLBACK_BASE: ${PAYMENT_CALLBACK_BASE:-https://bot.atomicshop.ir}
+      WEB_PORT: "8080"
+    networks:
+      - botnet
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # پروکسی HTTPS عمومی برای callback زرین‌پال → ربات
+  proxy:
+    image: caddy:2
+    container_name: atomic_bot_proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      BOT_DOMAIN: ${BOT_DOMAIN:-bot.atomicshop.ir}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+    networks:
+      - botnet
+
+networks:
+  botnet:
+
+volumes:
+  caddy_data:
+  caddy_config:

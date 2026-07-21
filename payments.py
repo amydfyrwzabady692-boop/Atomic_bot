@@ -1,27 +1,46 @@
+"""درگاه زرین‌پال — درخواست و تایید پرداخت (تومان / IRT)."""
 import json
-import urllib.request
-import urllib.error
 import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
-_SANDBOX = os.getenv('ZARINPAL_SANDBOX', '1') == '1'
-_MERCHANT = os.getenv('ZARINPAL_MERCHANT', '')
+
+def _sandbox():
+    return os.getenv('ZARINPAL_SANDBOX', '0') == '1'
+
+
+def _merchant():
+    return (
+        os.getenv('ZARINPAL_MERCHANT_ID')
+        or os.getenv('ZARINPAL_MERCHANT')
+        or ''
+    ).strip()
 
 
 def _base():
-    return 'https://sandbox.zarinpal.com/pg/v4/payment/' if _SANDBOX else 'https://payment.zarinpal.com/pg/v4/payment/'
+    if _sandbox():
+        return 'https://sandbox.zarinpal.com/pg/v4/payment/'
+    return 'https://payment.zarinpal.com/pg/v4/payment/'
 
 
 def _start_base():
-    return 'https://sandbox.zarinpal.com/pg/StartPay/' if _SANDBOX else 'https://payment.zarinpal.com/pg/StartPay/'
+    if _sandbox():
+        return 'https://sandbox.zarinpal.com/pg/StartPay/'
+    return 'https://payment.zarinpal.com/pg/StartPay/'
 
 
 def _post(url, payload):
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data,
-                                  headers={'Content-Type': 'application/json', 'Accept': 'application/json'})
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+    )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode())
@@ -33,8 +52,11 @@ def _post(url, payload):
 
 
 def request_payment(amount_toman, description, callback_url, mobile=''):
+    merchant = _merchant()
+    if not merchant:
+        return None, None
     payload = {
-        'merchant_id': _MERCHANT,
+        'merchant_id': merchant,
         'amount': int(amount_toman),
         'currency': 'IRT',
         'description': description,
@@ -52,8 +74,11 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
 
 
 def verify_payment(amount_toman, authority):
+    merchant = _merchant()
+    if not merchant or not authority:
+        return False, None
     payload = {
-        'merchant_id': _MERCHANT,
+        'merchant_id': merchant,
         'amount': int(amount_toman),
         'authority': authority,
     }
