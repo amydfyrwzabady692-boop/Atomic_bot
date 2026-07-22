@@ -15,13 +15,13 @@ SENSE_PC_PACKS = {
     'basic': {
         'key': 'basic',
         'title': 'پک سنس PC',
-        'price': 1000,
+        'price': 1_000_000,
         'desc': 'پک سنس مخصوص سیستم PC',
     },
     'plus': {
         'key': 'plus',
         'title': 'پک سنس PC + خدمات',
-        'price': 2200,
+        'price': 2_200_000,
         'desc': 'پک سنس PC همراه با خدمات',
     },
 }
