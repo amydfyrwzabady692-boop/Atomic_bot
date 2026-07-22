@@ -83,15 +83,44 @@ def gem_confirm_keyboard():
     ])
 
 
-def pay_method_keyboard(order_id, can_wallet=True):
+def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=None):
     rows = [
         [InlineKeyboardButton('💳 زرین‌پال', callback_data=f'pay_zp_{order_id}')],
         [InlineKeyboardButton('🏧 کارت‌به‌کارت', callback_data=f'pay_card_{order_id}')],
     ]
-    if can_wallet:
-        rows.append([InlineKeyboardButton('💰 کیف پول', callback_data=f'pay_wallet_{order_id}')])
+    if can_wallet and wallet_balance > 0:
+        rem = remaining if remaining is not None else wallet_balance
+        if wallet_balance >= rem > 0:
+            label = f'💰 پرداخت کامل از کیف پول'
+        else:
+            label = f'💰 استفاده از موجودی ({wallet_balance:,} ت)'
+        rows.append([InlineKeyboardButton(label, callback_data=f'pay_wallet_{order_id}')])
     rows.append([InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')])
     return InlineKeyboardMarkup(rows)
+
+
+def wallet_charge_method_keyboard(amount):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('💳 درگاه زرین‌پال', callback_data=f'wpay_zp_{amount}')],
+        [InlineKeyboardButton('🏧 کارت‌به‌کارت', callback_data=f'wpay_card_{amount}')],
+        [InlineKeyboardButton('بازگشت', callback_data='wallet')],
+    ])
+
+
+def wallet_card_pay_keyboard(tx_key):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ پرداخت کردم — ارسال رسید', callback_data=f'wcard_done_{tx_key}')],
+        [InlineKeyboardButton('بازگشت', callback_data='wallet')],
+    ])
+
+
+def admin_wallet_card_keyboard(tx_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton('✅ تایید شارژ', callback_data=f'wadmin_ok_{tx_id}'),
+            InlineKeyboardButton('❌ رد', callback_data=f'wadmin_no_{tx_id}'),
+        ],
+    ])
 
 
 def zarinpal_pay_keyboard(order_id, pay_url=None):
@@ -176,10 +205,14 @@ def admin_user_keyboard(tg_id, is_blocked=False):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton('پیام', callback_data=f'adm_msg_{tg_id}'),
-            InlineKeyboardButton('کیف پول', callback_data=f'adm_wal_{tg_id}'),
+            InlineKeyboardButton('سفارش‌ها', callback_data=f'adm_ords_{tg_id}'),
         ],
         [
-            InlineKeyboardButton('سفارش‌ها', callback_data=f'adm_ords_{tg_id}'),
+            InlineKeyboardButton('➕ شارژ کیف پول', callback_data=f'adm_wal_{tg_id}'),
+            InlineKeyboardButton('🗑 خالی کردن کیف پول', callback_data=f'adm_wempty_{tg_id}'),
+        ],
+        [
+            InlineKeyboardButton('✏️ تنظیم موجودی دقیق', callback_data=f'adm_wset_{tg_id}'),
             block_btn,
         ],
         [InlineKeyboardButton('بازگشت', callback_data='adm_home')],

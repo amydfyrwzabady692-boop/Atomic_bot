@@ -160,14 +160,68 @@ def set_order_payment_method(order_id, payment_method):
 
 
 def get_order(order_id):
+    """Id, UserId, TotalAmount, Status, PaymentMethod, PaymentAuthority, TelegramId, WalletPaid"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id", "UserId", "TotalAmount", "Status", "PaymentMethod", '
-            '"PaymentAuthority", "TelegramId" '
+            '"PaymentAuthority", "TelegramId", COALESCE("WalletPaid", 0) '
             'FROM "Orders" WHERE "Id"=%s',
             (order_id,),
         )
         return cur.fetchone()
+
+
+def get_order_payable(order_id):
+    order = get_order(order_id)
+    if not order:
+        return 0
+    return max(0, int(order[2]) - int(order[7] or 0))
+
+
+def set_order_wallet_paid(order_id, amount):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "Orders" SET "WalletPaid"=%s WHERE "Id"=%s',
+            (int(amount), order_id),
+        )
+        conn.commit()
+
+
+def apply_wallet_to_order(user_db_id, order_id):
+    """کسر موجودی به اندازه ممکن از مبلغ باقی‌مانده.
+    خروجی: (ok, used, remaining, new_balance, error)"""
+    order = get_order(order_id)
+    if not order or order[3] != 'pending':
+        return False, 0, 0, 0, 'سفارش قابل پرداخت نیست.'
+    total = int(order[2])
+    already = int(order[7] or 0)
+    remaining = max(0, total - already)
+    if remaining <= 0:
+        return False, 0, 0, get_wallet_balance(user_db_id), 'مبلغی برای پرداخت نمانده.'
+    bal = get_wallet_balance(user_db_id)
+    if bal <= 0:
+        return False, 0, remaining, bal, 'موجودی کیف پول صفر است.'
+    use = min(bal, remaining)
+    ok, new_bal = wallet_spend(user_db_id, use, desc=f'پرداخت سفارش #{order_id} (کیف پول)')
+    if not ok:
+        return False, 0, remaining, bal, 'کسر موجودی ناموفق بود.'
+    set_order_wallet_paid(order_id, already + use)
+    new_remaining = max(0, total - (already + use))
+    return True, use, new_remaining, new_bal, None
+
+
+def refund_order_wallet(order_id):
+    """اگر از کیف پول چیزی کسر شده، برگردان و WalletPaid را صفر کن."""
+    order = get_order(order_id)
+    if not order:
+        return 0
+    paid = int(order[7] or 0)
+    if paid <= 0:
+        return 0
+    user_db_id = order[1]
+    wallet_charge(user_db_id, paid, desc=f'برگشت کیف پول سفارش #{order_id}')
+    set_order_wallet_paid(order_id, 0)
+    return paid
 
 
 def add_order_item(order_id, product_name, price, qty=1, product_id=None):
@@ -468,6 +522,7 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "WalletPaid" INTEGER NOT NULL DEFAULT 0',
     ]
     with get_conn() as conn, conn.cursor() as cur:
         for sql in stmts:
@@ -574,17 +629,118 @@ def find_user_by_username(username):
 
 
 def list_recent_users(limit=15):
-    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance)"""
+    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance) — ساده و پایدار"""
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."FirstName", '
+                'COALESCE(u."TelegramUsername", \'\'), '
+                'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
+                'FROM "Users" u '
+                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'ORDER BY u."Id" DESC LIMIT %s',
+                (limit,),
+            )
+        except Exception:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."FirstName", u."Username", '
+                'false, COALESCE(w."Balance", 0) '
+                'FROM "Users" u '
+                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'ORDER BY u."Id" DESC LIMIT %s',
+                (limit,),
+            )
+        return cur.fetchall()
+
+
+def admin_set_wallet_balance(user_db_id, new_balance, desc='تنظیم موجودی توسط ادمین'):
+    """موجودی را دقیقاً روی عدد مشخص بگذار. خروجی: (ok, old, new, error)"""
+    new_balance = int(new_balance)
+    if new_balance < 0:
+        return False, 0, 0, 'موجودی منفی مجاز نیست.'
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT u."Id", u."TelegramId", u."FirstName", '
-            'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
-            'CASE WHEN LEFT(u."Username", 3) = \'tg_\' THEN \'\' ELSE u."Username" END, \'\'), '
-            'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
-            'FROM "Users" u '
-            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-            'ORDER BY u."Id" DESC LIMIT %s',
-            (limit,),
+            'SELECT "Id", "Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+            (user_db_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                'INSERT INTO "Wallets" ("UserId", "Balance", "UpdatedAt") '
+                'VALUES (%s, 0, now()) RETURNING "Id", "Balance"',
+                (user_db_id,),
+            )
+            row = cur.fetchone()
+        wallet_id, old = row
+        delta = new_balance - old
+        cur.execute(
+            'UPDATE "Wallets" SET "Balance"=%s, "UpdatedAt"=now() WHERE "Id"=%s',
+            (new_balance, wallet_id),
+        )
+        if delta != 0:
+            kind = 'charge' if delta > 0 else 'spend'
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId", "Amount", "Kind", "Description", "IsPaid", "CreatedAt") '
+                'VALUES (%s, %s, %s, %s, true, now())',
+                (wallet_id, abs(delta), kind, f'[admin] {desc}'),
+            )
+        conn.commit()
+        return True, old, new_balance, None
+
+
+def create_wallet_card_charge(user_db_id, amount):
+    """شارژ کارت‌به‌کارت در انتظار تایید ادمین. خروجی: tx_id, authority"""
+    import time
+    authority = f"wcard_{user_db_id}_{int(time.time())}"
+    tx_id = create_wallet_charge_tx(user_db_id, amount, authority)
+    return tx_id, authority
+
+
+def get_wallet_tx(tx_id):
+    """Id, Amount, Authority, IsPaid, UserId, TelegramId, Balance"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id", t."Amount", t."Authority", t."IsPaid", '
+            'w."UserId", u."TelegramId", w."Balance" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+            'WHERE t."Id"=%s',
+            (tx_id,),
+        )
+        return cur.fetchone()
+
+
+def mark_wallet_tx_rejected(tx_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "WalletTransactions" '
+            'SET "Description"=COALESCE("Description", \'\') || \' [rejected]\' '
+            'WHERE "Id"=%s AND "IsPaid"=false',
+            (tx_id,),
+        )
+        # Authority را عوض کن تا دوباره complete نشود
+        cur.execute(
+            'UPDATE "WalletTransactions" '
+            'SET "Authority"=\'rejected_\' || "Id"::text '
+            'WHERE "Id"=%s AND "IsPaid"=false',
+            (tx_id,),
+        )
+        conn.commit()
+
+
+def list_pending_wallet_card_charges(limit=20):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id", t."Amount", t."Authority", w."UserId", u."TelegramId", u."FirstName" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+            'WHERE t."Kind"=\'charge\' AND t."IsPaid"=false '
+            'AND t."Authority" LIKE %s '
+            'ORDER BY t."Id" DESC LIMIT %s',
+            ('wcard_%', limit),
         )
         return cur.fetchall()
 

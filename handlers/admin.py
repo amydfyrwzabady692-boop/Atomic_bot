@@ -13,7 +13,7 @@ from keyboards import (
 from db import (
     get_admin_stats, list_recent_users, get_user_profile, find_user_by_username,
     set_user_blocked, list_failed_deliveries, list_open_orders, admin_adjust_wallet,
-    list_wallet_txs, get_user_orders, fulfill_order, get_order,
+    admin_set_wallet_balance, list_wallet_txs, get_user_orders, fulfill_order, get_order,
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
 )
 
@@ -21,6 +21,7 @@ WAIT_FIND = 1
 WAIT_MSG = 2
 WAIT_WALLET = 3
 WAIT_TICKET_REPLY = 4
+WAIT_WALLET_SET = 5
 
 
 def _deny_text():
@@ -110,8 +111,7 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = list_recent_users(15)
     except Exception as e:
         await query.edit_message_text(
-            f"❌ خطا در دریافت کاربران:\n`{e}`",
-            parse_mode='Markdown',
+            f"❌ خطا در دریافت کاربران:\n{e}",
             reply_markup=admin_home_keyboard(),
         )
         return
@@ -121,25 +121,24 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_home_keyboard(),
         )
         return
-    lines = ["✦ *آخرین کاربران*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    lines = ["✦ آخرین کاربران", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     for r in rows:
         _db_id, tg, name, uname, blocked, bal = r
         handle = _tg_handle(uname)
-        # جلوگیری از خراب شدن Markdown
-        safe_name = (name or '—').replace('*', '').replace('_', '').replace('`', '')
+        safe_name = (name or '—').replace('\n', ' ')[:24]
         flag = "🚫" if blocked else "·"
         lines.append(
             f"{flag} {handle}  ·  {safe_name}\n"
-            f"   `{tg}`  ·  {int(bal or 0):,} ت"
+            f"   {tg}  ·  {int(bal or 0):,} ت"
         )
-        label = f"{'🚫 ' if blocked else ''}{handle if handle != '—' else (safe_name or tg)}"
+        label = f"{'🚫 ' if blocked else ''}{handle if handle != '—' else (safe_name or str(tg))}"
         buttons.append([InlineKeyboardButton(label[:40], callback_data=f'adm_user_{tg}')])
     lines.append("\nجستجو با آیدی @user یا شناسه عددی")
     buttons.append([InlineKeyboardButton('جستجو', callback_data='adm_find')])
     buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
-        "\n".join(lines), parse_mode='Markdown',
+        "\n".join(lines),
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
@@ -334,6 +333,93 @@ async def admin_wallet_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
     await update.message.reply_text(
         f"✅ موجودی جدید: *{new_bal:,}* ت",
+        parse_mode='Markdown',
+        reply_markup=admin_user_keyboard(tg, profile[5]),
+    )
+    return ConversationHandler.END
+
+
+async def admin_wallet_empty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not await _require_admin(update):
+        return
+    tg = query.data.replace('adm_wempty_', '')
+    profile = get_user_profile(telegram_id=tg)
+    if not profile:
+        await query.edit_message_text("کاربر پیدا نشد.")
+        return
+    ok, old, new_bal, err = admin_set_wallet_balance(
+        profile[0], 0, desc=f'خالی کردن توسط ادمین tg:{tg}'
+    )
+    if not ok:
+        await query.answer(err or 'خطا', show_alert=True)
+        return
+    try:
+        await ctx.bot.send_message(
+            chat_id=int(tg),
+            text=f"💰 کیف پول شما توسط پشتیبانی خالی شد.\nموجودی قبلی: {old:,} ت",
+        )
+    except Exception:
+        pass
+    await query.edit_message_text(
+        f"✅ کیف پول خالی شد.\nقبل: {old:,} ت → الان: {new_bal:,} ت",
+        reply_markup=admin_user_keyboard(tg, profile[5]),
+    )
+
+
+async def admin_wallet_set_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not await _require_admin(update):
+        return ConversationHandler.END
+    tg = query.data.replace('adm_wset_', '')
+    ctx.user_data['adm_wset_tg'] = tg
+    profile = get_user_profile(telegram_id=tg)
+    cur = int(profile[7]) if profile else 0
+    await query.edit_message_text(
+        f"✏️ تنظیم موجودی دقیق `{tg}`\n"
+        f"موجودی فعلی: *{cur:,}* ت\n"
+        f"عدد جدید را بفرست (مثلاً `150000`)\n/cancel",
+        parse_mode='Markdown',
+    )
+    return WAIT_WALLET_SET
+
+
+async def admin_wallet_set_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    tg = ctx.user_data.pop('adm_wset_tg', None)
+    raw = (update.message.text or '').strip().replace(',', '').replace('،', '')
+    if not raw.isdigit():
+        await update.message.reply_text("فقط عدد غیرمنفی بفرست.")
+        ctx.user_data['adm_wset_tg'] = tg
+        return WAIT_WALLET_SET
+    new_val = int(raw)
+    profile = get_user_profile(telegram_id=tg)
+    if not profile:
+        await update.message.reply_text("کاربر پیدا نشد.")
+        return ConversationHandler.END
+    ok, old, new_bal, err = admin_set_wallet_balance(
+        profile[0], new_val, desc=f'تنظیم دقیق توسط ادمین tg:{tg}'
+    )
+    if not ok:
+        await update.message.reply_text(f"❌ {err}")
+        return ConversationHandler.END
+    try:
+        await ctx.bot.send_message(
+            chat_id=int(tg),
+            text=(
+                f"💰 موجودی کیف پول تنظیم شد.\n"
+                f"قبل: *{old:,}* ت\n"
+                f"الان: *{new_bal:,}* ت"
+            ),
+            parse_mode='Markdown',
+        )
+    except Exception:
+        pass
+    await update.message.reply_text(
+        f"✅ موجودی: {old:,} → *{new_bal:,}* ت",
         parse_mode='Markdown',
         reply_markup=admin_user_keyboard(tg, profile[5]),
     )
@@ -553,6 +639,7 @@ async def admin_ticket_close(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop('adm_msg_tg', None)
     ctx.user_data.pop('adm_wal_tg', None)
+    ctx.user_data.pop('adm_wset_tg', None)
     ctx.user_data.pop('adm_ticket_id', None)
     if update.message:
         if is_admin(update.effective_user.id):
@@ -568,12 +655,16 @@ def admin_conversation_handler():
             CallbackQueryHandler(admin_find_start, pattern='^adm_find$'),
             CallbackQueryHandler(admin_msg_start, pattern=r'^adm_msg_\d+$'),
             CallbackQueryHandler(admin_wallet_start, pattern=r'^adm_wal_\d+$'),
+            CallbackQueryHandler(admin_wallet_set_start, pattern=r'^adm_wset_\d+$'),
             CallbackQueryHandler(admin_ticket_reply_start, pattern=r'^adm_treply_\d+$'),
         ],
         states={
             WAIT_FIND: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_find_recv)],
             WAIT_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_msg_send)],
             WAIT_WALLET: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_wallet_apply)],
+            WAIT_WALLET_SET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_wallet_set_apply)
+            ],
             WAIT_TICKET_REPLY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, admin_ticket_reply_send)
             ],

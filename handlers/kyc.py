@@ -248,15 +248,21 @@ async def admin_kyc_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_id)
             if order and order[3] == 'pending':
                 text += f"\n\nسفارش #{order_id} باز است — روش پرداخت را انتخاب کن:"
-                can_w = False
+                bal = 0
                 try:
-                    from db import get_user_profile
+                    from db import get_user_profile, get_order_payable
                     p = get_user_profile(telegram_id=tg)
                     if p:
-                        can_w = get_wallet_balance(p[0]) >= order[2]
+                        bal = get_wallet_balance(p[0])
+                    rem = get_order_payable(order_id)
                 except Exception:
-                    pass
-                kb = pay_method_keyboard(order_id, can_wallet=can_w)
+                    rem = order[2]
+                kb = pay_method_keyboard(
+                    order_id,
+                    can_wallet=bal > 0,
+                    wallet_balance=bal,
+                    remaining=rem,
+                )
         await ctx.bot.send_message(
             chat_id=int(tg), text=text, parse_mode='Markdown', reply_markup=kb
         )
@@ -315,11 +321,22 @@ async def pay_back_methods(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             user.id, user.first_name or '', user.last_name or '', user.username or ''
         )
         ctx.user_data['db_id'] = db_id
+    from db import get_order_payable
     bal = get_wallet_balance(db_id)
+    rem = get_order_payable(order_id)
+    note = f"\nکسر کیف پول: {(order[2] - rem):,} ت" if rem < order[2] else ""
     await query.edit_message_text(
-        f"💳 روش پرداخت — سفارش #{order_id}\nمبلغ: *{order[2]:,} تومان*",
+        f"💳 روش پرداخت — سفارش #{order_id}\n"
+        f"مبلغ کل: *{order[2]:,}* ت{note}\n"
+        f"قابل پرداخت: *{rem:,}* تومان\n"
+        f"موجودی کیف پول: {bal:,} ت",
         parse_mode='Markdown',
-        reply_markup=pay_method_keyboard(order_id, can_wallet=bal >= order[2]),
+        reply_markup=pay_method_keyboard(
+            order_id,
+            can_wallet=bal > 0 and rem > 0,
+            wallet_balance=bal,
+            remaining=rem,
+        ),
     )
 
 

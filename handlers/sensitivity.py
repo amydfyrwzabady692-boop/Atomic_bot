@@ -107,7 +107,6 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
 
     balance = get_wallet_balance(db_id)
-    can_wallet = balance >= pack['price']
     text = (
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
@@ -122,5 +121,10 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         parse_mode='Markdown',
-        reply_markup=pay_method_keyboard(order_id, can_wallet=can_wallet),
+        reply_markup=pay_method_keyboard(
+            order_id,
+            can_wallet=balance > 0,
+            wallet_balance=balance,
+            remaining=pack['price'],
+        ),
     )

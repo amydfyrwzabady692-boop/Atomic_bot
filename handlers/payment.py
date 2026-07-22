@@ -13,13 +13,18 @@ from keyboards import (
     zarinpal_pay_keyboard, card_payment_keyboard, receipt_skip_keyboard,
     admin_card_keyboard, main_menu, pay_method_keyboard, admin_failed_order_keyboard,
 )
-from payments import request_payment, verify_payment
-from admin_notify import notify_admin
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
     wallet_spend, get_or_create_user, set_order_payment_method,
     order_requires_kyc, is_kyc_approved, get_order_items,
+    get_order_payable, apply_wallet_to_order, get_wallet_balance, refund_order_wallet,
 )
+from payments import request_payment, verify_payment
+from admin_notify import notify_admin
+import time
+
+ZP_TTL_SEC = 15 * 60  # مهلت درگاه زرین‌پال
+ZP_MAX_CHECKS = 10
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
@@ -50,6 +55,20 @@ WAIT_RECEIPT = 0
 VPN_WARNING = (
     "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و لینک را در مرورگر باز کن.\n"
 )
+
+
+def _order_pay_keyboard(order_id, db_id=None):
+    order = get_order(order_id)
+    if not order:
+        return pay_method_keyboard(order_id, can_wallet=False)
+    remaining = get_order_payable(order_id)
+    bal = get_wallet_balance(db_id) if db_id else 0
+    return pay_method_keyboard(
+        order_id,
+        can_wallet=bal > 0 and remaining > 0,
+        wallet_balance=bal,
+        remaining=remaining,
+    )
 
 
 async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
@@ -197,8 +216,21 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await prompt_kyc_for_order(query, update.effective_user, order_id)
         return
 
+    payable = get_order_payable(order_id)
+    if payable <= 0:
+        success, status = fulfill_order(order_id)
+        if status == 'sense_manual':
+            await _notify_sense_sale(ctx.bot, order_id)
+        await query.edit_message_text(
+            _success_user_text(order_id, status or 'delivered'),
+            parse_mode='Markdown',
+        )
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
+        return
+
     total = order[2]
-    pending['total'] = total
+    wallet_paid = int(order[7] or 0)
+    pending['total'] = payable
     if not CALLBACK_BASE:
         await query.edit_message_text(
             "❌ آدرس callback درگاه تنظیم نشده.\n"
@@ -215,7 +247,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     callback_url = f"{CALLBACK_BASE}/payment/callback?order={order_id}"
     authority, pay_url, err = request_payment(
-        total,
+        payable,
         f"Atomic Bot — سفارش #{order_id}",
         callback_url,
     )
@@ -225,16 +257,41 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"علت: `{err or 'نامشخص'}`\n\n"
             "فعلاً از *کارت‌به‌کارت* استفاده کن یا چند دقیقه بعد دوباره تلاش کن.",
             parse_mode='Markdown',
-            reply_markup=pay_method_keyboard(order_id, can_wallet=False),
+            reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
         )
         return
 
     set_order_authority(order_id, authority, payment_method='zarinpal')
     pending['authority'] = authority
     pending['order_id'] = order_id
+    pending['payable'] = payable
     ctx.user_data['pending_order'] = pending
+    ctx.user_data.setdefault('zp_meta', {})[str(order_id)] = {
+        'started': time.time(),
+        'checks': 0,
+        'payable': payable,
+    }
 
-    text = _zarinpal_link_text(order_id, total, pay_url)
+    note = ""
+    if wallet_paid > 0:
+        note = f"از کیف پول کسر شد: *{wallet_paid:,}* ت\nباقی‌مانده: *{payable:,}* ت\n"
+    text = (
+        f"✦ *پرداخت زرین‌پال*\n"
+        f"سفارش `#{order_id}`\n"
+        f"مبلغ کل: *{total:,}* تومان\n"
+        f"{note}"
+        f"مبلغ درگاه: *{payable:,}* تومان\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"*راهنما*\n"
+        f"۱ · لینک را لمس کن و *کپی* کن\n"
+        f"۲ · *VPN را خاموش* کن\n"
+        f"۳ · در مرورگر باز کن و پرداخت کن\n"
+        f"۴ · برگرد و «پرداخت کردم» را بزن\n"
+        f"⏱ مهلت حدود ۱۵ دقیقه\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"🔗 *لینک پرداخت*\n"
+        f"`{pay_url}`"
+    )
     await query.edit_message_text(
         text, parse_mode='Markdown', reply_markup=zarinpal_pay_keyboard(order_id, pay_url)
     )
@@ -260,22 +317,48 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ کد درگاه برای این سفارش ثبت نشده.")
         return
 
-    ok, ref_id = verify_payment(order[2], authority)
+    meta = (ctx.user_data.get('zp_meta') or {}).get(str(order_id)) or {}
+    started = float(meta.get('started') or time.time())
+    checks = int(meta.get('checks') or 0) + 1
+    payable = int(meta.get('payable') or get_order_payable(order_id) or order[2])
+    meta.update({'started': started, 'checks': checks, 'payable': payable})
+    ctx.user_data.setdefault('zp_meta', {})[str(order_id)] = meta
+    elapsed = time.time() - started
+    left = max(0, int(ZP_TTL_SEC - elapsed))
+
+    ok, ref_id = verify_payment(payable, authority)
     if not ok:
-        await query.edit_message_text(
-            "⏳ هنوز پرداخت تایید نشده.\n"
-            "اگر پرداخت کردی چند ثانیه صبر کن و دوباره «پرداخت کردم» را بزن.\n"
-            f"{VPN_WARNING}",
-            parse_mode='Markdown',
-            reply_markup=zarinpal_pay_keyboard(
-                order_id,
-                f"https://payment.zarinpal.com/pg/StartPay/{authority}",
-            ),
+        expired = elapsed >= ZP_TTL_SEC or checks >= ZP_MAX_CHECKS
+        kb = zarinpal_pay_keyboard(
+            order_id,
+            f"https://payment.zarinpal.com/pg/StartPay/{authority}",
         )
+        if expired:
+            await query.edit_message_text(
+                f"❌ *پرداخت تایید نشد*\n"
+                f"سفارش `#{order_id}`\n"
+                f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+                f"مهلت درگاه تمام شد یا پرداختی ثبت نشده.\n"
+                f"اگر پول کم نشده، دوباره «زرین‌پال» را بزن یا *کارت‌به‌کارت* را انتخاب کن.",
+                parse_mode='Markdown',
+                reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
+            )
+        else:
+            mins = max(1, (left + 59) // 60)
+            await query.edit_message_text(
+                f"⏳ هنوز پرداخت تایید نشده (بررسی {checks}/{ZP_MAX_CHECKS}).\n"
+                f"اگر پرداخت کردی چند لحظه صبر کن و دوباره بزن.\n"
+                f"⏱ حدود *{mins}* دقیقه از مهلت مانده.\n"
+                f"اگر لینک را باز نکردی / پرداخت نکردی، صبر کن تا مهلت تمام شود یا روش دیگر را انتخاب کن.\n"
+                f"{VPN_WARNING}",
+                parse_mode='Markdown',
+                reply_markup=kb,
+            )
         return
 
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)
+    (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
     if success:
         if status == 'sense_manual':
             await _notify_sense_sale(ctx.bot, order_id)
@@ -304,28 +387,42 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
         return
 
-    set_order_payment_method(order_id, 'card_transfer')
+    payable = get_order_payable(order_id)
+    if payable <= 0:
+        success, status = fulfill_order(order_id)
+        if status == 'sense_manual':
+            await _notify_sense_sale(ctx.bot, order_id)
+        await query.edit_message_text(
+            _success_user_text(order_id, status or 'delivered'),
+            parse_mode='Markdown',
+        )
+        return
 
+    set_order_payment_method(order_id, 'card_transfer')
     total = order[2]
-    bank = f"🏦 بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
+    wallet_paid = int(order[7] or 0)
+    bank = f"بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
+    note = f"کسر کیف پول: *{wallet_paid:,}* ت\n" if wallet_paid else ""
     text = (
         f"✦ *کارت‌به‌کارت*\n"
         f"سفارش `#{order_id}`\n"
-        f"مبلغ دقیق: *{total:,}* تومان\n"
+        f"مبلغ کل: *{total:,}* تومان\n"
+        f"{note}"
+        f"مبلغ واریزی: *{payable:,}* تومان\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"شماره کارت\n"
         f"`{_card_pretty(CARD_NUMBER)}`\n"
         f"به نام *{CARD_HOLDER or '—'}*\n"
         f"{bank}"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"۱ · مبلغ را *دقیق* واریز کن\n"
+        f"۱ · مبلغ *{payable:,}* را دقیق واریز کن\n"
         f"۲ · «پرداخت کردم» را بزن و عکس رسید بفرست\n"
         f"۳ · بعد از تایید ادمین، سفارشت انجام می‌شود\n"
         f"\n_روی شماره کارت بزن تا کپی شود_"
     )
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
-        'total': total,
+        'total': payable,
         'tg_id': update.effective_user.id,
     }
     await query.edit_message_text(
@@ -350,43 +447,37 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         ctx.user_data['db_id'] = db_id
 
-    ok, new_bal = wallet_spend(db_id, order[2], desc=f'خرید جم سفارش #{order_id}')
+    ok, used, remaining, new_bal, err = apply_wallet_to_order(db_id, order_id)
     if not ok:
         await query.edit_message_text(
-            f"❌ موجودی کیف پول کافی نیست.\nموجودی: {new_bal:,} ت — مبلغ سفارش: {order[2]:,} ت",
-            reply_markup=pay_method_keyboard(order_id, can_wallet=False),
+            f"❌ {err or 'استفاده از کیف پول ممکن نشد.'}",
+            reply_markup=_order_pay_keyboard(order_id, db_id),
         )
         return
 
-    set_order_payment_method(order_id, 'wallet')
-
-    success, status = fulfill_order(order_id)
-    ctx.user_data.pop('pending_order', None)
-    if success and status == 'sense_manual':
-        await _notify_sense_sale(ctx.bot, order_id)
-        msg = (
-            f"✅ *پرداخت از کیف پول موفق*\n"
-            f"سفارش #{order_id}\n"
-            f"پک سنس ثبت شد و به‌زودی در پیوی برات ارسال می‌شود.\n"
-            f"موجودی جدید: *{new_bal:,}* تومان"
-        )
-    elif success and status == 'delivered':
-        msg = (
-            f"✅ *پرداخت از کیف پول موفق*\n"
-            f"سفارش #{order_id}\n"
-            f"💎 جم واریز شد.\n"
-            f"موجودی جدید: *{new_bal:,} تومان*"
-        )
-    else:
-        if status not in ('paid',):
+    if remaining <= 0:
+        set_order_payment_method(order_id, 'wallet')
+        success, status = fulfill_order(order_id)
+        ctx.user_data.pop('pending_order', None)
+        if success and status == 'sense_manual':
+            await _notify_sense_sale(ctx.bot, order_id)
+        elif success and status not in ('delivered', 'paid', 'sense_manual'):
             await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
-        msg = (
-            f"✅ پرداخت از کیف پول ثبت شد (سفارش #{order_id}).\n"
-            f"وضعیت: `{status}`\n"
-            f"موجودی جدید: *{new_bal:,}* تومان"
-        )
-    await query.edit_message_text(msg, parse_mode='Markdown')
-    await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
+        msg = _success_user_text(order_id, status if success else 'paid')
+        msg += f"\nکسر از کیف پول: *{used:,}* ت\nموجودی: *{new_bal:,}* ت"
+        await query.edit_message_text(msg, parse_mode='Markdown')
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
+        return
+
+    await query.edit_message_text(
+        f"✅ *{used:,}* تومان از کیف پول کسر شد.\n"
+        f"موجودی جدید: *{new_bal:,}* ت\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"باقی‌مانده سفارش: *{remaining:,}* تومان\n"
+        f"روش پرداخت باقی‌مانده را انتخاب کن:",
+        parse_mode='Markdown',
+        reply_markup=_order_pay_keyboard(order_id, db_id),
+    )
 
 
 async def paid_claim_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -397,9 +488,10 @@ async def paid_claim_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order or order[3] != 'pending':
         await query.edit_message_text("❌ سفارشی برای ارسال رسید پیدا نشد.")
         return ConversationHandler.END
+    payable = get_order_payable(order_id)
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
-        'total': order[2],
+        'total': payable,
         'tg_id': update.effective_user.id,
     }
     await query.edit_message_text(
@@ -488,7 +580,14 @@ async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if oid:
         order = get_order(oid)
         if order and order[3] == 'pending':
+            refunded = refund_order_wallet(oid)
             update_order_status(oid, 'canceled')
+            msg = "❌ پرداخت لغو شد."
+            if refunded:
+                msg += f"\n💰 {refunded:,} تومان به کیف پول برگشت."
+            await query.edit_message_text(msg)
+            await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
+            return ConversationHandler.END
     await query.edit_message_text("❌ پرداخت لغو شد.")
     await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
     return ConversationHandler.END
@@ -551,14 +650,18 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     order_id = int(query.data.split('_')[-1])
     order = get_order(order_id)
+    refunded = 0
     if order and order[3] == 'pending':
+        refunded = refund_order_wallet(order_id)
         update_order_status(order_id, 'canceled')
     await query.edit_message_text(f"❌ سفارش #{order_id} رد شد.")
     if order and order[6]:
+        extra = f"\n💰 {refunded:,} تومان به کیف پول برگشت." if refunded else ""
         await _notify_user(
             ctx.bot,
             order[6],
-            f"❌ سفارش #{order_id} رد شد.\nاگر مبلغی واریز کردی با پشتیبانی در ارتباط باش.",
+            f"❌ سفارش #{order_id} رد شد.{extra}\n"
+            f"اگر مبلغی واریز کردی با پشتیبانی در ارتباط باش.",
         )
 
 
@@ -593,7 +696,8 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     auth = authority or order[5]
     if order[5] and authority and order[5] != authority:
         return False, 'authority mismatch'
-    ok, ref_id = verify_payment(order[2], auth)
+    payable = get_order_payable(order_id) or order[2]
+    ok, ref_id = verify_payment(payable, auth)
     if not ok:
         return False, 'verify failed'
     success, st = fulfill_order(order_id)

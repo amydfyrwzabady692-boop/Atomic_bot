@@ -22,6 +22,7 @@ from handlers.payment import (
 )
 from handlers.wallet import (
     wallet_menu, wallet_charge_preset, wallet_check, wallet_conversation_handler,
+    wallet_pay_zarinpal, wallet_pay_card, admin_wallet_card_ok, admin_wallet_card_no,
 )
 from handlers.account import my_account, my_orders
 from handlers.support import support_conversation_handler
@@ -32,6 +33,7 @@ from handlers.admin import (
     admin_cmd, admin_home_cb, admin_users, admin_user_card, admin_user_cmd,
     admin_block_toggle, admin_failed, admin_open_orders, admin_retry,
     admin_tickets, admin_ticket_close, admin_user_orders, admin_conversation_handler,
+    admin_wallet_empty,
 )
 from admin_notify import is_admin
 from db import is_user_blocked, ensure_admin_schema
@@ -153,7 +155,11 @@ def main():
 
     app.add_handler(CallbackQueryHandler(wallet_menu, pattern='^wallet$'))
     app.add_handler(CallbackQueryHandler(wallet_charge_preset, pattern=r'^wchg_\d+$'))
+    app.add_handler(CallbackQueryHandler(wallet_pay_zarinpal, pattern=r'^wpay_zp_\d+$'))
+    app.add_handler(CallbackQueryHandler(wallet_pay_card, pattern=r'^wpay_card_\d+$'))
     app.add_handler(CallbackQueryHandler(wallet_check, pattern=r'^wchk_'))
+    app.add_handler(CallbackQueryHandler(admin_wallet_card_ok, pattern=r'^wadmin_ok_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_wallet_card_no, pattern=r'^wadmin_no_\d+$'))
 
     app.add_handler(CallbackQueryHandler(store_menu, pattern='^store$'))
     app.add_handler(CallbackQueryHandler(sens_menu, pattern='^sens$'))
@@ -169,6 +175,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_user_card, pattern=r'^adm_user_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_block_toggle, pattern=r'^adm_block_[01]_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_user_orders, pattern=r'^adm_ords_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_wallet_empty, pattern=r'^adm_wempty_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_failed, pattern='^adm_failed$'))
     app.add_handler(CallbackQueryHandler(admin_open_orders, pattern='^adm_open$'))
     app.add_handler(CallbackQueryHandler(admin_retry, pattern=r'^adm_retry_\d+$'))
