@@ -63,10 +63,13 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
         'merchant_id': merchant,
         'amount': int(amount_toman),
         'currency': 'IRT',
-        'description': description,
+        'description': (description or 'Atomic Bot')[:255],
         'callback_url': callback_url,
-        'metadata': {'mobile': mobile or ''},
     }
+    # زرین‌پال با mobile خالی/null خطا می‌دهد — فقط اگر شماره واقعی بود بفرست
+    mobile_str = str(mobile).strip() if mobile not in (None, '') else ''
+    if mobile_str:
+        payload['metadata'] = {'mobile': mobile_str}
     try:
         res = _post(_base() + 'request.json', payload)
     except Exception as e:
