@@ -11,13 +11,14 @@ from telegram.ext import (
 
 from keyboards import (
     zarinpal_pay_keyboard, card_payment_keyboard, receipt_skip_keyboard,
-    admin_card_keyboard, main_menu, pay_method_keyboard,
+    admin_card_keyboard, main_menu, pay_method_keyboard, admin_failed_order_keyboard,
 )
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
     wallet_spend, get_or_create_user, set_order_payment_method,
 )
 from payments import request_payment, verify_payment
+from admin_notify import notify_admin
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
@@ -48,6 +49,26 @@ WAIT_RECEIPT = 0
 VPN_WARNING = (
     "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و لینک را در مرورگر باز کن.\n"
 )
+
+
+async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
+    order = get_order(order_id)
+    if not order:
+        return
+    tg = order[6] or '—'
+    await notify_admin(
+        bot,
+        (
+            f"⚠️ *مشکل تحویل سفارش #{order_id}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"وضعیت: `{status}`\n"
+            f"پرداخت: {payment_hint or order[4]}\n"
+            f"مبلغ: {order[2]:,} ت\n"
+            f"کاربر: `{tg}`\n\n"
+            f"از پنل /admin → تحویل ناموفق می‌توانی دوباره تلاش کنی."
+        ),
+        reply_markup=admin_failed_order_keyboard(order_id, str(tg) if tg != '—' else ''),
+    )
 
 
 def _zarinpal_link_text(order_id, total, pay_url):
@@ -195,11 +216,15 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         if status == 'delivered':
             msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
+        elif status == 'paid':
+            msg += "سفارش ثبت شد."
         else:
             msg += "سفارش ثبت شد و در حال پردازش است."
+            await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
         await query.edit_message_text(msg, parse_mode='Markdown')
         await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
     else:
+        await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
         await query.edit_message_text(
             f"⚠️ پرداخت ثبت شد ولی تحویل خودکار کامل نشد.\n"
             f"سفارش #{order_id} — پشتیبانی پیگیری می‌کند.\n({status})",
@@ -279,10 +304,12 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"👛 موجودی جدید: *{new_bal:,} تومان*"
         )
     else:
+        await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
         msg = (
             f"✅ پرداخت از کیف پول ثبت شد (سفارش #{order_id}).\n"
             f"وضعیت تحویل: `{status}`\n"
-            f"👛 موجودی جدید: *{new_bal:,} تومان*"
+            f"👛 موجودی جدید: *{new_bal:,} تومان*\n\n"
+            f"اگر جم واریز نشد، پشتیبانی پیگیری می‌کند (موجودی کسر شده؛ در صورت نیاز ادمین برگشت می‌زند)."
         )
     await query.edit_message_text(msg, parse_mode='Markdown')
     await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
@@ -410,16 +437,21 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     success, status = fulfill_order(order_id)
     tg_id = order[6]
-    if success:
+    if success and status in ('delivered', 'paid'):
         await query.edit_message_text(f"✅ سفارش #{order_id} تایید و پردازش شد ({status}).")
         await _notify_user(
             ctx.bot,
             tg_id,
             f"✅ سفارش #{order_id} تایید شد.\n"
-            + ("💎 جم به اکانتت واریز شد." if status == 'delivered' else "در حال پردازش است."),
+            + ("💎 جم به اکانتت واریز شد." if status == 'delivered' else "سفارش ثبت شد."),
         )
     else:
-        await query.edit_message_text(f"⚠️ تایید شد ولی تحویل کامل نشد: {status}")
+        await _alert_fulfill_issue(ctx.bot, order_id, status, 'card_transfer')
+        await query.edit_message_text(
+            f"⚠️ تایید شد ولی تحویل کامل نشد: `{status}`\nدکمه تلاش مجدد در اعلان ادمین است.",
+            parse_mode='Markdown',
+            reply_markup=admin_failed_order_keyboard(order_id, str(tg_id or '')),
+        )
         await _notify_user(
             ctx.bot,
             tg_id,

@@ -1,11 +1,18 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
-from db import get_or_create_user
+from db import get_or_create_user, is_user_blocked
+from admin_notify import is_admin
 
 
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if is_user_blocked(user.id) and not is_admin(user.id):
+        await update.message.reply_text(
+            "🚫 حساب شما بلاک شده است.\nبرای پیگیری از پشتیبانی سایت اقدام کن."
+        )
+        return
+
     db_id, is_new = get_or_create_user(
         telegram_id=user.id,
         first_name=user.first_name or '',
@@ -25,9 +32,12 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "شارژ جم فری‌فایر با آیدی + کیف پول\n\n"
         "💎 *جم با آیدی* — تایید اکانت و تحویل خودکار\n"
         "💰 *کیف پول* — شارژ و پرداخت سریع\n"
-        "💳 زرین‌پال / کارت‌به‌کارت\n\n"
+        "💳 زرین‌پال / کارت‌به‌کارت\n"
+        "🎧 *پشتیبانی* — چت مستقیم با ادمین\n\n"
         "از منوی پایین شروع کن 👇"
     )
+    if is_admin(user.id):
+        text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
 
 
@@ -38,11 +48,14 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "💎 *جم فری‌فایر* — خرید با آیدی (فعال)\n"
         "💰 *کیف پول* — شارژ و موجودی (فعال)\n"
         "📦 *سفارش‌های من* — وضعیت سفارش‌ها\n"
-        "👤 *حساب من* — پروفایل و موجودی\n\n"
+        "👤 *حساب من* — پروفایل و موجودی\n"
+        "🎧 *پشتیبانی* — پیام به ادمین\n\n"
         "سایر بخش‌ها در حال بروزرسانی هستند.\n\n"
         "⚠️ پرداخت زرین‌پال: لینک را *کپی* کن → VPN خاموش → در مرورگر باز کن.\n"
         "🆔 دستور `/myid` آیدی عددی تلگرام تو را نشان می‌دهد."
     )
+    if is_admin(update.effective_user.id):
+        text += "\n🛠 ادمین: `/admin`"
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
 
 

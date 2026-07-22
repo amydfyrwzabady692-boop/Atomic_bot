@@ -124,3 +124,66 @@ def wallet_charge_pay_keyboard(tx_key, pay_url=None):
         [InlineKeyboardButton('✅ پرداخت کردم — بررسی', callback_data=f'wchk_{tx_key}')],
         [InlineKeyboardButton('🔙 کیف پول', callback_data='wallet')],
     ])
+
+
+def support_cancel_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('❌ انصراف', callback_data='support_cancel')],
+    ])
+
+
+def admin_home_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton('👥 کاربران', callback_data='adm_users'),
+            InlineKeyboardButton('🔎 جستجو', callback_data='adm_find'),
+        ],
+        [
+            InlineKeyboardButton('❌ تحویل ناموفق', callback_data='adm_failed'),
+            InlineKeyboardButton('⏳ سفارش‌های باز', callback_data='adm_open'),
+        ],
+        [InlineKeyboardButton('🎧 تیکت‌های باز', callback_data='adm_tickets')],
+        [InlineKeyboardButton('🔄 بروزرسانی آمار', callback_data='adm_home')],
+    ])
+
+
+def admin_user_keyboard(tg_id, is_blocked=False):
+    block_btn = (
+        InlineKeyboardButton('✅ آنبلاک', callback_data=f'adm_block_0_{tg_id}')
+        if is_blocked else
+        InlineKeyboardButton('🚫 بلاک', callback_data=f'adm_block_1_{tg_id}')
+    )
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton('✉️ پیام به کاربر', callback_data=f'adm_msg_{tg_id}'),
+            InlineKeyboardButton('💰 تنظیم کیف پول', callback_data=f'adm_wal_{tg_id}'),
+        ],
+        [
+            InlineKeyboardButton('📦 سفارش‌ها / تراکنش', callback_data=f'adm_ords_{tg_id}'),
+            block_btn,
+        ],
+        [InlineKeyboardButton('🔙 پنل ادمین', callback_data='adm_home')],
+    ])
+
+
+def admin_failed_order_keyboard(order_id, tg_id=''):
+    rows = [
+        [InlineKeyboardButton('🔁 تلاش مجدد تحویل', callback_data=f'adm_retry_{order_id}')],
+    ]
+    if tg_id:
+        rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
+    rows.append([InlineKeyboardButton('🔙 تحویل‌های ناموفق', callback_data='adm_failed')])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_ticket_keyboard(ticket_id, tg_id=None):
+    rows = [
+        [
+            InlineKeyboardButton('💬 پاسخ', callback_data=f'adm_treply_{ticket_id}'),
+            InlineKeyboardButton('✅ بستن تیکت', callback_data=f'adm_tclose_{ticket_id}'),
+        ],
+    ]
+    if tg_id:
+        rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
+    rows.append([InlineKeyboardButton('🛠 پنل ادمین', callback_data='adm_home')])
+    return InlineKeyboardMarkup(rows)

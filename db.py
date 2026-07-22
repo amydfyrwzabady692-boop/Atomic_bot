@@ -427,14 +427,215 @@ def get_order_by_authority(authority):
         return cur.fetchone()
 
 
-# ─── Support (kept for later) ───────────────────────────────────────────────────
-def create_ticket(user_db_id, subject, message, category='other'):
+# ─── Schema patch (ادمین / بلاک / پشتیبانی) ─────────────────────────────────────
+def ensure_admin_schema():
+    """ستون‌های لازم برای بلاک و پشتیبانی را اگر نبود اضافه کن."""
+    stmts = [
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsBlocked" BOOLEAN NOT NULL DEFAULT false',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "BlockedReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "BlockedAt" TIMESTAMPTZ',
+        'ALTER TABLE "SupportTickets" ADD COLUMN IF NOT EXISTS "UpdatedAt" TIMESTAMPTZ DEFAULT now()',
+        'ALTER TABLE "SupportTickets" ADD COLUMN IF NOT EXISTS "TelegramId" VARCHAR(64)',
+    ]
+    with get_conn() as conn, conn.cursor() as cur:
+        for sql in stmts:
+            try:
+                cur.execute(sql)
+            except Exception as e:
+                print(f'[DB] schema patch skipped: {sql[:40]}… ({e})')
+        conn.commit()
+
+
+def is_user_blocked(telegram_id) -> bool:
+    tg = str(telegram_id)
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT COALESCE("IsBlocked", false) FROM "Users" WHERE "TelegramId"=%s',
+                (tg,),
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def set_user_blocked(telegram_id, blocked=True, reason=''):
+    tg = str(telegram_id)
+    with get_conn() as conn, conn.cursor() as cur:
+        if blocked:
+            cur.execute(
+                'UPDATE "Users" SET "IsBlocked"=true, "BlockedReason"=%s, "BlockedAt"=now() '
+                'WHERE "TelegramId"=%s',
+                (reason or '', tg),
+            )
+        else:
+            cur.execute(
+                'UPDATE "Users" SET "IsBlocked"=false, "BlockedReason"=\'\', "BlockedAt"=NULL '
+                'WHERE "TelegramId"=%s',
+                (tg,),
+            )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_user_profile(telegram_id=None, db_id=None):
+    """(Id, TelegramId, Username, FirstName, LastName, IsBlocked, BlockedReason, Balance, DateJoined)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        if telegram_id is not None:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."Username", u."FirstName", u."LastName", '
+                'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
+                'COALESCE(w."Balance", 0), u."DateJoined" '
+                'FROM "Users" u '
+                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'WHERE u."TelegramId"=%s',
+                (str(telegram_id),),
+            )
+        else:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."Username", u."FirstName", u."LastName", '
+                'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
+                'COALESCE(w."Balance", 0), u."DateJoined" '
+                'FROM "Users" u '
+                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'WHERE u."Id"=%s',
+                (db_id,),
+            )
+        return cur.fetchone()
+
+
+def get_admin_stats():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT COUNT(*) FROM "Users"')
+        users = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(*) FROM "Users" WHERE COALESCE("IsBlocked", false)=true')
+        blocked = cur.fetchone()[0]
+        cur.execute('SELECT COUNT(*) FROM "Orders"')
+        orders = cur.fetchone()[0]
+        cur.execute(
+            'SELECT COUNT(*) FROM "Orders" WHERE "Status" IN (\'pending\', \'processing\', \'paid\')'
+        )
+        open_orders = cur.fetchone()[0]
+        cur.execute(
+            'SELECT COUNT(*) FROM "GemOrderInfo" WHERE "G2BulkStatus"=\'FAILED\''
+        )
+        failed_g2 = cur.fetchone()[0]
+        cur.execute(
+            'SELECT COUNT(*) FROM "SupportTickets" WHERE "Status"=\'open\''
+        )
+        open_tickets = cur.fetchone()[0]
+        cur.execute('SELECT COALESCE(SUM("Balance"), 0) FROM "Wallets"')
+        wallet_sum = cur.fetchone()[0]
+        return {
+            'users': users,
+            'blocked': blocked,
+            'orders': orders,
+            'open_orders': open_orders,
+            'failed_g2': failed_g2,
+            'open_tickets': open_tickets,
+            'wallet_sum': int(wallet_sum or 0),
+        }
+
+
+def list_recent_users(limit=15):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT u."Id", u."TelegramId", u."FirstName", u."Username", '
+            'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
+            'FROM "Users" u '
+            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+            'ORDER BY u."Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def list_failed_deliveries(limit=20):
+    """سفارش‌هایی که تحویل G2Bulk شکست خورده."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT DISTINCT o."Id", o."TelegramId", o."TotalAmount", o."Status", '
+            'o."PaymentMethod", g."GameUID", g."G2BulkStatus" '
+            'FROM "Orders" o '
+            'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
+            'WHERE g."G2BulkStatus"=\'FAILED\' OR o."Status"=\'processing\' '
+            'ORDER BY o."Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def list_open_orders(limit=20):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "TelegramId", "TotalAmount", "Status", "PaymentMethod", "CreatedAt" '
+            'FROM "Orders" '
+            'WHERE "Status" IN (\'pending\', \'paid\', \'processing\') '
+            'ORDER BY "Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def admin_adjust_wallet(user_db_id, amount, desc='تنظیم ادمین'):
+    """amount مثبت = شارژ، منفی = کسر. موجودی منفی نمی‌شود. خروجی: (ok, new_balance, error)"""
+    amount = int(amount)
+    if amount == 0:
+        return False, 0, 'مبلغ صفر است.'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+            (user_db_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                'INSERT INTO "Wallets" ("UserId", "Balance", "UpdatedAt") '
+                'VALUES (%s, 0, now()) RETURNING "Id", "Balance"',
+                (user_db_id,),
+            )
+            row = cur.fetchone()
+        wallet_id, balance = row
+        new_bal = balance + amount
+        if new_bal < 0:
+            return False, balance, 'موجودی کافی نیست.'
+        kind = 'charge' if amount > 0 else 'spend'
+        cur.execute(
+            'UPDATE "Wallets" SET "Balance"=%s, "UpdatedAt"=now() WHERE "Id"=%s',
+            (new_bal, wallet_id),
+        )
+        cur.execute(
+            'INSERT INTO "WalletTransactions" '
+            '("WalletId", "Amount", "Kind", "Description", "IsPaid", "CreatedAt") '
+            'VALUES (%s, %s, %s, %s, true, now())',
+            (wallet_id, abs(amount), kind, f'[admin] {desc}'),
+        )
+        conn.commit()
+        return True, new_bal, None
+
+
+def list_wallet_txs(user_db_id, limit=10):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Amount", t."Kind", t."Description", t."IsPaid", t."CreatedAt" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'WHERE w."UserId"=%s ORDER BY t."Id" DESC LIMIT %s',
+            (user_db_id, limit),
+        )
+        return cur.fetchall()
+
+
+# ─── Support ────────────────────────────────────────────────────────────────────
+def create_ticket(user_db_id, subject, message, category='other', telegram_id=''):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "SupportTickets" '
-            '("UserId", "Subject", "Category", "Priority", "Message", "Status", "CreatedAt") '
-            "VALUES (%s, %s, %s, 'normal', %s, 'open', now()) RETURNING \"Id\"",
-            (user_db_id, subject, category, message),
+            '("UserId", "Subject", "Category", "Priority", "Message", "Status", '
+            '"CreatedAt", "UpdatedAt", "TelegramId") '
+            "VALUES (%s, %s, %s, 'normal', %s, 'open', now(), now(), %s) RETURNING \"Id\"",
+            (user_db_id, subject[:255], category, message, str(telegram_id or '')),
         )
         ticket_id = cur.fetchone()[0]
         cur.execute(
@@ -444,3 +645,64 @@ def create_ticket(user_db_id, subject, message, category='other'):
         )
         conn.commit()
         return ticket_id
+
+
+def add_ticket_message(ticket_id, sender, text):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "TicketMessages" ("TicketId", "Sender", "Text", "CreatedAt") '
+            'VALUES (%s, %s, %s, now())',
+            (ticket_id, sender, text),
+        )
+        cur.execute(
+            'UPDATE "SupportTickets" SET "UpdatedAt"=now() WHERE "Id"=%s',
+            (ticket_id,),
+        )
+        conn.commit()
+
+
+def get_ticket(ticket_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id", t."UserId", t."Subject", t."Message", t."Status", '
+            't."TelegramId", u."TelegramId", u."FirstName" '
+            'FROM "SupportTickets" t '
+            'LEFT JOIN "Users" u ON u."Id"=t."UserId" '
+            'WHERE t."Id"=%s',
+            (ticket_id,),
+        )
+        return cur.fetchone()
+
+
+def list_open_tickets(limit=20):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id", t."Subject", t."Status", t."CreatedAt", '
+            'COALESCE(t."TelegramId", u."TelegramId"), u."FirstName" '
+            'FROM "SupportTickets" t '
+            'LEFT JOIN "Users" u ON u."Id"=t."UserId" '
+            'WHERE t."Status"=\'open\' '
+            'ORDER BY t."UpdatedAt" DESC NULLS LAST, t."Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def close_ticket(ticket_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "SupportTickets" SET "Status"=\'closed\', "UpdatedAt"=now() WHERE "Id"=%s',
+            (ticket_id,),
+        )
+        conn.commit()
+
+
+def get_active_ticket_for_user(user_db_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id" FROM "SupportTickets" '
+            'WHERE "UserId"=%s AND "Status"=\'open\' ORDER BY "Id" DESC LIMIT 1',
+            (user_db_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None

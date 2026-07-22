@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS "Users" (
     "IsActive" BOOLEAN NOT NULL DEFAULT true,
     "IsSuperUser" BOOLEAN NOT NULL DEFAULT false,
     "TelegramId" VARCHAR(64),
+    "IsBlocked" BOOLEAN NOT NULL DEFAULT false,
+    "BlockedReason" VARCHAR(255) NOT NULL DEFAULT '',
+    "BlockedAt" TIMESTAMPTZ,
     "DateJoined" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_users_telegram ON "Users" ("TelegramId");
@@ -98,7 +101,9 @@ CREATE TABLE IF NOT EXISTS "SupportTickets" (
     "Priority" VARCHAR(20) NOT NULL DEFAULT 'normal',
     "Message" TEXT NOT NULL,
     "Status" VARCHAR(20) NOT NULL DEFAULT 'open',
-    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+    "TelegramId" VARCHAR(64),
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "UpdatedAt" TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS "TicketMessages" (
