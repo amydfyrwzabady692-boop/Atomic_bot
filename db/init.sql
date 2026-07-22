@@ -124,8 +124,8 @@ INSERT INTO "GemPackages"
  "AutoDeliver", "G2BulkCatalogueName", "Stock", "IsAvailable", "IsActive")
 VALUES
 ('بسته 110 جمی', 110, 0, 200000, NULL, 'once', 'by_id', true, '110', 9999, true, true),
-('بسته 231 جمی', 231, 0, 350000, NULL, 'once', 'by_id', true, '231', 9999, true, true),
-('بسته 583 جمی', 583, 0, 900000, NULL, 'once', 'by_id', true, '583', 9999, true, true),
-('بسته 1188 جمی', 1188, 0, 1750000, NULL, 'once', 'by_id', true, '1188', 9999, true, true),
-('بسته 2420 جمی', 2420, 0, 3500000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
+('بسته 231 جمی', 231, 0, 400000, NULL, 'once', 'by_id', true, '231', 9999, true, true),
+('بسته 583 جمی', 583, 0, 1000000, NULL, 'once', 'by_id', true, '583', 9999, true, true),
+('بسته 1188 جمی', 1188, 0, 2000000, NULL, 'once', 'by_id', true, '1188', 9999, true, true),
+('بسته 2420 جمی', 2420, 0, 4000000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
 ON CONFLICT DO NOTHING;

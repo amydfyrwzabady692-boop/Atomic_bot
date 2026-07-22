@@ -450,6 +450,25 @@ def ensure_admin_schema():
         conn.commit()
 
 
+def sync_gem_prices():
+    """قیمت بسته‌های ME را با لیست فعلی هماهنگ کن."""
+    prices = {
+        110: 200_000,
+        231: 400_000,
+        583: 1_000_000,
+        1188: 2_000_000,
+        2420: 4_000_000,
+    }
+    with get_conn() as conn, conn.cursor() as cur:
+        for amount, price in prices.items():
+            cur.execute(
+                'UPDATE "GemPackages" SET "Price"=%s '
+                'WHERE "Amount"=%s AND "PurchaseType"=\'by_id\' AND "PlanType"=\'once\'',
+                (price, amount),
+            )
+        conn.commit()
+
+
 def is_user_blocked(telegram_id) -> bool:
     tg = str(telegram_id)
     try:

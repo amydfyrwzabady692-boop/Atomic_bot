@@ -72,8 +72,10 @@ async def text_router(update, ctx):
 async def post_init(app):
     try:
         ensure_admin_schema()
+        from db import sync_gem_prices
+        sync_gem_prices()
     except Exception as e:
-        logging.getLogger(__name__).warning('ensure_admin_schema: %s', e)
+        logging.getLogger(__name__).warning('ensure_admin_schema/prices: %s', e)
     await start_web_server(app)
     _log_startup_checks()
 
