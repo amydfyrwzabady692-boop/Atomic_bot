@@ -239,23 +239,22 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     balance = get_wallet_balance(db_id)
     can_wallet = balance >= info['price']
     text = (
-        f"💳 *انتخاب روش پرداخت — سفارش #{order_id}*\n"
-        f"━━━━━━━━━━━━━━━\n"
+        f"✦ *انتخاب روش پرداخت*\n"
+        f"سفارش `#{order_id}`\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"💎 {info['title']}\n"
-        f"🆔 `{info['game_uid']}` — {_md_escape(info.get('player_name') or '')}\n"
-        f"💰 مبلغ: *{info['price']:,} تومان*\n"
-        f"👛 موجودی کیف پول: {balance:,} ت\n\n"
+        f"آیدی `{info['game_uid']}`"
+        f"{(' — ' + _md_escape(info.get('player_name') or '')) if info.get('player_name') else ''}\n"
+        f"مبلغ: *{info['price']:,}* تومان\n"
+        f"موجودی کیف پول: {balance:,} ت\n"
     )
     if info.get('amount') in (1188, 2420):
         text += (
-            "🔐 این بسته برای *درگاه زرین‌پال* نیاز به احراز دارد "
-            "(یک‌بار). کارت‌به‌کارت بدون احراز است.\n\n"
+            f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+            f"🔐 زرین‌پال برای این بسته نیاز به احراز یک‌باره دارد.\n"
+            f"کارت‌به‌کارت بدون احراز است.\n"
         )
-    text += (
-        "💳 با «دریافت لینک زرین‌پال» لینک می‌گیری؛ اول کپی کن، "
-        "بعد VPN خاموش، بعد در مرورگر باز کن.\n\n"
-        "روش پرداخت را انتخاب کن:"
-    )
+    text += f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\nروش را انتخاب کن:"
     await query.edit_message_text(
         text,
         parse_mode='Markdown',

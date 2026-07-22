@@ -86,21 +86,20 @@ async def _begin_charge(ctx, user, amount, reply):
     ctx.application.bot_data.setdefault('wallet_auth', {})[tx_key] = authority
 
     await reply(
-        f"💳 *شارژ کیف پول — {amount:,} تومان*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{VPN_WARNING}\n"
-        f"۱) لینک زیر را *کپی* کن (با VPN روشن)\n"
-        f"۲) *VPN را خاموش* کن\n"
-        f"۳) لینک را در *مرورگر* باز کن و پرداخت کن\n"
-        f"۴) برگرد تلگرام و «پرداخت کردم» را بزن\n\n"
-        f"🔗 لینک پرداخت:\n`{pay_url}`",
+        f"✦ *شارژ کیف پول*\n"
+        f"مبلغ: *{amount:,}* تومان\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"*راهنما*\n"
+        f"۱ · لینک را لمس کن و *کپی* کن\n"
+        f"۲ · *VPN را خاموش* کن\n"
+        f"۳ · در مرورگر باز کن و پرداخت کن\n"
+        f"۴ · برگرد و «پرداخت کردم» را بزن\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"🔗 *لینک پرداخت*\n"
+        f"`{pay_url}`",
         parse_mode='Markdown',
         reply_markup=wallet_charge_pay_keyboard(tx_key, pay_url),
     )
-    try:
-        await ctx.bot.send_message(chat_id=user.id, text=pay_url)
-    except Exception:
-        pass
 
 
 async def wallet_charge_preset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

@@ -74,15 +74,17 @@ async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
 
 def _zarinpal_link_text(order_id, total, pay_url):
     return (
-        f"💳 *لینک پرداخت زرین‌پال — سفارش #{order_id}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💰 مبلغ: *{total:,} تومان*\n\n"
-        f"📌 چون تلگرام فیلتر است، این ترتیب را برو:\n"
-        f"1️⃣ روی لینک زیر *بزن و کپی* کن (همین الان، با VPN روشن)\n"
-        f"2️⃣ بعد *VPN را خاموش* کن\n"
-        f"3️⃣ لینک را در *مرورگر* (کروم/سافاری) بچسبان و پرداخت کن\n"
-        f"4️⃣ دوباره تلگرام را باز کن و «پرداخت کردم» را بزن\n\n"
-        f"🔗 لینک پرداخت (بزن تا کپی شود):\n"
+        f"✦ *پرداخت زرین‌پال*\n"
+        f"سفارش `#{order_id}`\n"
+        f"مبلغ: *{total:,}* تومان\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"*راهنما*\n"
+        f"۱ · لینک را لمس کن و *کپی* کن\n"
+        f"۲ · *VPN را خاموش* کن\n"
+        f"۳ · لینک را در مرورگر باز کن و پرداخت کن\n"
+        f"۴ · برگرد و «پرداخت کردم» را بزن\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"🔗 *لینک پرداخت*\n"
         f"`{pay_url}`"
     )
 
@@ -176,8 +178,6 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text, parse_mode='Markdown', reply_markup=zarinpal_pay_keyboard(order_id, pay_url)
     )
-    # لینک خام جداگانه تا کپی‌کردن راحت‌تر باشد
-    await query.message.reply_text(pay_url)
 
 
 async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -253,16 +253,19 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = order[2]
     bank = f"🏦 بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
     text = (
-        f"🏧 *پرداخت کارت‌به‌کارت — سفارش #{order_id}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💰 مبلغ دقیق: *{total:,} تومان*\n\n"
-        f"🔢 شماره کارت:\n`{_card_pretty(CARD_NUMBER)}`\n"
-        f"👤 به نام: *{CARD_HOLDER or '—'}*\n"
-        f"{bank}\n"
-        f"1️⃣ مبلغ را *دقیق* واریز کن\n"
-        f"2️⃣ دکمه «پرداخت کردم» را بزن و *عکس رسید* بفرست\n"
-        f"3️⃣ رسید برای *ادمین در تلگرام* ارسال می‌شود و بعد از تایید، جم واریز می‌شود\n\n"
-        f"_(روی شماره کارت بزن تا کپی شود)_"
+        f"✦ *کارت‌به‌کارت*\n"
+        f"سفارش `#{order_id}`\n"
+        f"مبلغ دقیق: *{total:,}* تومان\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"شماره کارت\n"
+        f"`{_card_pretty(CARD_NUMBER)}`\n"
+        f"به نام *{CARD_HOLDER or '—'}*\n"
+        f"{bank}"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"۱ · مبلغ را *دقیق* واریز کن\n"
+        f"۲ · «پرداخت کردم» را بزن و عکس رسید بفرست\n"
+        f"۳ · بعد از تایید ادمین، جم واریز می‌شود\n"
+        f"\n_روی شماره کارت بزن تا کپی شود_"
     )
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
