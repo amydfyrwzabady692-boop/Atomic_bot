@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS "Users" (
     "IsBlocked" BOOLEAN NOT NULL DEFAULT false,
     "BlockedReason" VARCHAR(255) NOT NULL DEFAULT '',
     "BlockedAt" TIMESTAMPTZ,
+    "KycStatus" VARCHAR(20) NOT NULL DEFAULT 'none',
+    "KycCode" VARCHAR(32) NOT NULL DEFAULT '',
+    "KycVerifiedAt" TIMESTAMPTZ,
+    "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT '',
     "DateJoined" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_users_telegram ON "Users" ("TelegramId");

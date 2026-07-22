@@ -89,6 +89,12 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{price_line}\n\n"
         f"برای ادامه فقط *آیدی بازی (UID)* لازم است."
     )
+    if g[2] in (1188, 2420):
+        text += (
+            "\n\n🔐 برای *درگاه زرین‌پال* احراز هویت یک‌باره لازم است "
+            "(کارت ملی + دست‌نوشته + کارت بانکی).\n"
+            "کارت‌به‌کارت بدون احراز است."
+        )
     if _gem_sold_out(g):
         text += "\n\n❌ این بسته فعلاً ناموجود است."
         await query.edit_message_text(text, parse_mode='Markdown',
@@ -239,8 +245,16 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 `{info['game_uid']}` — {_md_escape(info.get('player_name') or '')}\n"
         f"💰 مبلغ: *{info['price']:,} تومان*\n"
         f"👛 موجودی کیف پول: {balance:,} ت\n\n"
-        f"💳 با «دریافت لینک زرین‌پال» لینک می‌گیری؛ اول کپی کن، بعد VPN خاموش، بعد در مرورگر باز کن.\n\n"
-        f"روش پرداخت را انتخاب کن:"
+    )
+    if info.get('amount') in (1188, 2420):
+        text += (
+            "🔐 این بسته برای *درگاه زرین‌پال* نیاز به احراز دارد "
+            "(یک‌بار). کارت‌به‌کارت بدون احراز است.\n\n"
+        )
+    text += (
+        "💳 با «دریافت لینک زرین‌پال» لینک می‌گیری؛ اول کپی کن، "
+        "بعد VPN خاموش، بعد در مرورگر باز کن.\n\n"
+        "روش پرداخت را انتخاب کن:"
     )
     await query.edit_message_text(
         text,

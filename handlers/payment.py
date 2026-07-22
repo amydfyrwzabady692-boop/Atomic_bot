@@ -13,12 +13,13 @@ from keyboards import (
     zarinpal_pay_keyboard, card_payment_keyboard, receipt_skip_keyboard,
     admin_card_keyboard, main_menu, pay_method_keyboard, admin_failed_order_keyboard,
 )
+from payments import request_payment, verify_payment
+from admin_notify import notify_admin
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
     wallet_spend, get_or_create_user, set_order_payment_method,
+    order_requires_kyc, is_kyc_approved,
 )
-from payments import request_payment, verify_payment
-from admin_notify import notify_admin
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
@@ -126,6 +127,12 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     order = get_order(order_id)
     if not order or order[3] not in ('pending',):
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
+        return
+
+    # احراز برای بسته‌های ۱۱۸۸ و ۲۴۲۰ — فقط درگاه
+    if order_requires_kyc(order_id) and not is_kyc_approved(update.effective_user.id):
+        from handlers.kyc import prompt_kyc_for_order
+        await prompt_kyc_for_order(query, update.effective_user, order_id)
         return
 
     total = order[2]

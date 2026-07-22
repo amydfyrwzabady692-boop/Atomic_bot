@@ -25,6 +25,9 @@ from handlers.wallet import (
 )
 from handlers.account import my_account, my_orders
 from handlers.support import support_conversation_handler
+from handlers.kyc import (
+    kyc_conversation_handler, admin_kyc_approve, admin_kyc_reject, pay_back_methods,
+)
 from handlers.admin import (
     admin_cmd, admin_home_cb, admin_users, admin_user_card, admin_user_cmd,
     admin_block_toggle, admin_failed, admin_open_orders, admin_retry,
@@ -130,6 +133,7 @@ def main():
     app.add_handler(payment_conversation_handler())
     app.add_handler(wallet_conversation_handler())
     app.add_handler(support_conversation_handler())
+    app.add_handler(kyc_conversation_handler())
     app.add_handler(admin_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
@@ -165,6 +169,10 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_retry, pattern=r'^adm_retry_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_tickets, pattern='^adm_tickets$'))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
+
+    app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))
+    app.add_handler(CallbackQueryHandler(pay_back_methods, pattern=r'^pay_back_\d+$'))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 

@@ -436,6 +436,10 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "BlockedAt" TIMESTAMPTZ',
         'ALTER TABLE "SupportTickets" ADD COLUMN IF NOT EXISTS "UpdatedAt" TIMESTAMPTZ DEFAULT now()',
         'ALTER TABLE "SupportTickets" ADD COLUMN IF NOT EXISTS "TelegramId" VARCHAR(64)',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycStatus" VARCHAR(20) NOT NULL DEFAULT \'none\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycCode" VARCHAR(32) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycVerifiedAt" TIMESTAMPTZ',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
     ]
     with get_conn() as conn, conn.cursor() as cur:
         for sql in stmts:
@@ -706,3 +710,95 @@ def get_active_ticket_for_user(user_db_id):
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+
+# ─── KYC (احراز برای بسته‌های گران — فقط درگاه) ────────────────────────────────
+KYC_REQUIRED_AMOUNTS = (1188, 2420)
+
+
+def get_order_gem_amount(order_id):
+    """مقدار جم سفارش (Amount بسته)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT p."Amount" FROM "GemOrderInfo" g '
+            'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
+            'WHERE g."OrderId"=%s LIMIT 1',
+            (order_id,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+
+
+def order_requires_kyc(order_id) -> bool:
+    amount = get_order_gem_amount(order_id)
+    return amount in KYC_REQUIRED_AMOUNTS
+
+
+def get_kyc_status(telegram_id=None, user_db_id=None) -> str:
+    """none | pending | approved | rejected"""
+    with get_conn() as conn, conn.cursor() as cur:
+        if telegram_id is not None:
+            cur.execute(
+                'SELECT COALESCE("KycStatus", \'none\') FROM "Users" WHERE "TelegramId"=%s',
+                (str(telegram_id),),
+            )
+        else:
+            cur.execute(
+                'SELECT COALESCE("KycStatus", \'none\') FROM "Users" WHERE "Id"=%s',
+                (user_db_id,),
+            )
+        row = cur.fetchone()
+        return (row[0] if row else 'none') or 'none'
+
+
+def is_kyc_approved(telegram_id) -> bool:
+    return get_kyc_status(telegram_id=telegram_id) == 'approved'
+
+
+def set_kyc_status(telegram_id, status, code=None, reject_reason=''):
+    tg = str(telegram_id)
+    with get_conn() as conn, conn.cursor() as cur:
+        if status == 'approved':
+            cur.execute(
+                'UPDATE "Users" SET "KycStatus"=\'approved\', "KycVerifiedAt"=now(), '
+                '"KycRejectReason"=\'\' WHERE "TelegramId"=%s',
+                (tg,),
+            )
+        elif status == 'pending':
+            cur.execute(
+                'UPDATE "Users" SET "KycStatus"=\'pending\', "KycCode"=%s, '
+                '"KycRejectReason"=\'\' WHERE "TelegramId"=%s',
+                (code or '', tg),
+            )
+        elif status == 'rejected':
+            cur.execute(
+                'UPDATE "Users" SET "KycStatus"=\'rejected\', "KycRejectReason"=%s, '
+                '"KycVerifiedAt"=NULL WHERE "TelegramId"=%s',
+                (reject_reason or '', tg),
+            )
+        else:
+            cur.execute(
+                'UPDATE "Users" SET "KycStatus"=\'none\', "KycCode"=\'\', '
+                '"KycRejectReason"=\'\', "KycVerifiedAt"=NULL WHERE "TelegramId"=%s',
+                (tg,),
+            )
+        conn.commit()
+
+
+def set_kyc_code(telegram_id, code):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "Users" SET "KycCode"=%s WHERE "TelegramId"=%s',
+            (code or '', str(telegram_id)),
+        )
+        conn.commit()
+
+
+def get_kyc_code(telegram_id) -> str:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT COALESCE("KycCode", \'\') FROM "Users" WHERE "TelegramId"=%s',
+            (str(telegram_id),),
+        )
+        row = cur.fetchone()
+        return (row[0] if row else '') or ''
