@@ -61,11 +61,16 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def myid_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    await update.message.reply_text(
-        f"🆔 آیدی عددی تلگرام شما:\n`{uid}`\n\n"
-        "اگر ادمین هستی، همین عدد را در `.env` مقابل `ADMIN_CHAT_ID=` بگذار.",
-        parse_mode='Markdown',
+    uname = update.effective_user.username
+    handle = f"@{uname}" if uname else "—"
+    text = (
+        f"آیدی تلگرام: *{handle}*\n"
+        f"شناسه عددی: `{uid}`"
     )
+    if is_admin(uid):
+        text += "\n\n_(ادمین: همین شناسه عددی در سرور ست شده)_"
+    await update.message.reply_text(text, parse_mode='Markdown')
+
 
 
 async def home_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

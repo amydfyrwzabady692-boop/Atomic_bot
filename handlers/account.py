@@ -18,12 +18,12 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     balance = get_wallet_balance(db_id)
 
     text = (
-        f"👤 *حساب من*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🧑 نام: {name}\n"
-        f"🆔 یوزرنیم: {username}\n"
-        f"🔢 شناسه تلگرام: `{tg_user.id}`\n"
-        f"💰 موجودی کیف پول: *{balance:,} تومان*"
+        f"✦ *حساب من*\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"نام: {name}\n"
+        f"آیدی: *{username}*\n"
+        f"شناسه عددی: `{tg_user.id}`\n"
+        f"کیف پول: *{balance:,}* تومان"
     )
     if update.callback_query:
         await update.callback_query.answer()

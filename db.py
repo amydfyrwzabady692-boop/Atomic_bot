@@ -28,13 +28,21 @@ def get_conn():
 # ─── Users ──────────────────────────────────────────────────────────────────────
 def get_or_create_user(telegram_id, first_name='', last_name='', username=''):
     tg = str(telegram_id)
+    uname_tg = (username or '').lstrip('@').strip()
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute('SELECT "Id" FROM "Users" WHERE "TelegramId"=%s', (tg,))
         row = cur.fetchone()
         if row:
+            # همیشه نام و آیدی تلگرام را تازه نگه دار
+            cur.execute(
+                'UPDATE "Users" SET "FirstName"=%s, "LastName"=%s, "TelegramUsername"=%s '
+                'WHERE "Id"=%s',
+                (first_name or '', last_name or '', uname_tg, row[0]),
+            )
+            conn.commit()
             return row[0], False
 
-        uname = username or f"tg_{tg}"
+        uname = uname_tg or f"tg_{tg}"
         cur.execute('SELECT 1 FROM "Users" WHERE "Username"=%s', (uname,))
         if cur.fetchone():
             uname = f"tg_{tg}"
@@ -43,10 +51,10 @@ def get_or_create_user(telegram_id, first_name='', last_name='', username=''):
         cur.execute(
             'INSERT INTO "Users" '
             '("password", "Username", "Email", "FirstName", "LastName", '
-            '"IsStaff", "IsActive", "IsSuperUser", "TelegramId", "DateJoined") '
-            'VALUES (%s, %s, %s, %s, %s, false, true, false, %s, now()) '
+            '"IsStaff", "IsActive", "IsSuperUser", "TelegramId", "TelegramUsername", "DateJoined") '
+            'VALUES (%s, %s, %s, %s, %s, false, true, false, %s, %s, now()) '
             'RETURNING "Id"',
-            ('', uname, email, first_name or '', last_name or '', tg)
+            ('', uname, email, first_name or '', last_name or '', tg, uname_tg)
         )
         new_id = cur.fetchone()[0]
         conn.commit()
@@ -440,6 +448,7 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycCode" VARCHAR(32) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT \'\'',
     ]
     with get_conn() as conn, conn.cursor() as cur:
         for sql in stmts:
@@ -503,29 +512,62 @@ def set_user_blocked(telegram_id, blocked=True, reason=''):
 
 
 def get_user_profile(telegram_id=None, db_id=None):
-    """(Id, TelegramId, Username, FirstName, LastName, IsBlocked, BlockedReason, Balance, DateJoined)"""
+    """(Id, TelegramId, TelegramUsername, FirstName, LastName, IsBlocked, BlockedReason, Balance, DateJoined)"""
     with get_conn() as conn, conn.cursor() as cur:
+        cols = (
+            'SELECT u."Id", u."TelegramId", '
+            'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
+            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'u."FirstName", u."LastName", '
+            'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
+            'COALESCE(w."Balance", 0), u."DateJoined" '
+            'FROM "Users" u '
+            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+        )
         if telegram_id is not None:
-            cur.execute(
-                'SELECT u."Id", u."TelegramId", u."Username", u."FirstName", u."LastName", '
-                'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
-                'COALESCE(w."Balance", 0), u."DateJoined" '
-                'FROM "Users" u '
-                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-                'WHERE u."TelegramId"=%s',
-                (str(telegram_id),),
-            )
+            cur.execute(cols + 'WHERE u."TelegramId"=%s', (str(telegram_id),))
         else:
-            cur.execute(
-                'SELECT u."Id", u."TelegramId", u."Username", u."FirstName", u."LastName", '
-                'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
-                'COALESCE(w."Balance", 0), u."DateJoined" '
-                'FROM "Users" u '
-                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-                'WHERE u."Id"=%s',
-                (db_id,),
-            )
+            cur.execute(cols + 'WHERE u."Id"=%s', (db_id,))
         return cur.fetchone()
+
+
+def find_user_by_username(username):
+    """جستجو با @username — خروجی مثل get_user_profile."""
+    un = (username or '').lstrip('@').strip()
+    if not un:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT u."Id", u."TelegramId", '
+            'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
+            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'u."FirstName", u."LastName", '
+            'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
+            'COALESCE(w."Balance", 0), u."DateJoined" '
+            'FROM "Users" u '
+            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+            'WHERE LOWER(u."TelegramUsername")=%s '
+            'OR (u."Username" NOT LIKE \'tg_%\' AND LOWER(u."Username")=%s) '
+            'LIMIT 1',
+            (un.lower(), un.lower()),
+        )
+        return cur.fetchone()
+
+
+def list_recent_users(limit=15):
+    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT u."Id", u."TelegramId", u."FirstName", '
+            'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
+            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
+            'FROM "Users" u '
+            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
+            'ORDER BY u."Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
 
 
 def get_admin_stats():
@@ -559,19 +601,6 @@ def get_admin_stats():
             'open_tickets': open_tickets,
             'wallet_sum': int(wallet_sum or 0),
         }
-
-
-def list_recent_users(limit=15):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'SELECT u."Id", u."TelegramId", u."FirstName", u."Username", '
-            'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
-            'FROM "Users" u '
-            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-            'ORDER BY u."Id" DESC LIMIT %s',
-            (limit,),
-        )
-        return cur.fetchall()
 
 
 def list_failed_deliveries(limit=20):

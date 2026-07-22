@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS "Users" (
     "IsActive" BOOLEAN NOT NULL DEFAULT true,
     "IsSuperUser" BOOLEAN NOT NULL DEFAULT false,
     "TelegramId" VARCHAR(64),
+    "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT '',
     "IsBlocked" BOOLEAN NOT NULL DEFAULT false,
     "BlockedReason" VARCHAR(255) NOT NULL DEFAULT '',
     "BlockedAt" TIMESTAMPTZ,
