@@ -517,7 +517,7 @@ def get_user_profile(telegram_id=None, db_id=None):
         cols = (
             'SELECT u."Id", u."TelegramId", '
             'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
-            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'CASE WHEN LEFT(u."Username", 3) = \'tg_\' THEN \'\' ELSE u."Username" END, \'\'), '
             'u."FirstName", u."LastName", '
             'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
             'COALESCE(w."Balance", 0), u."DateJoined" '
@@ -540,14 +540,14 @@ def find_user_by_username(username):
         cur.execute(
             'SELECT u."Id", u."TelegramId", '
             'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
-            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'CASE WHEN LEFT(u."Username", 3) = \'tg_\' THEN \'\' ELSE u."Username" END, \'\'), '
             'u."FirstName", u."LastName", '
             'COALESCE(u."IsBlocked", false), COALESCE(u."BlockedReason", \'\'), '
             'COALESCE(w."Balance", 0), u."DateJoined" '
             'FROM "Users" u '
             'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
             'WHERE LOWER(u."TelegramUsername")=%s '
-            'OR (u."Username" NOT LIKE \'tg_%\' AND LOWER(u."Username")=%s) '
+            'OR (LEFT(u."Username", 3) <> \'tg_\' AND LOWER(u."Username")=%s) '
             'LIMIT 1',
             (un.lower(), un.lower()),
         )
@@ -560,7 +560,7 @@ def list_recent_users(limit=15):
         cur.execute(
             'SELECT u."Id", u."TelegramId", u."FirstName", '
             'COALESCE(NULLIF(u."TelegramUsername", \'\'), '
-            'CASE WHEN u."Username" LIKE \'tg_%\' THEN \'\' ELSE u."Username" END, \'\'), '
+            'CASE WHEN LEFT(u."Username", 3) = \'tg_\' THEN \'\' ELSE u."Username" END, \'\'), '
             'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
             'FROM "Users" u '
             'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '

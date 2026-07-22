@@ -106,21 +106,37 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not await _require_admin(update):
         return
-    rows = list_recent_users(15)
+    try:
+        rows = list_recent_users(15)
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ خطا در دریافت کاربران:\n`{e}`",
+            parse_mode='Markdown',
+            reply_markup=admin_home_keyboard(),
+        )
+        return
+    if not rows:
+        await query.edit_message_text(
+            "هنوز کاربری ثبت نشده.",
+            reply_markup=admin_home_keyboard(),
+        )
+        return
     lines = ["✦ *آخرین کاربران*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     for r in rows:
         _db_id, tg, name, uname, blocked, bal = r
         handle = _tg_handle(uname)
+        # جلوگیری از خراب شدن Markdown
+        safe_name = (name or '—').replace('*', '').replace('_', '').replace('`', '')
         flag = "🚫" if blocked else "·"
         lines.append(
-            f"{flag} *{handle}*  ·  {name or '—'}\n"
-            f"   `{tg}`  ·  {bal:,} ت"
+            f"{flag} {handle}  ·  {safe_name}\n"
+            f"   `{tg}`  ·  {int(bal or 0):,} ت"
         )
-        label = f"{'🚫 ' if blocked else ''}{handle if handle != '—' else (name or tg)}"
+        label = f"{'🚫 ' if blocked else ''}{handle if handle != '—' else (safe_name or tg)}"
         buttons.append([InlineKeyboardButton(label[:40], callback_data=f'adm_user_{tg}')])
-    lines.append("\nجستجو با آیدی `@user` یا شناسه عددی")
-    buttons.append([InlineKeyboardButton('🔎 جستجو', callback_data='adm_find')])
+    lines.append("\nجستجو با آیدی @user یا شناسه عددی")
+    buttons.append([InlineKeyboardButton('جستجو', callback_data='adm_find')])
     buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
         "\n".join(lines), parse_mode='Markdown',
