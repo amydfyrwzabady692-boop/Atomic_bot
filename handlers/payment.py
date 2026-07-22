@@ -18,7 +18,7 @@ from admin_notify import notify_admin
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
     wallet_spend, get_or_create_user, set_order_payment_method,
-    order_requires_kyc, is_kyc_approved,
+    order_requires_kyc, is_kyc_approved, get_order_items,
 )
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
@@ -70,6 +70,66 @@ async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
         ),
         reply_markup=admin_failed_order_keyboard(order_id, str(tg) if tg != '—' else ''),
     )
+
+
+async def _notify_sense_sale(bot, order_id):
+    """بعد از خرید پک سنس — آیدی کاربر را برای ارسال در پیوی به ادمین بفرست."""
+    order = get_order(order_id)
+    if not order:
+        return
+    items = get_order_items(order_id)
+    titles = '، '.join(it[1] for it in items) if items else 'پک سنس'
+    tg = order[6] or '—'
+    uname = '—'
+    name = '—'
+    try:
+        from db import get_user_profile
+        p = get_user_profile(telegram_id=tg)
+        if p:
+            name = f"{p[3] or ''} {p[4] or ''}".strip() or '—'
+            un = (p[2] or '').strip()
+            uname = f"@{un}" if un else '—'
+    except Exception:
+        pass
+    text = (
+        f"🎯 *خرید پک سنس — سفارش #{order_id}*\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"پک: *{titles}*\n"
+        f"مبلغ: *{order[2]:,}* تومان\n"
+        f"پرداخت: `{order[4]}`\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"نام: {name}\n"
+        f"آیدی: *{uname}*\n"
+        f"شناسه عددی:\n`{tg}`\n"
+        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        f"برو پیوی این کاربر و پک را بفرست.\n"
+        f"_(روی شناسه بزن تا کپی شود)_"
+    )
+    await notify_admin(bot, text)
+
+
+def _success_user_text(order_id, status, ref_id=None):
+    if status == 'sense_manual':
+        msg = (
+            f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
+        )
+        if ref_id:
+            msg += f"کد پیگیری: `{ref_id}`\n"
+        msg += (
+            "پک سنس ثبت شد.\n"
+            "به‌زودی در *پیوی تلگرام* برات ارسال می‌شود."
+        )
+        return msg
+    msg = f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
+    if ref_id:
+        msg += f"کد پیگیری: `{ref_id}`\n"
+    if status == 'delivered':
+        msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
+    elif status == 'paid':
+        msg += "سفارش ثبت شد."
+    else:
+        msg += "سفارش ثبت شد و در حال پردازش است."
+    return msg
 
 
 def _zarinpal_link_text(order_id, total, pay_url):
@@ -217,18 +277,14 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)
     if success:
-        msg = (
-            f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
-            f"کد پیگیری: `{ref_id}`\n"
-        )
-        if status == 'delivered':
-            msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
-        elif status == 'paid':
-            msg += "سفارش ثبت شد."
-        else:
-            msg += "سفارش ثبت شد و در حال پردازش است."
+        if status == 'sense_manual':
+            await _notify_sense_sale(ctx.bot, order_id)
+        elif status not in ('delivered', 'paid', 'sense_manual'):
             await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
-        await query.edit_message_text(msg, parse_mode='Markdown')
+        await query.edit_message_text(
+            _success_user_text(order_id, status, ref_id),
+            parse_mode='Markdown',
+        )
         await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
     else:
         await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
@@ -264,7 +320,7 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"۱ · مبلغ را *دقیق* واریز کن\n"
         f"۲ · «پرداخت کردم» را بزن و عکس رسید بفرست\n"
-        f"۳ · بعد از تایید ادمین، جم واریز می‌شود\n"
+        f"۳ · بعد از تایید ادمین، سفارشت انجام می‌شود\n"
         f"\n_روی شماره کارت بزن تا کپی شود_"
     )
     ctx.user_data['pending_order'] = {
@@ -306,20 +362,28 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)
-    if success and status == 'delivered':
+    if success and status == 'sense_manual':
+        await _notify_sense_sale(ctx.bot, order_id)
+        msg = (
+            f"✅ *پرداخت از کیف پول موفق*\n"
+            f"سفارش #{order_id}\n"
+            f"پک سنس ثبت شد و به‌زودی در پیوی برات ارسال می‌شود.\n"
+            f"موجودی جدید: *{new_bal:,}* تومان"
+        )
+    elif success and status == 'delivered':
         msg = (
             f"✅ *پرداخت از کیف پول موفق*\n"
             f"سفارش #{order_id}\n"
             f"💎 جم واریز شد.\n"
-            f"👛 موجودی جدید: *{new_bal:,} تومان*"
+            f"موجودی جدید: *{new_bal:,} تومان*"
         )
     else:
-        await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
+        if status not in ('paid',):
+            await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
         msg = (
             f"✅ پرداخت از کیف پول ثبت شد (سفارش #{order_id}).\n"
-            f"وضعیت تحویل: `{status}`\n"
-            f"👛 موجودی جدید: *{new_bal:,} تومان*\n\n"
-            f"اگر جم واریز نشد، پشتیبانی پیگیری می‌کند (موجودی کسر شده؛ در صورت نیاز ادمین برگشت می‌زند)."
+            f"وضعیت: `{status}`\n"
+            f"موجودی جدید: *{new_bal:,}* تومان"
         )
     await query.edit_message_text(msg, parse_mode='Markdown')
     await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
@@ -386,7 +450,7 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
             "✅ *رسید دریافت شد*\n"
             "━━━━━━━━━━━━━━━\n"
             f"سفارش #{order_id} برای ادمین ارسال شد.\n"
-            "بعد از تایید ادمین، جم واریز می‌شود و همین‌جا خبر می‌دهیم."
+            "بعد از تایید ادمین، سفارشت انجام می‌شود و همین‌جا خبر می‌دهیم."
         )
     else:
         text = (
@@ -447,7 +511,17 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     success, status = fulfill_order(order_id)
     tg_id = order[6]
-    if success and status in ('delivered', 'paid'):
+    if success and status == 'sense_manual':
+        await _notify_sense_sale(ctx.bot, order_id)
+        await query.edit_message_text(
+            f"✅ سفارش #{order_id} تایید شد (پک سنس).\nآیدی کاربر برایت ارسال شد."
+        )
+        await _notify_user(
+            ctx.bot,
+            tg_id,
+            f"✅ سفارش #{order_id} تایید شد.\nپک سنس به‌زودی در پیوی برات ارسال می‌شود.",
+        )
+    elif success and status in ('delivered', 'paid'):
         await query.edit_message_text(f"✅ سفارش #{order_id} تایید و پردازش شد ({status}).")
         await _notify_user(
             ctx.bot,
@@ -525,11 +599,11 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     success, st = fulfill_order(order_id)
     tg_id = order[6]
     if success:
+        if st == 'sense_manual':
+            await _notify_sense_sale(bot, order_id)
         await _notify_user(
             bot,
             tg_id,
-            f"✅ پرداخت زرین‌پال موفق — سفارش #{order_id}\n"
-            f"کد پیگیری: `{ref_id}`\n"
-            + ("💎 جم واریز شد." if st == 'delivered' else "سفارش در حال پردازش است."),
+            _success_user_text(order_id, st, ref_id),
         )
     return success, st

@@ -20,8 +20,29 @@ def main_menu():
 
 def updating_keyboard(back='home'):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+        [InlineKeyboardButton('بازگشت', callback_data=back)],
     ])
+
+
+def sens_platform_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🖥 PC', callback_data='sens_pc')],
+        [InlineKeyboardButton('📱 موبایل', callback_data='sens_mobile')],
+        [InlineKeyboardButton('منوی اصلی', callback_data='home')],
+    ])
+
+
+def sens_pc_packs_keyboard(packs):
+    rows = []
+    for key, p in packs.items():
+        rows.append([
+            InlineKeyboardButton(
+                f"{p['title']} — {p['price']:,} ت",
+                callback_data=f"sens_buy_{key}",
+            )
+        ])
+    rows.append([InlineKeyboardButton('بازگشت', callback_data='sens')])
+    return InlineKeyboardMarkup(rows)
 
 
 def gems_list_keyboard(gems):

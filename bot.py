@@ -14,7 +14,7 @@ from telegram.ext import (
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
 from handlers.store import store_menu
 from handlers.gems import gems_menu, show_gem, gem_conversation_handler
-from handlers.sensitivity import sens_menu
+from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
@@ -157,6 +157,9 @@ def main():
 
     app.add_handler(CallbackQueryHandler(store_menu, pattern='^store$'))
     app.add_handler(CallbackQueryHandler(sens_menu, pattern='^sens$'))
+    app.add_handler(CallbackQueryHandler(sens_pc_menu, pattern='^sens_pc$'))
+    app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern='^sens_mobile$'))
+    app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_(basic|plus)$'))
     app.add_handler(CallbackQueryHandler(my_orders, pattern='^my_orders$'))
     app.add_handler(CallbackQueryHandler(my_account, pattern='^my_account$'))
 

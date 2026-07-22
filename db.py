@@ -254,18 +254,37 @@ def update_gem_g2bulk(info_id, order_id_g2=None, status=None, player_name=None):
         conn.commit()
 
 
+def get_order_items(order_id):
+    """(Id, ProductName, Price, Quantity, ProductId)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "ProductName", "Price", "Quantity", "ProductId" '
+            'FROM "OrderItems" WHERE "OrderId"=%s',
+            (order_id,),
+        )
+        return cur.fetchall()
+
+
+def is_sense_order(order_id) -> bool:
+    items = get_order_items(order_id)
+    return any('پک سنس' in (it[1] or '') for it in items)
+
+
 def fulfill_order(order_id):
-    """پس از پرداخت موفق: وضعیت paid → تحویل G2Bulk → delivered در صورت موفقیت."""
+    """پس از پرداخت موفق: جم → G2Bulk ؛ پک سنس → تحویل دستی ادمین."""
     order = get_order(order_id)
     if not order:
         return False, 'سفارش پیدا نشد.'
     if order[3] in ('paid', 'delivered', 'completed'):
-        # قبلاً پرداخت شده؛ سعی می‌کنیم تحویل را تکمیل کنیم
         pass
     else:
         update_order_status(order_id, 'paid')
 
     infos = get_gem_infos_for_order(order_id)
+    if not infos and is_sense_order(order_id):
+        update_order_status(order_id, 'delivered')
+        return True, 'sense_manual'
+
     delivered = 0
     total_auto = 0
     for info in infos:
