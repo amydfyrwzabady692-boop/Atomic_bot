@@ -110,15 +110,19 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     callback_url = f"{CALLBACK_BASE}/payment/callback?order={order_id}"
-    authority, pay_url = request_payment(
+    authority, pay_url, err = request_payment(
         total,
         f"Atomic Bot — سفارش #{order_id}",
         callback_url,
     )
     if not authority or not pay_url:
         await query.edit_message_text(
-            "❌ اتصال به درگاه زرین‌پال ممکن نشد.\n"
-            "VPN را خاموش کن و دوباره تلاش کن، یا کارت‌به‌کارت را انتخاب کن."
+            "❌ ساخت لینک زرین‌پال ممکن نشد.\n"
+            f"علت: `{err or 'نامشخص'}`\n\n"
+            "1️⃣ *VPN را خاموش* کن و دوباره «درگاه زرین‌پال» را بزن\n"
+            "2️⃣ یا از *کارت‌به‌کارت* استفاده کن",
+            parse_mode='Markdown',
+            reply_markup=pay_method_keyboard(order_id, can_wallet=False),
         )
         return
 
@@ -128,13 +132,14 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['pending_order'] = pending
 
     text = (
-        f"💳 *پرداخت زرین‌پال — سفارش #{order_id}*\n"
+        f"💳 *لینک پرداخت زرین‌پال — سفارش #{order_id}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"💰 مبلغ: *{total:,} تومان*\n\n"
-        f"{VPN_WARNING}\n"
-        f"1️⃣ VPN را خاموش کن\n"
-        f"2️⃣ روی «ورود به درگاه» بزن و پرداخت کن\n"
-        f"3️⃣ بعد از برگشت، «پرداخت کردم» را بزن تا سفارش تایید شود"
+        f"⚠️ *حتماً VPN را خاموش کن* وگرنه صفحه درگاه باز نمی‌شود یا خطا می‌دهد.\n\n"
+        f"1️⃣ VPN خاموش\n"
+        f"2️⃣ دکمه «باز کردن لینک پرداخت زرین‌پال» را بزن\n"
+        f"3️⃣ بعد از پرداخت موفق، «پرداخت کردم» را بزن\n\n"
+        f"🔗 لینک مستقیم:\n`{pay_url}`"
     )
     await query.edit_message_text(
         text, parse_mode='Markdown', reply_markup=zarinpal_pay_keyboard(order_id, pay_url)
@@ -218,7 +223,7 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{bank}\n"
         f"1️⃣ مبلغ را *دقیق* واریز کن\n"
         f"2️⃣ دکمه «پرداخت کردم» را بزن و *عکس رسید* بفرست\n"
-        f"3️⃣ بعد از تایید ادمین، جم واریز می‌شود\n\n"
+        f"3️⃣ رسید برای *ادمین در تلگرام* ارسال می‌شود و بعد از تایید، جم واریز می‌شود\n\n"
         f"_(روی شماره کارت بزن تا کپی شود)_"
     )
     ctx.user_data['pending_order'] = {
@@ -307,6 +312,7 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
     order_id = pending['order_id']
     user = update.effective_user
 
+    admin_ok = False
     if ADMIN_CHAT_ID:
         try:
             uname = f"@{user.username}" if user.username else "—"
@@ -328,15 +334,25 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
                     from_chat_id=receipt_msg.chat_id,
                     message_id=receipt_msg.message_id,
                 )
-        except Exception:
-            pass
+            admin_ok = True
+        except Exception as e:
+            print(f'[CARD] admin notify failed: {e}')
 
-    text = (
-        "✅ *رسید دریافت شد*\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"سفارش #{order_id} در صف تایید ادمین است.\n"
-        "بعد از تایید، جم واریز می‌شود و همین‌جا خبر می‌دهیم."
-    )
+    if admin_ok:
+        text = (
+            "✅ *رسید دریافت شد*\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"سفارش #{order_id} برای ادمین ارسال شد.\n"
+            "بعد از تایید ادمین، جم واریز می‌شود و همین‌جا خبر می‌دهیم."
+        )
+    else:
+        text = (
+            "⚠️ *رسید ذخیره شد ولی به ادمین نرسید*\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"سفارش #{order_id}\n"
+            "ادمین باید `/myid` بزند و `ADMIN_CHAT_ID` را در سرور تنظیم کند.\n"
+            "تا آن زمان تایید خودکار از پنل ادمین ممکن نیست."
+        )
     if via_query:
         await via_query.edit_message_text(text, parse_mode='Markdown')
         await via_query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())

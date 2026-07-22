@@ -52,9 +52,13 @@ def _post(url, payload):
 
 
 def request_payment(amount_toman, description, callback_url, mobile=''):
+    """خروجی: (authority, pay_url, error_message)"""
     merchant = _merchant()
     if not merchant:
-        return None, None
+        return None, None, 'مرچنت زرین‌پال تنظیم نشده است.'
+    if not (callback_url or '').startswith('https://'):
+        return None, None, 'آدرس بازگشت درگاه باید HTTPS باشد. SSL دامنه را فعال کن.'
+
     payload = {
         'merchant_id': merchant,
         'amount': int(amount_toman),
@@ -67,13 +71,30 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
         res = _post(_base() + 'request.json', payload)
     except Exception as e:
         print(f'[ZARINPAL] request exception: {e}')
-        return None, None
+        return None, None, f'خطای ارتباط با زرین‌پال: {e}'
+
+    if not res:
+        return None, None, 'پاسخ خالی از زرین‌پال (احتمالاً قطعی شبکه سرور).'
+
     data = res.get('data') or {}
     errors = res.get('errors')
     if data.get('code') == 100 and data.get('authority'):
-        return data['authority'], _start_base() + data['authority']
+        return data['authority'], _start_base() + data['authority'], None
+
+    # پیام خطای خوانا از زرین‌پال
+    msg = None
+    if isinstance(errors, dict):
+        msg = errors.get('message') or str(errors)
+    elif isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict):
+            msg = first.get('message') or str(first)
+        else:
+            msg = str(first)
+    if not msg:
+        msg = f"کد خطا: {data.get('code') or res}"
     print(f'[ZARINPAL] request failed: data={data} errors={errors}')
-    return None, None
+    return None, None, msg
 
 
 def verify_payment(amount_toman, authority):

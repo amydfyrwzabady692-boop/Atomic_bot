@@ -67,13 +67,13 @@ async def _begin_charge(ctx, user, amount, reply):
         return
 
     callback_url = f"{CALLBACK_BASE}/payment/wallet-callback"
-    authority, pay_url = request_payment(
+    authority, pay_url, err = request_payment(
         amount,
         f"شارژ کیف پول Atomic Bot — {amount:,} تومان",
         callback_url,
     )
     if not authority or not pay_url:
-        await reply("❌ اتصال به زرین‌پال ممکن نشد.")
+        await reply(f"❌ ساخت لینک زرین‌پال ممکن نشد.\nعلت: {err or 'نامشخص'}\nVPN را خاموش کن و دوباره تلاش کن.")
         return
 
     create_wallet_charge_tx(db_id, amount, authority)
@@ -89,9 +89,10 @@ async def _begin_charge(ctx, user, amount, reply):
         f"💳 *شارژ کیف پول — {amount:,} تومان*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{VPN_WARNING}\n"
-        f"۱) VPN خاموش\n"
-        f"۲) ورود به درگاه و پرداخت\n"
-        f"۳) بعد «پرداخت کردم» را بزن",
+        f"۱) *VPN را خاموش* کن\n"
+        f"۲) دکمه لینک زرین‌پال را بزن و پرداخت کن\n"
+        f"۳) بعد «پرداخت کردم» را بزن\n\n"
+        f"🔗 لینک مستقیم:\n`{pay_url}`",
         parse_mode='Markdown',
         reply_markup=wallet_charge_pay_keyboard(tx_key, pay_url),
     )
