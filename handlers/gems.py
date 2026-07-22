@@ -207,12 +207,10 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     user = update.effective_user
-    db_id = ctx.user_data.get('db_id')
-    if not db_id:
-        db_id, _ = get_or_create_user(
-            user.id, user.first_name or '', user.last_name or '', user.username or ''
-        )
-        ctx.user_data['db_id'] = db_id
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
 
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or 'کاربر تلگرام'
     order_id = create_order(
@@ -236,7 +234,7 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
     ctx.user_data.pop('gem_buy', None)
 
-    balance = get_wallet_balance(db_id)
+    balance = int(get_wallet_balance(db_id) or 0)
     text = (
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
@@ -245,7 +243,7 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"آیدی `{info['game_uid']}`"
         f"{(' — ' + _md_escape(info.get('player_name') or '')) if info.get('player_name') else ''}\n"
         f"مبلغ: *{info['price']:,}* تومان\n"
-        f"موجودی کیف پول: {balance:,} ت\n"
+        f"موجودی کیف پول: *{balance:,}* ت\n"
     )
     if info.get('amount') in (1188, 2420):
         text += (
@@ -259,7 +257,7 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
             order_id,
-            can_wallet=balance > 0,
+            can_wallet=True,
             wallet_balance=balance,
             remaining=info['price'],
         ),

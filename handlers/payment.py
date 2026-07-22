@@ -62,10 +62,12 @@ def _order_pay_keyboard(order_id, db_id=None):
     if not order:
         return pay_method_keyboard(order_id, can_wallet=False)
     remaining = get_order_payable(order_id)
-    bal = get_wallet_balance(db_id) if db_id else 0
+    # همیشه از صاحب سفارش بخوان تا db_id کهنه باعث مخفی شدن دکمه نشود
+    owner_id = db_id or order[1]
+    bal = int(get_wallet_balance(owner_id) or 0)
     return pay_method_keyboard(
         order_id,
-        can_wallet=bal > 0 and remaining > 0,
+        can_wallet=remaining > 0,
         wallet_balance=bal,
         remaining=remaining,
     )
@@ -432,21 +434,38 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     order_id = int(query.data.split('_')[-1])
     order = get_order(order_id)
     if not order or order[3] != 'pending':
-        await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
+        await query.answer("❌ این سفارش قابل پرداخت نیست.", show_alert=True)
         return
 
     user = update.effective_user
-    db_id = ctx.user_data.get('db_id')
-    if not db_id:
-        db_id, _ = get_or_create_user(
-            user.id, user.first_name or '', user.last_name or '', user.username or ''
-        )
-        ctx.user_data['db_id'] = db_id
+    # همیشه کاربر را از تلگرام تازه بگیر (db_id کهنه = موجودی اشتباه)
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
 
+    # اگر سفارش مال کاربر دیگری است، اجازه نده
+    if int(order[1]) != int(db_id):
+        await query.answer("این سفارش متعلق به شما نیست.", show_alert=True)
+        return
+
+    bal = int(get_wallet_balance(db_id) or 0)
+    if bal <= 0:
+        await query.answer(
+            "موجودی کیف پول صفر است. اول از منوی کیف پول شارژ کن.",
+            show_alert=True,
+        )
+        await query.edit_message_text(
+            f"❌ موجودی کیف پول صفر است.\n"
+            f"سفارش #{order_id} هنوز باز است — اول شارژ کن، بعد دوباره پرداخت کن.",
+            reply_markup=_order_pay_keyboard(order_id, db_id),
+        )
+        return
+
+    await query.answer()
     ok, used, remaining, new_bal, err = apply_wallet_to_order(db_id, order_id)
     if not ok:
         await query.edit_message_text(

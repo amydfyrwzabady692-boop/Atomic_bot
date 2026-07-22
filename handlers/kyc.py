@@ -322,18 +322,22 @@ async def pay_back_methods(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         ctx.user_data['db_id'] = db_id
     from db import get_order_payable
-    bal = get_wallet_balance(db_id)
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
+    bal = int(get_wallet_balance(db_id) or 0)
     rem = get_order_payable(order_id)
     note = f"\nکسر کیف پول: {(order[2] - rem):,} ت" if rem < order[2] else ""
     await query.edit_message_text(
         f"💳 روش پرداخت — سفارش #{order_id}\n"
         f"مبلغ کل: *{order[2]:,}* ت{note}\n"
         f"قابل پرداخت: *{rem:,}* تومان\n"
-        f"موجودی کیف پول: {bal:,} ت",
+        f"موجودی کیف پول: *{bal:,}* ت",
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
             order_id,
-            can_wallet=bal > 0 and rem > 0,
+            can_wallet=True,
             wallet_balance=bal,
             remaining=rem,
         ),

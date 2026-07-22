@@ -84,12 +84,10 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-    db_id = ctx.user_data.get('db_id')
-    if not db_id:
-        db_id, _ = get_or_create_user(
-            user.id, user.first_name or '', user.last_name or '', user.username or ''
-        )
-        ctx.user_data['db_id'] = db_id
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
 
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or 'کاربر تلگرام'
     order_id = create_order(
@@ -106,14 +104,14 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'kind': 'sense',
     }
 
-    balance = get_wallet_balance(db_id)
+    balance = int(get_wallet_balance(db_id) or 0)
     text = (
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"🎯 {pack['title']}\n"
         f"مبلغ: *{pack['price']:,}* تومان\n"
-        f"موجودی کیف پول: {balance:,} ت\n"
+        f"موجودی کیف پول: *{balance:,}* ت\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"بعد از پرداخت موفق، پک در *پیوی تلگرام* برات ارسال می‌شود.\n"
         f"روش را انتخاب کن:"
@@ -123,7 +121,7 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
             order_id,
-            can_wallet=balance > 0,
+            can_wallet=True,
             wallet_balance=balance,
             remaining=pack['price'],
         ),

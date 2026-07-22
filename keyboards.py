@@ -84,16 +84,20 @@ def gem_confirm_keyboard():
 
 
 def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=None):
+    """همیشه دکمه کیف پول را نشان بده (حتی با موجودی صفر) تا کاربر بداند این روش هست."""
+    bal = int(wallet_balance or 0)
+    rem = int(remaining) if remaining is not None else None
     rows = [
         [InlineKeyboardButton('💳 زرین‌پال', callback_data=f'pay_zp_{order_id}')],
         [InlineKeyboardButton('🏧 کارت‌به‌کارت', callback_data=f'pay_card_{order_id}')],
     ]
-    if can_wallet and wallet_balance > 0:
-        rem = remaining if remaining is not None else wallet_balance
-        if wallet_balance >= rem > 0:
-            label = f'💰 پرداخت کامل از کیف پول'
+    if can_wallet and (rem is None or rem > 0):
+        if bal <= 0:
+            label = '💰 کیف پول (موجودی صفر)'
+        elif rem is not None and bal >= rem:
+            label = '💰 پرداخت کامل از کیف پول'
         else:
-            label = f'💰 استفاده از موجودی ({wallet_balance:,} ت)'
+            label = f'💰 استفاده از کیف پول ({bal:,} ت)'
         rows.append([InlineKeyboardButton(label, callback_data=f'pay_wallet_{order_id}')])
     rows.append([InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')])
     return InlineKeyboardMarkup(rows)
