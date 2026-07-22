@@ -1,22 +1,41 @@
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: atomic_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-accshop}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - atomic_pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # فقط داخل شبکه ربات — به tasino دست نمی‌زند
+    expose:
+      - "5432"
+    networks:
+      - botnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-accshop}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   bot:
     build: .
     container_name: atomic_bot
     restart: unless-stopped
     env_file:
       - .env
-    expose:
-      - "8080"
-    # اجازه دسترسی به دیتابیس روی خود وی‌پی‌اس (اگر postgres روی هاست باشد)
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-accshop}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
       ZARINPAL_MERCHANT_ID: ${ZARINPAL_MERCHANT_ID:-}
       ZARINPAL_SANDBOX: ${ZARINPAL_SANDBOX:-0}
       G2BULK_API_KEY: ${G2BULK_API_KEY:-}
@@ -30,6 +49,9 @@ services:
       BOT_DOMAIN: ${BOT_DOMAIN:-botatomic.atomicshop.ir}
       PAYMENT_CALLBACK_BASE: ${PAYMENT_CALLBACK_BASE:-https://botatomic.atomicshop.ir}
       WEB_PORT: "8080"
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - botnet
     healthcheck:
@@ -38,8 +60,10 @@ services:
       timeout: 5s
       retries: 5
 
+  # Caddy خاموش — روی این وی‌پی‌اس nginx مشترک پورت 80 را دارد
   proxy:
     image: caddy:2
+    profiles: ["caddy"]
     container_name: atomic_bot_proxy
     restart: unless-stopped
     ports:
@@ -60,5 +84,6 @@ networks:
   botnet:
 
 volumes:
+  atomic_pgdata:
   caddy_data:
   caddy_config:
