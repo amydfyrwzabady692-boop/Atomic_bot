@@ -65,11 +65,14 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
     }
     try:
         res = _post(_base() + 'request.json', payload)
-    except Exception:
+    except Exception as e:
+        print(f'[ZARINPAL] request exception: {e}')
         return None, None
     data = res.get('data') or {}
+    errors = res.get('errors')
     if data.get('code') == 100 and data.get('authority'):
         return data['authority'], _start_base() + data['authority']
+    print(f'[ZARINPAL] request failed: data={data} errors={errors}')
     return None, None
 
 

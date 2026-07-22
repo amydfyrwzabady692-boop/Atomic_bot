@@ -15,7 +15,7 @@ from keyboards import (
 )
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
-    wallet_spend, get_wallet_balance, get_or_create_user,
+    wallet_spend, get_or_create_user, set_order_payment_method,
 )
 from payments import request_payment, verify_payment
 
@@ -84,17 +84,28 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     order_id = int(query.data.split('_')[-1])
-    pending = _pending(ctx, order_id)
+    pending = _pending(ctx, order_id) or {
+        'order_id': order_id,
+        'tg_id': update.effective_user.id,
+    }
     order = get_order(order_id)
     if not order or order[3] not in ('pending',):
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
         return
 
     total = order[2]
+    pending['total'] = total
     if not CALLBACK_BASE:
         await query.edit_message_text(
             "❌ آدرس callback درگاه تنظیم نشده.\n"
             "ادمین باید `PAYMENT_CALLBACK_BASE` را در سرور ست کند."
+        )
+        return
+
+    from payments import _merchant
+    if not _merchant():
+        await query.edit_message_text(
+            "❌ مرچنت زرین‌پال تنظیم نشده. فعلاً از کارت‌به‌کارت استفاده کن."
         )
         return
 
@@ -106,13 +117,13 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if not authority or not pay_url:
         await query.edit_message_text(
-            "❌ اتصال به درگاه زرین‌پال ممکن نشد. کمی بعد دوباره تلاش کن یا کارت‌به‌کارت را انتخاب کن."
+            "❌ اتصال به درگاه زرین‌پال ممکن نشد.\n"
+            "VPN را خاموش کن و دوباره تلاش کن، یا کارت‌به‌کارت را انتخاب کن."
         )
         return
 
-    set_order_authority(order_id, authority)
+    set_order_authority(order_id, authority, payment_method='zarinpal')
     pending['authority'] = authority
-    pending['total'] = total
     pending['order_id'] = order_id
     ctx.user_data['pending_order'] = pending
 
@@ -194,13 +205,7 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
         return
 
-    from db import get_conn
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'UPDATE "Orders" SET "PaymentMethod"=%s WHERE "Id"=%s',
-            ('card_transfer', order_id),
-        )
-        conn.commit()
+    set_order_payment_method(order_id, 'card_transfer')
 
     total = order[2]
     bank = f"🏦 بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
@@ -251,13 +256,7 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    from db import get_conn
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'UPDATE "Orders" SET "PaymentMethod"=%s WHERE "Id"=%s',
-            ('wallet', order_id),
-        )
-        conn.commit()
+    set_order_payment_method(order_id, 'wallet')
 
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)

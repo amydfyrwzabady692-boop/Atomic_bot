@@ -77,9 +77,14 @@ def get_gems_by_id():
         f'AND "Amount" IN ({placeholders}) '
         'ORDER BY "Price"'
     )
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, amounts)
-        return cur.fetchall()
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(sql, amounts)
+            return cur.fetchall()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception('get_gems_by_id failed: %s', e)
+        return []
 
 
 def get_gem(pk):
@@ -128,11 +133,20 @@ def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
         return order_id
 
 
-def set_order_authority(order_id, authority):
+def set_order_authority(order_id, authority, payment_method='zarinpal'):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'UPDATE "Orders" SET "PaymentAuthority"=%s WHERE "Id"=%s',
-            (authority, order_id),
+            'UPDATE "Orders" SET "PaymentAuthority"=%s, "PaymentMethod"=%s WHERE "Id"=%s',
+            (authority, payment_method, order_id),
+        )
+        conn.commit()
+
+
+def set_order_payment_method(order_id, payment_method):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "Orders" SET "PaymentMethod"=%s WHERE "Id"=%s',
+            (payment_method, order_id),
         )
         conn.commit()
 

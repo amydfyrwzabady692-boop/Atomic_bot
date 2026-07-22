@@ -45,7 +45,7 @@ def create_web_app(bot_app):
         status = (request.rel_url.query.get('Status') or '').upper()
         html_ok = (
             "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
-            "<h2>شارژ ثبت شد</h2><p>به ربات برگرد و دکمه بررسی را بزن.</p>"
+            "<h2>شارژ ثبت شد</h2><p>به ربات تلگرام برگرد.</p>"
             "</body></html>"
         )
         html_fail = (
@@ -60,18 +60,35 @@ def create_web_app(bot_app):
             from payments import verify_payment
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute(
-                    'SELECT "Amount", "IsPaid", w."UserId" FROM "WalletTransactions" t '
-                    'JOIN "Wallets" w ON w."Id"=t."WalletId" WHERE t."Authority"=%s',
+                    'SELECT t."Amount", t."IsPaid", w."UserId", u."TelegramId" '
+                    'FROM "WalletTransactions" t '
+                    'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+                    'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+                    'WHERE t."Authority"=%s',
                     (authority,),
                 )
                 row = cur.fetchone()
             if not row:
                 return web.Response(text=html_fail, content_type='text/html')
-            amount, is_paid, user_id = row
+            amount, is_paid, user_id, telegram_id = row
             if not is_paid:
-                ok, _ref = verify_payment(amount, authority)
-                if ok:
-                    complete_wallet_charge_by_authority(authority)
+                ok, ref = verify_payment(amount, authority)
+                if not ok:
+                    return web.Response(text=html_fail, content_type='text/html')
+                done, _uid, amt, new_bal = complete_wallet_charge_by_authority(authority)
+                if done and telegram_id:
+                    try:
+                        await bot_app.bot.send_message(
+                            chat_id=int(telegram_id),
+                            text=(
+                                f"✅ کیف پول شارژ شد!\n"
+                                f"مبلغ: {amt:,} تومان\n"
+                                f"موجودی: {new_bal:,} تومان\n"
+                                f"پیگیری: {ref}"
+                            ),
+                        )
+                    except Exception:
+                        pass
             return web.Response(text=html_ok, content_type='text/html')
         except Exception:
             logger.exception('wallet callback failed')

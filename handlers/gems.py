@@ -12,10 +12,24 @@ from keyboards import (
 )
 from db import (
     get_gems_by_id, get_gem, get_or_create_user, create_order,
-    add_order_item, add_gem_order_info, get_wallet_balance, update_order_status,
+    add_order_item, add_gem_order_info, get_wallet_balance,
 )
 
 GEM_UID, GEM_CONFIRM = range(2)
+
+_MENU_BUTTONS = {
+    '💎 جم فری‌فایر', '💰 کیف پول', '📦 سفارش‌های من', '👤 حساب من',
+    '🛍 فروشگاه اکانت', '🎯 پک سنس', '🛒 سبد خرید', '🎧 پشتیبانی',
+}
+
+
+def _md_escape(text):
+    """جلوگیری از خراب شدن Markdown با نام اکانت."""
+    if not text:
+        return ''
+    for ch in ('_', '*', '`', '['):
+        text = str(text).replace(ch, ' ')
+    return text
 
 
 def _gem_sold_out(g):
@@ -115,6 +129,11 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = (update.message.text or '').strip()
+    if uid in _MENU_BUTTONS:
+        ctx.user_data.pop('gem_buy', None)
+        await update.message.reply_text("✖️ ثبت سفارش لغو شد.", reply_markup=main_menu())
+        return ConversationHandler.END
+
     uid = uid.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'))
     if not uid.isdigit() or len(uid) < 5:
         await update.message.reply_text(
@@ -130,6 +149,13 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text("⏳ در حال بررسی آیدی بازی…")
+    if not g2bulk.is_configured():
+        await update.message.reply_text(
+            "❌ سرویس تایید آیدی پیکربندی نشده (G2BULK_API_KEY).",
+            reply_markup=main_menu(),
+        )
+        return ConversationHandler.END
+
     result = g2bulk.check_player_id(uid)
     if not result['ok']:
         await update.message.reply_text(
@@ -141,10 +167,11 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     info['game_uid'] = uid
     info['player_name'] = result['name']
+    pname = _md_escape(result['name'])
     await update.message.reply_text(
         f"✅ *اکانت تایید شد*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"👤 نام اکانت: *{result['name']}*\n"
+        f"👤 نام اکانت: *{pname}*\n"
         f"🆔 UID: `{uid}`\n"
         f"💎 بسته: {info['title']}\n"
         f"💰 مبلغ: *{info['price']:,} تومان*\n\n"

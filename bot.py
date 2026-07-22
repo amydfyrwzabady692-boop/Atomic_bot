@@ -61,6 +61,43 @@ async def text_router(update, ctx):
 
 async def post_init(app):
     await start_web_server(app)
+    _log_startup_checks()
+
+
+def _log_startup_checks():
+    log = logging.getLogger(__name__)
+    ok = True
+    if not os.getenv('BOT_TOKEN'):
+        log.error('BOT_TOKEN missing')
+        ok = False
+    merchant = os.getenv('ZARINPAL_MERCHANT_ID') or os.getenv('ZARINPAL_MERCHANT')
+    if not merchant:
+        log.error('ZARINPAL_MERCHANT_ID missing — درگاه کار نمی‌کند')
+        ok = False
+    else:
+        log.info('Zarinpal merchant configured')
+    if not os.getenv('G2BULK_API_KEY'):
+        log.error('G2BULK_API_KEY missing — تایید آیدی/تحویل کار نمی‌کند')
+        ok = False
+    else:
+        log.info('G2Bulk configured')
+    cb = os.getenv('PAYMENT_CALLBACK_BASE') or ''
+    log.info('Payment callback base: %s', cb or '(empty)')
+    if not os.getenv('ADMIN_CHAT_ID'):
+        log.warning('ADMIN_CHAT_ID empty — رسید کارت‌به‌کارت به ادمین نمی‌رسد. /myid بزن')
+    try:
+        from db import get_conn, get_gems_by_id
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT 1')
+        gems = get_gems_by_id()
+        log.info('DB OK — %s gem packages loaded', len(gems))
+    except Exception as e:
+        log.error('DB connection FAILED: %s — روی وی‌پی‌اس DB_HOST را درست بگذار', e)
+        ok = False
+    if ok:
+        log.info('Startup checks passed')
+    else:
+        log.warning('Startup checks found problems — see errors above')
 
 
 def main():
