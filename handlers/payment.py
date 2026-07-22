@@ -39,7 +39,7 @@ CARD_BANK = (
 ADMIN_CHAT_ID = os.getenv('ADMIN_CHAT_ID', '').strip()
 _cb = (os.getenv('PAYMENT_CALLBACK_BASE') or '').strip().rstrip('/')
 if not _cb:
-    _domain = (os.getenv('BOT_DOMAIN') or 'bot.atomicshop.ir').strip()
+    _domain = (os.getenv('BOT_DOMAIN') or 'botatomic.atomicshop.ir').strip()
     _cb = _domain if _domain.startswith('http') else f'https://{_domain}'
 CALLBACK_BASE = _cb.rstrip('/')
 

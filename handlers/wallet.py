@@ -20,7 +20,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
 CALLBACK_BASE = (os.getenv('PAYMENT_CALLBACK_BASE') or '').strip().rstrip('/')
 if not CALLBACK_BASE:
-    _domain = (os.getenv('BOT_DOMAIN') or 'bot.atomicshop.ir').strip()
+    _domain = (os.getenv('BOT_DOMAIN') or 'botatomic.atomicshop.ir').strip()
     CALLBACK_BASE = _domain if _domain.startswith('http') else f'https://{_domain}'
 CALLBACK_BASE = CALLBACK_BASE.rstrip('/')
 WAIT_CUSTOM = 0

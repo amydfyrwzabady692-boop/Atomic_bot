@@ -1,4 +1,4 @@
-{$BOT_DOMAIN:bot.atomicshop.ir} {
+{$BOT_DOMAIN:botatomic.atomicshop.ir} {
 	encode gzip
 
 	# زرین‌پال بعد از پرداخت به این مسیرها برمی‌گردد
