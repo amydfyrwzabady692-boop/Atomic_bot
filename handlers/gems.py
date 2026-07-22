@@ -239,7 +239,7 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🆔 `{info['game_uid']}` — {_md_escape(info.get('player_name') or '')}\n"
         f"💰 مبلغ: *{info['price']:,} تومان*\n"
         f"👛 موجودی کیف پول: {balance:,} ت\n\n"
-        f"⚠️ اگر *درگاه زرین‌پال* را می‌زنی، اول *VPN را خاموش* کن وگرنه لینک باز نمی‌شود.\n\n"
+        f"💳 با «دریافت لینک زرین‌پال» لینک می‌گیری؛ اول کپی کن، بعد VPN خاموش، بعد در مرورگر باز کن.\n\n"
         f"روش پرداخت را انتخاب کن:"
     )
     await query.edit_message_text(

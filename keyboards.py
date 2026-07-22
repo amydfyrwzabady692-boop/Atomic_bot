@@ -64,7 +64,7 @@ def gem_confirm_keyboard():
 
 def pay_method_keyboard(order_id, can_wallet=True):
     rows = [
-        [InlineKeyboardButton('💳 درگاه زرین‌پال (VPN خاموش)', callback_data=f'pay_zp_{order_id}')],
+        [InlineKeyboardButton('💳 دریافت لینک زرین‌پال', callback_data=f'pay_zp_{order_id}')],
         [InlineKeyboardButton('🏧 کارت‌به‌کارت + ارسال رسید', callback_data=f'pay_card_{order_id}')],
     ]
     if can_wallet:
@@ -73,9 +73,9 @@ def pay_method_keyboard(order_id, can_wallet=True):
     return InlineKeyboardMarkup(rows)
 
 
-def zarinpal_pay_keyboard(order_id, pay_url):
+def zarinpal_pay_keyboard(order_id, pay_url=None):
+    # عمداً دکمه url نداریم: کاربر باید لینک را کپی کند، VPN خاموش کند، بعد در مرورگر باز کند
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🔗 باز کردن لینک پرداخت زرین‌پال', url=pay_url)],
         [InlineKeyboardButton('✅ پرداخت کردم — بررسی خودکار', callback_data=f'zp_check_{order_id}')],
         [InlineKeyboardButton('❌ انصراف', callback_data=f'cancel_order_{order_id}')],
     ])
@@ -119,9 +119,8 @@ def wallet_keyboard():
     ])
 
 
-def wallet_charge_pay_keyboard(tx_key, pay_url):
+def wallet_charge_pay_keyboard(tx_key, pay_url=None):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🔗 باز کردن لینک پرداخت زرین‌پال', url=pay_url)],
         [InlineKeyboardButton('✅ پرداخت کردم — بررسی', callback_data=f'wchk_{tx_key}')],
         [InlineKeyboardButton('🔙 کیف پول', callback_data='wallet')],
     ])

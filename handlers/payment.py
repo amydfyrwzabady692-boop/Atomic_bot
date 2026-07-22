@@ -46,9 +46,23 @@ CALLBACK_BASE = _cb.rstrip('/')
 WAIT_RECEIPT = 0
 
 VPN_WARNING = (
-    "⚠️ *مهم:* قبل از ورود به درگاه، *VPN را خاموش* کن.\n"
-    "اگر VPN روشن باشد پرداخت معمولاً ناموفق می‌شود.\n"
+    "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و لینک را در مرورگر باز کن.\n"
 )
+
+
+def _zarinpal_link_text(order_id, total, pay_url):
+    return (
+        f"💳 *لینک پرداخت زرین‌پال — سفارش #{order_id}*\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"💰 مبلغ: *{total:,} تومان*\n\n"
+        f"📌 چون تلگرام فیلتر است، این ترتیب را برو:\n"
+        f"1️⃣ روی لینک زیر *بزن و کپی* کن (همین الان، با VPN روشن)\n"
+        f"2️⃣ بعد *VPN را خاموش* کن\n"
+        f"3️⃣ لینک را در *مرورگر* (کروم/سافاری) بچسبان و پرداخت کن\n"
+        f"4️⃣ دوباره تلگرام را باز کن و «پرداخت کردم» را بزن\n\n"
+        f"🔗 لینک پرداخت (بزن تا کپی شود):\n"
+        f"`{pay_url}`"
+    )
 
 
 def _card_pretty(num):
@@ -119,8 +133,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "❌ ساخت لینک زرین‌پال ممکن نشد.\n"
             f"علت: `{err or 'نامشخص'}`\n\n"
-            "1️⃣ *VPN را خاموش* کن و دوباره «درگاه زرین‌پال» را بزن\n"
-            "2️⃣ یا از *کارت‌به‌کارت* استفاده کن",
+            "فعلاً از *کارت‌به‌کارت* استفاده کن یا چند دقیقه بعد دوباره تلاش کن.",
             parse_mode='Markdown',
             reply_markup=pay_method_keyboard(order_id, can_wallet=False),
         )
@@ -131,19 +144,12 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pending['order_id'] = order_id
     ctx.user_data['pending_order'] = pending
 
-    text = (
-        f"💳 *لینک پرداخت زرین‌پال — سفارش #{order_id}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💰 مبلغ: *{total:,} تومان*\n\n"
-        f"⚠️ *حتماً VPN را خاموش کن* وگرنه صفحه درگاه باز نمی‌شود یا خطا می‌دهد.\n\n"
-        f"1️⃣ VPN خاموش\n"
-        f"2️⃣ دکمه «باز کردن لینک پرداخت زرین‌پال» را بزن\n"
-        f"3️⃣ بعد از پرداخت موفق، «پرداخت کردم» را بزن\n\n"
-        f"🔗 لینک مستقیم:\n`{pay_url}`"
-    )
+    text = _zarinpal_link_text(order_id, total, pay_url)
     await query.edit_message_text(
         text, parse_mode='Markdown', reply_markup=zarinpal_pay_keyboard(order_id, pay_url)
     )
+    # لینک خام جداگانه تا کپی‌کردن راحت‌تر باشد
+    await query.message.reply_text(pay_url)
 
 
 async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

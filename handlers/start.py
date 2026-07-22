@@ -40,7 +40,7 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📦 *سفارش‌های من* — وضعیت سفارش‌ها\n"
         "👤 *حساب من* — پروفایل و موجودی\n\n"
         "سایر بخش‌ها در حال بروزرسانی هستند.\n\n"
-        "⚠️ هنگام پرداخت زرین‌پال *VPN را خاموش* کن.\n"
+        "⚠️ پرداخت زرین‌پال: لینک را *کپی* کن → VPN خاموش → در مرورگر باز کن.\n"
         "🆔 دستور `/myid` آیدی عددی تلگرام تو را نشان می‌دهد."
     )
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())

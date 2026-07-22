@@ -26,7 +26,7 @@ CALLBACK_BASE = CALLBACK_BASE.rstrip('/')
 WAIT_CUSTOM = 0
 
 VPN_WARNING = (
-    "⚠️ قبل از پرداخت *VPN را خاموش* کن؛ وگرنه درگاه معمولاً خطا می‌دهد.\n"
+    "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و در مرورگر باز کن.\n"
 )
 
 
@@ -73,7 +73,7 @@ async def _begin_charge(ctx, user, amount, reply):
         callback_url,
     )
     if not authority or not pay_url:
-        await reply(f"❌ ساخت لینک زرین‌پال ممکن نشد.\nعلت: {err or 'نامشخص'}\nVPN را خاموش کن و دوباره تلاش کن.")
+        await reply(f"❌ ساخت لینک زرین‌پال ممکن نشد.\nعلت: {err or 'نامشخص'}")
         return
 
     create_wallet_charge_tx(db_id, amount, authority)
@@ -89,13 +89,18 @@ async def _begin_charge(ctx, user, amount, reply):
         f"💳 *شارژ کیف پول — {amount:,} تومان*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{VPN_WARNING}\n"
-        f"۱) *VPN را خاموش* کن\n"
-        f"۲) دکمه لینک زرین‌پال را بزن و پرداخت کن\n"
-        f"۳) بعد «پرداخت کردم» را بزن\n\n"
-        f"🔗 لینک مستقیم:\n`{pay_url}`",
+        f"۱) لینک زیر را *کپی* کن (با VPN روشن)\n"
+        f"۲) *VPN را خاموش* کن\n"
+        f"۳) لینک را در *مرورگر* باز کن و پرداخت کن\n"
+        f"۴) برگرد تلگرام و «پرداخت کردم» را بزن\n\n"
+        f"🔗 لینک پرداخت:\n`{pay_url}`",
         parse_mode='Markdown',
         reply_markup=wallet_charge_pay_keyboard(tx_key, pay_url),
     )
+    try:
+        await ctx.bot.send_message(chat_id=user.id, text=pay_url)
+    except Exception:
+        pass
 
 
 async def wallet_charge_preset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
