@@ -11,15 +11,25 @@ load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
 
 def _sandbox():
-    return os.getenv('ZARINPAL_SANDBOX', '0') == '1'
+    try:
+        from db import get_setting
+        value = get_setting('zarinpal_sandbox', os.getenv('ZARINPAL_SANDBOX', '0'))
+    except Exception:
+        value = os.getenv('ZARINPAL_SANDBOX', '0')
+    return str(value) == '1'
 
 
 def _merchant():
-    return (
+    env_value = (
         os.getenv('ZARINPAL_MERCHANT_ID')
         or os.getenv('ZARINPAL_MERCHANT')
         or ''
     ).strip()
+    try:
+        from db import get_setting
+        return get_setting('zarinpal_merchant_id', env_value).strip()
+    except Exception:
+        return env_value
 
 
 def _base():

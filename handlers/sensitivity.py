@@ -8,6 +8,7 @@ from keyboards import (
 )
 from db import (
     get_or_create_user, create_order, add_order_item, get_wallet_balance,
+    list_sense_packages, get_sense_package,
 )
 
 # قیمت‌ها به تومان
@@ -52,18 +53,31 @@ async def sens_pc_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "بسته را انتخاب کن:",
         "",
     ]
-    for p in SENSE_PC_PACKS.values():
-        lines.append(f"• *{p['title']}* — {p['price']:,} تومان")
+    packs = list_sense_packages('pc', active_only=True)
+    for p in packs:
+        lines.append(f"• *{p[1]}* — {p[3]:,} تومان")
+    if not packs:
+        lines.append("فعلاً پکی برای PC فعال نیست.")
     await query.edit_message_text(
         "\n".join(lines),
         parse_mode='Markdown',
-        reply_markup=sens_pc_packs_keyboard(SENSE_PC_PACKS),
+        reply_markup=sens_pc_packs_keyboard(packs),
     )
 
 
 async def sens_mobile_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    packs = list_sense_packages('mobile', active_only=True)
+    if packs:
+        lines = ["✦ *پک سنس — موبایل*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄", "بسته را انتخاب کن:", ""]
+        for p in packs:
+            lines.append(f"• *{p[1]}* — {p[3]:,} تومان")
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode='Markdown',
+            reply_markup=sens_pc_packs_keyboard(packs),
+        )
+        return
     await query.edit_message_text(
         "✦ *پک سنس — موبایل*\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
@@ -74,12 +88,17 @@ async def sens_mobile_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """sens_buy_basic / sens_buy_plus"""
+    """خرید پک سنس پویا با شناسه دیتابیس."""
     query = update.callback_query
     await query.answer()
     key = query.data.replace('sens_buy_', '')
-    pack = SENSE_PC_PACKS.get(key)
-    if not pack:
+    row = get_sense_package(key) if key.isdigit() else None
+    if row:
+        pack = {'key': row[0], 'title': row[1], 'price': row[3], 'desc': row[4]}
+    else:
+        # سازگاری با دکمه‌های قدیمی که ممکن است هنوز در چت کاربر باشند
+        pack = SENSE_PC_PACKS.get(key)
+    if not pack or (row and not row[5]):
         await query.edit_message_text("بسته پیدا نشد.", reply_markup=main_menu())
         return
 

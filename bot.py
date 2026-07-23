@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
-from handlers.store import store_menu
+from handlers.store import store_menu, show_category, show_product
 from handlers.gems import gems_menu, show_gem, gem_conversation_handler
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
@@ -34,6 +34,9 @@ from handlers.admin import (
     admin_block_toggle, admin_failed, admin_open_orders, admin_retry,
     admin_tickets, admin_ticket_close, admin_user_orders, admin_conversation_handler,
     admin_wallet_empty,
+)
+from handlers.admin_extended import (
+    admin_ext_router, admin_extended_conversation_handler,
 )
 from admin_notify import is_admin
 from db import is_user_blocked, ensure_admin_schema
@@ -139,6 +142,7 @@ def main():
     app.add_handler(support_conversation_handler())
     app.add_handler(kyc_conversation_handler())
     app.add_handler(admin_conversation_handler())
+    app.add_handler(admin_extended_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
     app.add_handler(CallbackQueryHandler(gems_menu, pattern='^gems$'))
@@ -162,10 +166,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_wallet_card_no, pattern=r'^wadmin_no_\d+$'))
 
     app.add_handler(CallbackQueryHandler(store_menu, pattern='^store$'))
+    app.add_handler(CallbackQueryHandler(show_category, pattern=r'^storecat_\d+$'))
+    app.add_handler(CallbackQueryHandler(show_product, pattern=r'^storeprod_\d+$'))
     app.add_handler(CallbackQueryHandler(sens_menu, pattern='^sens$'))
     app.add_handler(CallbackQueryHandler(sens_pc_menu, pattern='^sens_pc$'))
     app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern='^sens_mobile$'))
-    app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_(basic|plus)$'))
+    app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_(?:\d+|basic|plus)$'))
     app.add_handler(CallbackQueryHandler(my_orders, pattern='^my_orders$'))
     app.add_handler(CallbackQueryHandler(my_account, pattern='^my_account$'))
 
@@ -181,6 +187,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_retry, pattern=r'^adm_retry_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_tickets, pattern='^adm_tickets$'))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))
 
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))

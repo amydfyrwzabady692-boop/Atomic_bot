@@ -18,9 +18,10 @@ from db import (
     wallet_spend, get_or_create_user, set_order_payment_method,
     order_requires_kyc, is_kyc_approved, get_order_items,
     get_order_payable, apply_wallet_to_order, get_wallet_balance, refund_order_wallet,
+    get_setting, get_bool_setting, save_payment_receipt, mark_receipt_reviewed,
 )
 from payments import request_payment, verify_payment
-from admin_notify import notify_admin
+from admin_notify import notify_admin, is_admin
 import time
 
 ZP_TTL_SEC = 15 * 60  # مهلت درگاه زرین‌پال
@@ -211,6 +212,12 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order or order[3] not in ('pending',):
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
         return
+    if not get_bool_setting('zarinpal_enabled', True):
+        await query.edit_message_text(
+            "❌ درگاه زرین‌پال موقتاً غیرفعال است.",
+            reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
+        )
+        return
 
     # احراز برای بسته‌های ۱۱۸۸ و ۲۴۲۰ — فقط درگاه
     if order_requires_kyc(order_id) and not is_kyc_approved(update.effective_user.id):
@@ -233,7 +240,8 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = order[2]
     wallet_paid = int(order[7] or 0)
     pending['total'] = payable
-    if not CALLBACK_BASE:
+    callback_base = get_setting('payment_callback_base', CALLBACK_BASE).rstrip('/')
+    if not callback_base:
         await query.edit_message_text(
             "❌ آدرس callback درگاه تنظیم نشده.\n"
             "ادمین باید `PAYMENT_CALLBACK_BASE` را در سرور ست کند."
@@ -247,7 +255,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    callback_url = f"{CALLBACK_BASE}/payment/callback?order={order_id}"
+    callback_url = f"{callback_base}/payment/callback?order={order_id}"
     authority, pay_url, err = request_payment(
         payable,
         f"Atomic Bot — سفارش #{order_id}",
@@ -388,6 +396,12 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order or order[3] != 'pending':
         await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
         return
+    if not get_bool_setting('card_transfer_enabled', True):
+        await query.edit_message_text(
+            "❌ کارت‌به‌کارت موقتاً غیرفعال است.",
+            reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
+        )
+        return
 
     payable = get_order_payable(order_id)
     if payable <= 0:
@@ -403,7 +417,13 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     set_order_payment_method(order_id, 'card_transfer')
     total = order[2]
     wallet_paid = int(order[7] or 0)
-    bank = f"بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
+    card_number = get_setting('card_number', CARD_NUMBER)
+    card_holder = get_setting('card_holder', CARD_HOLDER)
+    card_bank = get_setting('card_bank', CARD_BANK)
+    if not card_number:
+        await query.edit_message_text("❌ شماره کارت هنوز توسط مدیر تنظیم نشده است.")
+        return
+    bank = f"بانک: *{card_bank}*\n" if card_bank else ""
     note = f"کسر کیف پول: *{wallet_paid:,}* ت\n" if wallet_paid else ""
     text = (
         f"✦ *کارت‌به‌کارت*\n"
@@ -413,8 +433,8 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"مبلغ واریزی: *{payable:,}* تومان\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"شماره کارت\n"
-        f"`{_card_pretty(CARD_NUMBER)}`\n"
-        f"به نام *{CARD_HOLDER or '—'}*\n"
+        f"`{_card_pretty(card_number)}`\n"
+        f"به نام *{card_holder or '—'}*\n"
         f"{bank}"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"۱ · مبلغ *{payable:,}* را دقیق واریز کن\n"
@@ -529,29 +549,45 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
         return ConversationHandler.END
     order_id = pending['order_id']
     user = update.effective_user
+    file_id = ''
+    receipt_text = ''
+    if receipt_msg:
+        receipt_text = receipt_msg.text or receipt_msg.caption or ''
+        if receipt_msg.photo:
+            file_id = receipt_msg.photo[-1].file_id
+        elif receipt_msg.document:
+            file_id = receipt_msg.document.file_id
+    try:
+        save_payment_receipt(
+            order_id=order_id, telegram_id=user.id, file_id=file_id, text=receipt_text
+        )
+    except Exception as e:
+        print(f'[CARD] receipt persistence failed: {e}')
 
     admin_ok = False
-    if ADMIN_CHAT_ID:
+    from admin_notify import admin_ids
+    recipients = admin_ids()
+    if recipients:
         try:
             uname = f"@{user.username}" if user.username else "—"
-            await ctx.bot.send_message(
-                chat_id=int(ADMIN_CHAT_ID),
-                text=(
-                    f"🆕 رسید کارت‌به‌کارت — سفارش #{order_id}\n"
-                    f"مبلغ: {pending['total']:,} ت\n"
-                    f"کاربر: {user.full_name} ({uname})\n"
-                    f"تلگرام: `{user.id}`\n\n"
-                    f"پس از بررسی، تایید یا رد کن:"
-                ),
-                parse_mode='Markdown',
-                reply_markup=admin_card_keyboard(order_id),
-            )
-            if receipt_msg:
-                await ctx.bot.copy_message(
-                    chat_id=int(ADMIN_CHAT_ID),
-                    from_chat_id=receipt_msg.chat_id,
-                    message_id=receipt_msg.message_id,
+            for aid in recipients:
+                await ctx.bot.send_message(
+                    chat_id=aid,
+                    text=(
+                        f"🆕 رسید کارت‌به‌کارت — سفارش #{order_id}\n"
+                        f"مبلغ: {pending['total']:,} ت\n"
+                        f"کاربر: {user.full_name} ({uname})\n"
+                        f"تلگرام: `{user.id}`\n\n"
+                        f"پس از بررسی، تایید یا رد کن:"
+                    ),
+                    parse_mode='Markdown',
+                    reply_markup=admin_card_keyboard(order_id),
                 )
+                if receipt_msg:
+                    await ctx.bot.copy_message(
+                        chat_id=aid, from_chat_id=receipt_msg.chat_id,
+                        message_id=receipt_msg.message_id,
+                    )
             admin_ok = True
         except Exception as e:
             print(f'[CARD] admin notify failed: {e}')
@@ -615,10 +651,11 @@ async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
+    if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
+    mark_receipt_reviewed(order_id=order_id, status='approved')
     order = get_order(order_id)
     if not order:
         await query.edit_message_text("❌ سفارش پیدا نشد.")
@@ -664,10 +701,11 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
+    if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
+    mark_receipt_reviewed(order_id=order_id, status='rejected')
     order = get_order(order_id)
     refunded = 0
     if order and order[3] == 'pending':

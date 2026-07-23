@@ -18,6 +18,8 @@ from db import (
     get_or_create_user, get_wallet_balance, create_wallet_charge_tx,
     complete_wallet_charge_by_authority, create_wallet_card_charge,
     get_conn, get_wallet_tx, mark_wallet_tx_rejected,
+    get_setting, get_bool_setting,
+    save_payment_receipt, mark_receipt_reviewed,
 )
 from payments import request_payment, verify_payment
 from admin_notify import is_admin, notify_admin
@@ -143,11 +145,15 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         ctx.user_data['db_id'] = db_id
 
-    if not CALLBACK_BASE:
+    if not get_bool_setting('zarinpal_enabled', True):
+        await query.edit_message_text("❌ درگاه زرین‌پال موقتاً غیرفعال است.")
+        return
+    callback_base = get_setting('payment_callback_base', CALLBACK_BASE).rstrip('/')
+    if not callback_base:
         await query.edit_message_text("❌ آدرس callback درگاه تنظیم نشده (`PAYMENT_CALLBACK_BASE`).")
         return
 
-    callback_url = f"{CALLBACK_BASE}/payment/wallet-callback"
+    callback_url = f"{callback_base}/payment/wallet-callback"
     authority, pay_url, err = request_payment(
         amount,
         f"شارژ کیف پول Atomic Bot — {amount:,} تومان",
@@ -206,7 +212,13 @@ async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         ctx.user_data['db_id'] = db_id
 
-    if not CARD_NUMBER:
+    if not get_bool_setting('card_transfer_enabled', True):
+        await query.edit_message_text("❌ کارت‌به‌کارت موقتاً غیرفعال است.")
+        return
+    card_number = get_setting('card_number', CARD_NUMBER)
+    card_holder = get_setting('card_holder', CARD_HOLDER)
+    card_bank = get_setting('card_bank', CARD_BANK)
+    if not card_number:
         await query.edit_message_text("❌ شماره کارت تنظیم نشده. از درگاه استفاده کن.")
         return
 
@@ -226,14 +238,14 @@ async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'tg_id': user.id,
     }
 
-    bank = f"بانک: *{CARD_BANK}*\n" if CARD_BANK else ""
+    bank = f"بانک: *{card_bank}*\n" if card_bank else ""
     await query.edit_message_text(
         f"✦ *شارژ کارت‌به‌کارت*\n"
         f"مبلغ: *{amount:,}* تومان\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"شماره کارت\n"
-        f"`{_card_pretty(CARD_NUMBER)}`\n"
-        f"به نام *{CARD_HOLDER or '—'}*\n"
+        f"`{_card_pretty(card_number)}`\n"
+        f"به نام *{card_holder or '—'}*\n"
         f"{bank}"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"۱ · مبلغ را *دقیق* واریز کن\n"
@@ -370,30 +382,37 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"کاربر: {user.full_name} ({uname})\n"
         f"تلگرام: `{user.id}`"
     )
+    file_id = (update.message.photo[-1].file_id if update.message.photo else
+               update.message.document.file_id if update.message.document else '')
     try:
-        from admin_notify import admin_id
-        aid = admin_id()
-        if not aid:
+        save_payment_receipt(
+            wallet_tx_id=tx_id, telegram_id=user.id, file_id=file_id,
+            text=update.message.text or update.message.caption or '',
+        )
+    except Exception as e:
+        print(f'[WALLET] receipt persistence failed: {e}')
+    try:
+        from admin_notify import admin_ids
+        recipients = admin_ids()
+        if not recipients:
             await update.message.reply_text("❌ ادمین تنظیم نشده.")
             return ConversationHandler.END
         if update.message.photo:
-            await ctx.bot.send_photo(
-                chat_id=aid,
-                photo=update.message.photo[-1].file_id,
-                caption=caption,
-                parse_mode='Markdown',
-                reply_markup=admin_wallet_card_keyboard(tx_id),
-            )
+            for aid in recipients:
+                await ctx.bot.send_photo(
+                    chat_id=aid, photo=update.message.photo[-1].file_id,
+                    caption=caption, parse_mode='Markdown',
+                    reply_markup=admin_wallet_card_keyboard(tx_id),
+                )
         else:
             text = caption
             if update.message.document:
-                await ctx.bot.send_document(
-                    chat_id=aid,
-                    document=update.message.document.file_id,
-                    caption=caption,
-                    parse_mode='Markdown',
-                    reply_markup=admin_wallet_card_keyboard(tx_id),
-                )
+                for aid in recipients:
+                    await ctx.bot.send_document(
+                        chat_id=aid, document=update.message.document.file_id,
+                        caption=caption, parse_mode='Markdown',
+                        reply_markup=admin_wallet_card_keyboard(tx_id),
+                    )
             else:
                 if update.message.text:
                     text += f"\n\nپیام کاربر:\n{update.message.text}"
@@ -421,6 +440,7 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_ok_', ''))
+    mark_receipt_reviewed(wallet_tx_id=tx_id, status='approved')
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
@@ -466,6 +486,7 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_no_', ''))
+    mark_receipt_reviewed(wallet_tx_id=tx_id, status='rejected')
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")

@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
-from db import get_or_create_user, is_user_blocked
+from db import get_or_create_user, is_user_blocked, get_setting
 from admin_notify import is_admin
 
 
@@ -25,7 +25,7 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = user.first_name or 'کاربر'
     welcome = "🆕 خوش اومدی!" if is_new else "👋 خوش برگشتی!"
 
-    text = (
+    default_text = (
         f"{welcome} *{name}* عزیز 🎮\n"
         "━━━━━━━━━━━━━━━\n"
         "🏪 *Atomic Bot*\n"
@@ -36,9 +36,15 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎧 *پشتیبانی* — چت مستقیم با ادمین\n\n"
         "از منوی پایین شروع کن 👇"
     )
+    custom = get_setting('welcome_text', '').strip()
+    text = custom.replace('{name}', name).replace('{welcome}', welcome) if custom else default_text
     if is_admin(user.id):
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+    try:
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+    except Exception:
+        # متن سفارشی مدیر ممکن است Markdown نامعتبر داشته باشد؛ ربات نباید از کار بیفتد.
+        await update.message.reply_text(text, reply_markup=main_menu())
 
 
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

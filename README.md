@@ -11,3 +11,5 @@ DNS: create A record name=bot pointing to your VPS IP.
 Then:
 docker compose up -d --build
 curl https://bot.atomicshop.ir/health
+
+Admin panel and deployment guide: [ADMIN_PANEL.md](ADMIN_PANEL.md)

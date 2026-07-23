@@ -74,20 +74,17 @@ _GEM_COLS = (
 
 
 def get_gems_by_id():
-    """بسته‌های جم با آیدی — مثل سایت (once + ME amounts)."""
-    amounts = tuple(g2bulk.G2BULK_ME_AMOUNTS)
-    placeholders = ','.join(['%s'] * len(amounts))
+    """همه بسته‌های فعال جم با آیدی که مدیر ساخته است."""
     sql = (
         f'SELECT {_GEM_COLS} FROM "GemPackages" '
         'WHERE "IsActive"=true '
         'AND "PurchaseType"=\'by_id\' '
         'AND "PlanType"=\'once\' '
-        f'AND "Amount" IN ({placeholders}) '
         'ORDER BY "Price"'
     )
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, amounts)
+            cur.execute(sql)
             return cur.fetchall()
     except Exception as e:
         import logging
@@ -523,6 +520,73 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "WalletPaid" INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "ReferredById" INTEGER REFERENCES "Users"("Id") ON DELETE SET NULL',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardNumber" VARCHAR(32) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardVerified" BOOLEAN NOT NULL DEFAULT false',
+        '''CREATE TABLE IF NOT EXISTS "BotAdmins" (
+            "TelegramId" VARCHAR(64) PRIMARY KEY,
+            "Title" VARCHAR(150) NOT NULL DEFAULT '',
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "BotSettings" (
+            "Key" VARCHAR(100) PRIMARY KEY,
+            "Value" TEXT NOT NULL DEFAULT '',
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "SensePackages" (
+            "Id" SERIAL PRIMARY KEY,
+            "Title" VARCHAR(255) NOT NULL,
+            "Platform" VARCHAR(20) NOT NULL DEFAULT 'pc',
+            "Price" INTEGER NOT NULL,
+            "Description" TEXT NOT NULL DEFAULT '',
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "SupportDepartments" (
+            "Id" SERIAL PRIMARY KEY,
+            "Title" VARCHAR(150) NOT NULL,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "ProductCategories" (
+            "Id" SERIAL PRIMARY KEY,
+            "Title" VARCHAR(150) NOT NULL,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "StoreProducts" (
+            "Id" SERIAL PRIMARY KEY,
+            "CategoryId" INTEGER REFERENCES "ProductCategories"("Id") ON DELETE SET NULL,
+            "Title" VARCHAR(255) NOT NULL,
+            "Price" INTEGER NOT NULL DEFAULT 0,
+            "Stock" INTEGER NOT NULL DEFAULT 0,
+            "Description" TEXT NOT NULL DEFAULT '',
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "PromoCodes" (
+            "Id" SERIAL PRIMARY KEY,
+            "Code" VARCHAR(80) UNIQUE NOT NULL,
+            "CodeType" VARCHAR(20) NOT NULL,
+            "Value" INTEGER NOT NULL DEFAULT 0,
+            "MaxUses" INTEGER NOT NULL DEFAULT 1,
+            "UsedCount" INTEGER NOT NULL DEFAULT 0,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "PaymentReceipts" (
+            "Id" SERIAL PRIMARY KEY,
+            "OrderId" INTEGER REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "WalletTransactionId" INTEGER REFERENCES "WalletTransactions"("Id") ON DELETE CASCADE,
+            "TelegramId" VARCHAR(64),
+            "ReceiptType" VARCHAR(20) NOT NULL DEFAULT 'order',
+            "FileId" TEXT NOT NULL DEFAULT '',
+            "Text" TEXT NOT NULL DEFAULT '',
+            "Status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "ReviewedAt" TIMESTAMPTZ
+        )''',
     ]
     with get_conn() as conn, conn.cursor() as cur:
         for sql in stmts:
@@ -533,8 +597,344 @@ def ensure_admin_schema():
         conn.commit()
 
 
+# ─── تنظیمات و پنل مدیریت توسعه‌یافته ─────────────────────────────────────────
+def get_setting(key, default=''):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT "Value" FROM "BotSettings" WHERE "Key"=%s', (str(key),))
+            row = cur.fetchone()
+            return row[0] if row else default
+    except Exception:
+        return default
+
+
+def set_setting(key, value):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "BotSettings" ("Key", "Value", "UpdatedAt") VALUES (%s,%s,now()) '
+            'ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value", "UpdatedAt"=now()',
+            (str(key), str(value or '')),
+        )
+        conn.commit()
+
+
+def get_bool_setting(key, default=True):
+    value = str(get_setting(key, '1' if default else '0')).strip().lower()
+    return value in ('1', 'true', 'yes', 'on', 'بله', 'فعال')
+
+
+def list_bot_admins():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "TelegramId", "Title", "IsActive", "CreatedAt" '
+            'FROM "BotAdmins" ORDER BY "CreatedAt"'
+        )
+        return cur.fetchall()
+
+
+def is_bot_admin(telegram_id):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT 1 FROM "BotAdmins" WHERE "TelegramId"=%s AND "IsActive"=true',
+                (str(telegram_id),),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def add_bot_admin(telegram_id, title=''):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "BotAdmins" ("TelegramId","Title","IsActive") VALUES (%s,%s,true) '
+            'ON CONFLICT ("TelegramId") DO UPDATE SET "Title"=EXCLUDED."Title","IsActive"=true',
+            (str(telegram_id), str(title or '')),
+        )
+        conn.commit()
+
+
+def remove_bot_admin(telegram_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('DELETE FROM "BotAdmins" WHERE "TelegramId"=%s', (str(telegram_id),))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_users_filtered(kind='all', limit=50):
+    where = ''
+    if kind == 'balance':
+        where = 'WHERE COALESCE(w."Balance",0)>0'
+    elif kind == 'referral':
+        where = 'WHERE EXISTS (SELECT 1 FROM "Users" r WHERE r."ReferredById"=u."Id")'
+    elif kind == 'card':
+        where = 'WHERE COALESCE(u."CardVerified",false)=true'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT u."TelegramId", u."FirstName", COALESCE(u."TelegramUsername",\'\'), '
+            'COALESCE(w."Balance",0), '
+            '(SELECT COUNT(*) FROM "Users" r WHERE r."ReferredById"=u."Id"), '
+            'COALESCE(u."CardNumber",\'\') FROM "Users" u '
+            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" ' + where +
+            ' ORDER BY u."Id" DESC LIMIT %s',
+            (int(limit),),
+        )
+        return cur.fetchall()
+
+
+def list_all_telegram_ids():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "TelegramId" FROM "Users" WHERE "TelegramId" IS NOT NULL '
+            'AND COALESCE("IsBlocked",false)=false'
+        )
+        return [r[0] for r in cur.fetchall() if r[0]]
+
+
+def mass_charge_wallets(amount, description='شارژ همگانی'):
+    amount = int(amount)
+    if amount <= 0:
+        raise ValueError('مبلغ باید بیشتر از صفر باشد.')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
+            'SELECT u."Id",0,now() FROM "Users" u '
+            'ON CONFLICT ("UserId") DO NOTHING'
+        )
+        cur.execute(
+            'UPDATE "Wallets" SET "Balance"="Balance"+%s,"UpdatedAt"=now() RETURNING "Id"',
+            (amount,),
+        )
+        wallet_ids = [r[0] for r in cur.fetchall()]
+        cur.executemany(
+            'INSERT INTO "WalletTransactions" '
+            '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+            'VALUES (%s,%s,\'charge\',%s,true,now())',
+            [(wid, amount, f'[admin] {description}') for wid in wallet_ids],
+        )
+        conn.commit()
+        return len(wallet_ids)
+
+
+def get_order_admin(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."DiscountAmount",'
+            'o."PaymentMethod",o."Status",o."CreatedAt",u."FirstName",'
+            'COALESCE(u."TelegramUsername",\'\') FROM "Orders" o '
+            'LEFT JOIN "Users" u ON u."Id"=o."UserId" WHERE o."Id"=%s',
+            (int(order_id),),
+        )
+        return cur.fetchone()
+
+
+def list_pending_receipts(limit=30):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."CreatedAt" '
+            'FROM "Orders" o WHERE o."PaymentMethod"=\'card_transfer\' '
+            'AND o."Status"=\'pending\' ORDER BY o."Id" DESC LIMIT %s',
+            (int(limit),),
+        )
+        return cur.fetchall()
+
+
+def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_id='', text=''):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "PaymentReceipts" '
+            '("OrderId","WalletTransactionId","TelegramId","ReceiptType","FileId","Text") '
+            'VALUES (%s,%s,%s,%s,%s,%s) RETURNING "Id"',
+            (order_id, wallet_tx_id, str(telegram_id or ''),
+             'wallet' if wallet_tx_id else 'order', file_id or '', text or ''),
+        )
+        rid = cur.fetchone()[0]
+        conn.commit()
+        return rid
+
+
+def mark_receipt_reviewed(order_id=None, wallet_tx_id=None, status='approved'):
+    field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
+    value = order_id if order_id is not None else wallet_tx_id
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "PaymentReceipts" SET "Status"=%s,"ReviewedAt"=now() '
+            f'WHERE {field}=%s AND "Status"=\'pending\'',
+            (status, value),
+        )
+        conn.commit()
+
+
+def admin_stats_full():
+    stats = get_admin_stats()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT COUNT(DISTINCT "UserId") FROM "Orders" '
+            'WHERE "Status" IN (\'paid\',\'processing\',\'delivered\',\'completed\')'
+        )
+        stats['buyers'] = cur.fetchone()[0]
+        cur.execute(
+            'SELECT COUNT(*),COALESCE(SUM("TotalAmount"-"DiscountAmount"),0) '
+            'FROM "Orders" WHERE "Status" IN (\'paid\',\'processing\',\'delivered\',\'completed\')'
+        )
+        stats['sales_count'], sales_sum = cur.fetchone()
+        stats['sales_sum'] = int(sales_sum or 0)
+    return stats
+
+
+def list_sense_packages(platform=None, active_only=False):
+    where, args = [], []
+    if platform:
+        where.append('"Platform"=%s')
+        args.append(platform)
+    if active_only:
+        where.append('"IsActive"=true')
+    clause = (' WHERE ' + ' AND '.join(where)) if where else ''
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Title","Platform","Price","Description","IsActive" '
+            'FROM "SensePackages"' + clause + ' ORDER BY "Platform","Price"',
+            args,
+        )
+        return cur.fetchall()
+
+
+def get_sense_package(package_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Title","Platform","Price","Description","IsActive" '
+            'FROM "SensePackages" WHERE "Id"=%s', (int(package_id),)
+        )
+        return cur.fetchone()
+
+
+def add_sense_package(title, platform, price, description=''):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "SensePackages" ("Title","Platform","Price","Description") '
+            'VALUES (%s,%s,%s,%s) RETURNING "Id"',
+            (title, platform, int(price), description or ''),
+        )
+        value = cur.fetchone()[0]
+        conn.commit()
+        return value
+
+
+def update_sense_package(package_id, field, value):
+    allowed = {'Title', 'Platform', 'Price', 'Description', 'IsActive'}
+    if field not in allowed:
+        raise ValueError('فیلد نامعتبر')
+    if field == 'Price':
+        value = int(value)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f'UPDATE "SensePackages" SET "{field}"=%s WHERE "Id"=%s',
+                    (value, int(package_id)))
+        conn.commit()
+
+
+def add_gem_package(title, amount, price, stock=9999):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "GemPackages" '
+            '("Title","Amount","BonusAmount","Price","PlanType","PurchaseType",'
+            '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive") '
+            'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,%s,true,true) RETURNING "Id"',
+            (title, int(amount), int(price), str(amount), int(stock)),
+        )
+        value = cur.fetchone()[0]
+        conn.commit()
+        return value
+
+
+def update_gem_package(package_id, field, value):
+    allowed = {'Title', 'Amount', 'Price', 'Stock', 'IsAvailable', 'IsActive',
+               'G2BulkCatalogueName', 'AutoDeliver'}
+    if field not in allowed:
+        raise ValueError('فیلد نامعتبر')
+    if field in {'Amount', 'Price', 'Stock'}:
+        value = int(value)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f'UPDATE "GemPackages" SET "{field}"=%s WHERE "Id"=%s',
+                    (value, int(package_id)))
+        conn.commit()
+
+
+def admin_list_gems():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT {_GEM_COLS}, "IsActive" FROM "GemPackages" '
+            'WHERE "PurchaseType"=\'by_id\' ORDER BY "Id"'
+        )
+        return cur.fetchall()
+
+
+def simple_list(table, columns):
+    allowed = {
+        'SupportDepartments', 'ProductCategories', 'StoreProducts', 'PromoCodes'
+    }
+    if table not in allowed:
+        raise ValueError('جدول نامعتبر')
+    cols = ','.join(f'"{c}"' for c in columns)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f'SELECT {cols} FROM "{table}" ORDER BY "Id" DESC LIMIT 100')
+        return cur.fetchall()
+
+
+def add_department(title):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('INSERT INTO "SupportDepartments" ("Title") VALUES (%s) RETURNING "Id"',
+                    (title,))
+        value = cur.fetchone()[0]
+        conn.commit()
+        return value
+
+
+def add_category(title):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('INSERT INTO "ProductCategories" ("Title") VALUES (%s) RETURNING "Id"',
+                    (title,))
+        value = cur.fetchone()[0]
+        conn.commit()
+        return value
+
+
+def add_store_product(title, price, stock=0, category_id=None, description=''):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "StoreProducts" '
+            '("Title","Price","Stock","CategoryId","Description") VALUES (%s,%s,%s,%s,%s) '
+            'RETURNING "Id"',
+            (title, int(price), int(stock), category_id, description or ''),
+        )
+        value = cur.fetchone()[0]
+        conn.commit()
+        return value
+
+
+def add_promo_code(code, code_type, value, max_uses=1):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "PromoCodes" ("Code","CodeType","Value","MaxUses") '
+            'VALUES (%s,%s,%s,%s) RETURNING "Id"',
+            (code.strip().upper(), code_type, int(value), int(max_uses)),
+        )
+        result = cur.fetchone()[0]
+        conn.commit()
+        return result
+
+
+def delete_simple_record(table, record_id):
+    allowed = {'SupportDepartments', 'ProductCategories', 'StoreProducts', 'PromoCodes'}
+    if table not in allowed:
+        raise ValueError('جدول نامعتبر')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(f'DELETE FROM "{table}" WHERE "Id"=%s', (int(record_id),))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def sync_gem_prices():
-    """قیمت بسته‌های ME را با لیست فعلی هماهنگ کن."""
+    """فقط بسته‌های اولیه را ایجاد کن؛ قیمت تنظیم‌شده ادمین هرگز بازنویسی نمی‌شود."""
     prices = {
         110: 200_000,
         231: 400_000,
@@ -543,11 +943,25 @@ def sync_gem_prices():
         2420: 4_000_000,
     }
     with get_conn() as conn, conn.cursor() as cur:
-        for amount, price in prices.items():
-            cur.execute(
-                'UPDATE "GemPackages" SET "Price"=%s '
-                'WHERE "Amount"=%s AND "PurchaseType"=\'by_id\' AND "PlanType"=\'once\'',
-                (price, amount),
+        cur.execute('SELECT COUNT(*) FROM "GemPackages"')
+        if cur.fetchone()[0] == 0:
+            for amount, price in prices.items():
+                cur.execute(
+                    'INSERT INTO "GemPackages" '
+                    '("Title","Amount","BonusAmount","Price","PlanType","PurchaseType",'
+                    '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive") '
+                    'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,9999,true,true)',
+                    (f'بسته {amount} جمی', amount, price, str(amount)),
+                )
+        cur.execute('SELECT COUNT(*) FROM "SensePackages"')
+        if cur.fetchone()[0] == 0:
+            cur.executemany(
+                'INSERT INTO "SensePackages" '
+                '("Title","Platform","Price","Description","IsActive") VALUES (%s,%s,%s,%s,true)',
+                [
+                    ('پک سنس PC', 'pc', 1_000_000, 'پک سنس مخصوص سیستم PC'),
+                    ('پک سنس PC + خدمات', 'pc', 2_200_000, 'پک سنس PC همراه با خدمات'),
+                ],
             )
         conn.commit()
 

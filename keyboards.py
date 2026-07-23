@@ -34,10 +34,15 @@ def sens_platform_keyboard():
 
 def sens_pc_packs_keyboard(packs):
     rows = []
-    for key, p in packs.items():
+    values = packs.values() if isinstance(packs, dict) else packs
+    for p in values:
+        if isinstance(p, dict):
+            key, title, price = p['key'], p['title'], p['price']
+        else:
+            key, title, price = p[0], p[1], p[3]
         rows.append([
             InlineKeyboardButton(
-                f"{p['title']} — {p['price']:,} ت",
+                f"{title} — {price:,} ت",
                 callback_data=f"sens_buy_{key}",
             )
         ])
@@ -128,10 +133,14 @@ def admin_wallet_card_keyboard(tx_id):
 
 
 def zarinpal_pay_keyboard(order_id, pay_url=None):
-    return InlineKeyboardMarkup([
+    rows = []
+    if pay_url:
+        rows.append([InlineKeyboardButton('🔗 باز کردن درگاه پرداخت', url=pay_url)])
+    rows.extend([
         [InlineKeyboardButton('✅ پرداخت کردم', callback_data=f'zp_check_{order_id}')],
         [InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')],
     ])
+    return InlineKeyboardMarkup(rows)
 
 
 def card_payment_keyboard(order_id):
@@ -196,6 +205,18 @@ def admin_home_keyboard():
             InlineKeyboardButton('سفارش‌های باز', callback_data='adm_open'),
         ],
         [InlineKeyboardButton('تیکت‌ها', callback_data='adm_tickets')],
+        [
+            InlineKeyboardButton('🛍 مدیریت فروشگاه', callback_data='admx_shop'),
+            InlineKeyboardButton('💳 امور مالی', callback_data='admx_finance'),
+        ],
+        [
+            InlineKeyboardButton('📨 پیام و شارژ', callback_data='admx_actions'),
+            InlineKeyboardButton('📊 آمار کامل', callback_data='admx_stats'),
+        ],
+        [
+            InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_support'),
+            InlineKeyboardButton('⚙️ تنظیمات', callback_data='admx_settings'),
+        ],
         [InlineKeyboardButton('بروزرسانی', callback_data='adm_home')],
     ])
 

@@ -9,7 +9,7 @@ from keyboards import main_menu, support_cancel_keyboard, admin_ticket_keyboard
 from admin_notify import notify_admin, is_admin
 from db import (
     get_or_create_user, create_ticket, add_ticket_message,
-    get_active_ticket_for_user, is_user_blocked,
+    get_active_ticket_for_user, is_user_blocked, get_setting,
 )
 
 WAIT_MSG = 0
@@ -35,22 +35,34 @@ async def support_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(text, reply_markup=main_menu())
         return ConversationHandler.END
 
-    text = (
+    default_text = (
         "🎧 *پشتیبانی Atomic*\n"
         "━━━━━━━━━━━━━━━\n"
         "پیامت را همین‌جا بفرست (متن).\n"
         "ادمین در تلگرام می‌بیند و جواب می‌دهد.\n\n"
         "برای انصراف /cancel"
     )
+    text = get_setting('support_text', '').strip() or default_text
+    support_id = get_setting('support_id', '').strip()
+    if support_id:
+        text += f"\n\nآیدی پشتیبانی: {support_id}"
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
-        )
+        try:
+            await update.callback_query.edit_message_text(
+                text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
+            )
+        except Exception:
+            await update.callback_query.edit_message_text(
+                text, reply_markup=support_cancel_keyboard()
+            )
     else:
-        await update.message.reply_text(
-            text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
-        )
+        try:
+            await update.message.reply_text(
+                text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
+            )
+        except Exception:
+            await update.message.reply_text(text, reply_markup=support_cancel_keyboard())
     return WAIT_MSG
 
 
