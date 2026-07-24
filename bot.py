@@ -53,6 +53,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
 )
+# httpx آدرس کامل Telegram Bot API را لاگ می‌کند و آن URL شامل توکن است.
+logging.getLogger('httpx').setLevel(logging.WARNING)
 
 MENU_TEXTS = {
     '💎 جم فری‌فایر': gems_menu,
@@ -89,8 +91,21 @@ async def post_init(app):
     except Exception as e:
         logging.getLogger(__name__).warning('ensure_admin_schema/prices: %s', e)
     await start_web_server(app)
-    app.create_task(_g2_reconcile_loop(app), name='g2bulk-reconcile')
+    app.bot_data['_g2_reconcile_task'] = asyncio.create_task(
+        _g2_reconcile_loop(app), name='g2bulk-reconcile'
+    )
     _log_startup_checks()
+
+
+async def post_shutdown(app):
+    task = app.bot_data.pop('_g2_reconcile_task', None)
+    if not task:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _g2_reconcile_loop(app):
@@ -163,7 +178,13 @@ def main():
     if not token or token in ('YOUR_TOKEN_HERE', 'YOUR_TELEGRAM_BOT_TOKEN'):
         raise RuntimeError("توکن ربات را در .env تنظیم کن: BOT_TOKEN=...")
 
-    app = ApplicationBuilder().token(token).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(token)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))
