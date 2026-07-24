@@ -1316,6 +1316,23 @@ def ensure_admin_schema():
             "Value" TEXT NOT NULL DEFAULT '',
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''CREATE TABLE IF NOT EXISTS "ForcedJoinChannels" (
+            "Id" SERIAL PRIMARY KEY,
+            "ChatId" VARCHAR(100) UNIQUE NOT NULL,
+            "Title" VARCHAR(150) NOT NULL DEFAULT '',
+            "InviteUrl" TEXT NOT NULL,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''INSERT INTO "ForcedJoinChannels" ("ChatId","Title","InviteUrl")
+           SELECT '@Omid_AtomicFF','کانال امید اتمیک',
+                  'https://t.me/Omid_AtomicFF'
+           WHERE NOT EXISTS (
+               SELECT 1 FROM "BotSettings" WHERE "Key"='forced_join_initialized'
+           ) AND NOT EXISTS (SELECT 1 FROM "ForcedJoinChannels")''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('forced_join_initialized','1',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''CREATE TABLE IF NOT EXISTS "SensePackages" (
             "Id" SERIAL PRIMARY KEY,
             "Title" VARCHAR(255) NOT NULL,
@@ -1439,6 +1456,48 @@ def set_setting(key, value):
             (str(key), str(value or '')),
         )
         conn.commit()
+
+
+def list_forced_join_channels(active_only=True):
+    where = 'WHERE "IsActive"=true' if active_only else ''
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","ChatId","Title","InviteUrl","IsActive" '
+            f'FROM "ForcedJoinChannels" {where} ORDER BY "Id"'
+        )
+        return cur.fetchall()
+
+
+def add_forced_join_channel(chat_id, invite_url, title=''):
+    chat_id = str(chat_id or '').strip()
+    invite_url = str(invite_url or '').strip()
+    title = str(title or '').strip()[:150]
+    if not chat_id or len(chat_id) > 100:
+        raise ValueError('شناسه کانال نامعتبر است.')
+    if not invite_url or len(invite_url) > 500:
+        raise ValueError('لینک کانال نامعتبر است.')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "ForcedJoinChannels" '
+            '("ChatId","Title","InviteUrl","IsActive") VALUES (%s,%s,%s,true) '
+            'ON CONFLICT ("ChatId") DO UPDATE SET '
+            '"Title"=EXCLUDED."Title","InviteUrl"=EXCLUDED."InviteUrl",'
+            '"IsActive"=true RETURNING "Id"',
+            (chat_id, title, invite_url),
+        )
+        channel_id = cur.fetchone()[0]
+        conn.commit()
+        return channel_id
+
+
+def remove_forced_join_channel(channel_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'DELETE FROM "ForcedJoinChannels" WHERE "Id"=%s',
+            (int(channel_id),),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def get_bool_setting(key, default=True):

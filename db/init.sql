@@ -169,6 +169,19 @@ CREATE TABLE IF NOT EXISTS "TicketMessages" (
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS "ForcedJoinChannels" (
+    "Id" SERIAL PRIMARY KEY,
+    "ChatId" VARCHAR(100) UNIQUE NOT NULL,
+    "Title" VARCHAR(150) NOT NULL DEFAULT '',
+    "InviteUrl" TEXT NOT NULL,
+    "IsActive" BOOLEAN NOT NULL DEFAULT true,
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO "ForcedJoinChannels" ("ChatId","Title","InviteUrl")
+VALUES ('@Omid_AtomicFF','کانال امید اتمیک','https://t.me/Omid_AtomicFF')
+ON CONFLICT ("ChatId") DO NOTHING;
+
 -- بسته‌های جم ME (مثل سایت)
 INSERT INTO "GemPackages"
 ("Title", "Amount", "BonusAmount", "Price", "OldPrice", "PlanType", "PurchaseType",

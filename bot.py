@@ -7,9 +7,10 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters,
+    CallbackQueryHandler, TypeHandler, filters,
 )
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
@@ -42,6 +43,7 @@ from handlers.admin_extended import (
 from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
 )
+from handlers.forced_join import force_join_guard
 from admin_notify import is_admin
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
@@ -274,6 +276,9 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
+    app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
 
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))

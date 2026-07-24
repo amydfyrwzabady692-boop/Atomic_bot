@@ -216,6 +216,9 @@ def admin_home_keyboard():
             InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_support'),
             InlineKeyboardButton('⚙️ تنظیمات', callback_data='admx_settings'),
         ],
+        [InlineKeyboardButton(
+            '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
+        )],
         [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
         [
             InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home'),

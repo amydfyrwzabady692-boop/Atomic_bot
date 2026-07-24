@@ -12,6 +12,9 @@ from telegram.ext import (
 from admin_notify import admin_id, is_admin
 import g2bulk
 import profitability
+from forced_join_logic import (
+    valid_forced_join_chat_id, valid_telegram_invite_url,
+)
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
@@ -22,6 +25,8 @@ from db import (
     remove_bot_admin, set_setting, simple_list, update_gem_package,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
     list_profit_snapshots, profit_report_stats,
+    add_forced_join_channel, list_forced_join_channels,
+    remove_forced_join_channel,
 )
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
@@ -63,6 +68,14 @@ COMPOUND_FIELDS = {
     'premiumadminadd': (
         ('شناسه عددی تلگرام', 'کاربر باید قبلاً ربات را /start کرده باشد'),
         ('نام مدیر پریمیوم', 'مثال: طراح فروشگاه'),
+    ),
+    'forcedjoinadd': (
+        (
+            'شناسه کانال',
+            'کانال عمومی: @Omid_AtomicFF — کانال خصوصی: شناسه -100...',
+        ),
+        ('لینک ورود', 'مثال: https://t.me/Omid_AtomicFF یا لینک دعوت خصوصی'),
+        ('نام نمایشی', 'مثال: کانال اصلی فروشگاه'),
     ),
 }
 
@@ -318,9 +331,47 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('✏️ نام فروشگاه', callback_data='admi_shopname')],
             [InlineKeyboardButton('📝 متن خوش‌آمد', callback_data='admi_welcome')],
             [InlineKeyboardButton('📝 متن پشتیبانی', callback_data='admi_supporttext')],
+            [InlineKeyboardButton(
+                '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
+            )],
             [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
             _back(),
         ])
+    elif data == 'admx_forcedjoin':
+        channels = list_forced_join_channels(active_only=False)
+        lines = [
+            '📢 مدیریت جوین اجباری',
+            '━━━━━━━━━━━━━━━',
+            'ربات باید در هر کانال ادمین باشد تا عضویت کاربران را بررسی کند.',
+            '',
+        ]
+        buttons = []
+        for channel_id, chat_id, title, invite_url, active in channels:
+            lines.append(
+                f'{"✅" if active else "❌"} #{channel_id} · '
+                f'{title or chat_id}\n{chat_id}\n{invite_url}'
+            )
+            buttons.append([InlineKeyboardButton(
+                f'🗑 حذف {title or chat_id}',
+                callback_data=f'admx_fjdel_{channel_id}',
+            )])
+        if not channels:
+            lines.append('هیچ کانال اجباری ثبت نشده است.')
+        buttons.extend([
+            [InlineKeyboardButton(
+                '➕ افزودن کانال', callback_data='admi_forcedjoin'
+            )],
+            _back('admx_settings'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons)
+    elif data.startswith('admx_fjdel_'):
+        channel_id = int(data.rsplit('_', 1)[1])
+        removed = remove_forced_join_channel(channel_id)
+        await query.edit_message_text(
+            '✅ کانال از جوین اجباری حذف شد.'
+            if removed else 'کانال پیدا نشد.',
+            reply_markup=_kb([_back('admx_forcedjoin')]),
+        )
     elif data == 'admx_stats':
         s = admin_stats_full()
         profit = profit_report_stats()
@@ -579,6 +630,10 @@ INPUT_ACTIONS = {
         'قالب: شناسه عددی تلگرام | نام مدیر پریمیوم\n'
         'کاربر باید ابتدا ربات را /start کرده باشد.',
     ),
+    'admi_forcedjoin': (
+        'forcedjoinadd',
+        'مشخصات کانال جوین اجباری را وارد کن.',
+    ),
 }
 
 
@@ -729,6 +784,34 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(
                 '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
+            )
+        elif action == 'forcedjoinadd':
+            chat_id = p[0].strip()
+            if not valid_forced_join_chat_id(chat_id):
+                raise ValueError(
+                    'شناسه باید @username عمومی یا شناسه عددی -100... باشد.'
+                )
+            if not valid_telegram_invite_url(p[1]):
+                raise ValueError('لینک باید HTTPS معتبر تلگرام باشد.')
+            try:
+                bot_member = await ctx.bot.get_chat_member(
+                    chat_id=chat_id,
+                    user_id=ctx.bot.id,
+                )
+            except Exception:
+                raise ValueError(
+                    'ربات به کانال دسترسی ندارد؛ اول ربات را داخل کانال ادمین کن.'
+                ) from None
+            if bot_member.status not in ('administrator', 'creator'):
+                raise ValueError(
+                    'برای بررسی مطمئن عضویت، ربات باید ادمین کانال باشد.'
+                )
+            title = '' if p[2].strip() == '-' else p[2].strip()
+            add_forced_join_channel(chat_id, p[1].strip(), title)
+            await update.message.reply_text(
+                '✅ کانال به جوین اجباری اضافه شد.\n'
+                'حتماً ربات را داخل کانال ادمین کن.',
+                reply_markup=admin_home_keyboard(),
             )
         elif action.startswith(('gemprice:', 'gemtitle:', 'gemstock:')):
             kind, gid = action.split(':')
