@@ -24,6 +24,14 @@ _CONN = {
 }
 
 
+def _payment_ttl_minutes():
+    try:
+        value = int(os.getenv('ORDER_PAYMENT_TTL_MINUTES', '15'))
+    except ValueError:
+        value = 15
+    return max(5, min(value, 120))
+
+
 def get_conn():
     return psycopg.connect(**_CONN)
 
@@ -136,8 +144,9 @@ def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
         cur.execute(
             'INSERT INTO "Orders" '
             '("UserId", "FullName", "Email", "Phone", "TelegramId", "TotalAmount", '
-            '"DiscountAmount", "PaymentMethod", "Status", "CreatedAt") '
-            'VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s, now()) '
+            '"DiscountAmount", "PaymentMethod", "Status","PaymentExpiresAt","CreatedAt") '
+            'VALUES (%s, %s, %s, %s, %s, %s, 0, %s, %s,'
+            'now()+(%s*interval \'1 minute\'),now()) '
             'RETURNING "Id"',
             (
                 user_db_id,
@@ -148,6 +157,7 @@ def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
                 total,
                 payment_method,
                 'pending',
+                _payment_ttl_minutes(),
             ),
         )
         order_id = cur.fetchone()[0]
@@ -169,7 +179,8 @@ def _locked_order_financials(cur, order_id):
     cur.execute(
         'SELECT "Id","UserId","TelegramId","TotalAmount","DiscountAmount",'
         'COALESCE("WalletPaid",0),"Status","PaymentMethod","PaymentAuthority",'
-        '"PaymentExpectedAmount","PaymentVerifiedAt" '
+        '"PaymentExpectedAmount","PaymentVerifiedAt",'
+        'COALESCE("PaymentExpiresAt"<=now(),false) '
         'FROM "Orders" WHERE "Id"=%s FOR UPDATE',
         (int(order_id),),
     )
@@ -220,6 +231,8 @@ def bind_order_authority(order_id, authority, expected_amount, user_db_id=None):
             row, _net, payable = _locked_order_financials(cur, order_id)
             if row[6] != 'pending' or row[10]:
                 return False, 'سفارش دیگر قابل پرداخت نیست.'
+            if row[11]:
+                return False, 'مهلت پرداخت سفارش تمام شده است.'
             if user_db_id is not None and int(row[1]) != int(user_db_id):
                 return False, 'سفارش متعلق به این کاربر نیست.'
             if row[8] and row[8] != authority:
@@ -244,6 +257,8 @@ def prepare_card_order_payment(order_id, user_db_id):
             row, _net, payable = _locked_order_financials(cur, order_id)
             if row[6] != 'pending' or row[10]:
                 return False, 0, 'سفارش قابل پرداخت نیست.'
+            if row[11]:
+                return False, 0, 'مهلت پرداخت سفارش تمام شده است.'
             if int(row[1]) != int(user_db_id):
                 return False, 0, 'سفارش متعلق به این کاربر نیست.'
             if row[8]:
@@ -271,6 +286,17 @@ def get_order_payment_expected(order_id):
         )
         row = cur.fetchone()
         return int(row[0]) if row and row[0] is not None else 0
+
+
+def is_order_payment_expired(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT COALESCE("PaymentExpiresAt"<=now(),false) '
+            'FROM "Orders" WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+        return bool(row and row[0])
 
 
 def record_order_payment_verified(order_id, method, expected_amount,
@@ -353,6 +379,8 @@ def apply_wallet_to_order(user_db_id, order_id):
             row, net_total, remaining = _locked_order_financials(cur, order_id)
             if row[6] != 'pending' or row[10]:
                 return False, 0, 0, 0, 'سفارش قابل پرداخت نیست.'
+            if row[11]:
+                return False, 0, remaining, 0, 'مهلت پرداخت سفارش تمام شده است.'
             if int(row[1]) != int(user_db_id):
                 return False, 0, remaining, 0, 'سفارش متعلق به این کاربر نیست.'
             if row[8]:
@@ -457,6 +485,82 @@ def cancel_order_and_refund(order_id, telegram_id=None):
             '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL WHERE "Id"=%s',
             (int(order_id),),
         )
+        conn.commit()
+        return True, refunded, None
+
+
+def list_expired_unpaid_orders(limit=50):
+    """سفارش منقضی بدون اثبات پرداخت/رسید در انتظار بررسی."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."PaymentMethod",o."PaymentAuthority",'
+            'o."PaymentExpectedAmount",o."TelegramId" '
+            'FROM "Orders" o '
+            'WHERE o."Status"=\'pending\' AND o."PaymentVerifiedAt" IS NULL '
+            'AND o."PaymentExpiresAt" IS NOT NULL AND o."PaymentExpiresAt"<=now() '
+            'AND NOT EXISTS (SELECT 1 FROM "PaymentReceipts" r '
+            ' WHERE r."OrderId"=o."Id" AND r."Status"=\'pending\' '
+            ' AND r."FileId"<>\'\') '
+            'ORDER BY o."PaymentExpiresAt" LIMIT %s',
+            (max(1, min(int(limit), 100)),),
+        )
+        return cur.fetchall()
+
+
+def expire_order_and_refund(order_id):
+    """لغو اتمیک فقط اگر هنوز منقضی و پرداخت‌نشده و بدون رسید باشد."""
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            row, _net, _payable = _locked_order_financials(cur, order_id)
+        except ValueError as exc:
+            return False, 0, str(exc)
+        if row[6] != 'pending' or row[10]:
+            return False, 0, 'سفارش دیگر منقضی‌شدنی نیست.'
+        cur.execute(
+            'SELECT 1 FROM "Orders" WHERE "Id"=%s '
+            'AND "PaymentExpiresAt" IS NOT NULL AND "PaymentExpiresAt"<=now()',
+            (int(order_id),),
+        )
+        if not cur.fetchone():
+            return False, 0, 'مهلت سفارش هنوز تمام نشده است.'
+        cur.execute(
+            'SELECT 1 FROM "PaymentReceipts" WHERE "OrderId"=%s '
+            'AND "Status"=\'pending\' AND "FileId"<>\'\' LIMIT 1',
+            (int(order_id),),
+        )
+        if cur.fetchone():
+            return False, 0, 'رسید سفارش در انتظار بررسی است.'
+        refunded = int(row[5] or 0)
+        if refunded:
+            cur.execute(
+                'SELECT "Id","Balance" FROM "Wallets" '
+                'WHERE "UserId"=%s FOR UPDATE',
+                (row[1],),
+            )
+            wallet = cur.fetchone()
+            if not wallet:
+                return False, 0, 'کیف پول کاربر پیدا نشد.'
+            cur.execute(
+                'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() '
+                'WHERE "Id"=%s',
+                (int(wallet[1]) + refunded, wallet[0]),
+            )
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+                'VALUES (%s,%s,\'charge\',%s,true,now())',
+                (wallet[0], refunded, f'برگشت انقضای سفارش #{order_id}'),
+            )
+        cur.execute(
+            'UPDATE "Orders" SET "WalletPaid"=0,"Status"=\'canceled\','
+            '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL,'
+            '"PaymentRefId"=\'expired\' WHERE "Id"=%s '
+            'AND "Status"=\'pending\' AND "PaymentVerifiedAt" IS NULL',
+            (int(order_id),),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return False, 0, 'وضعیت سفارش هم‌زمان تغییر کرد.'
         conn.commit()
         return True, refunded, None
 
@@ -1150,6 +1254,13 @@ def ensure_admin_schema():
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
+        '''ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpiresAt"
+           TIMESTAMPTZ NOT NULL DEFAULT (now()+interval '15 minutes')''',
+        '''UPDATE "Orders" SET "PaymentExpiresAt"="CreatedAt"+interval '15 minutes'
+           WHERE "PaymentExpiresAt" IS NULL''',
+        '''CREATE INDEX IF NOT EXISTS idx_orders_payment_expiry
+           ON "Orders" ("PaymentExpiresAt")
+           WHERE "Status"='pending' AND "PaymentVerifiedAt" IS NULL''',
         """CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_payment_authority
            ON "Orders" ("PaymentAuthority")
            WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> ''""",
@@ -1490,6 +1601,20 @@ def list_pending_receipts(limit=30):
 
 def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_id='', text=''):
     with get_conn() as conn, conn.cursor() as cur:
+        if order_id is not None:
+            cur.execute(
+                'SELECT "Status","PaymentVerifiedAt",'
+                'COALESCE("PaymentExpiresAt"<=now(),false) '
+                'FROM "Orders" WHERE "Id"=%s FOR UPDATE',
+                (int(order_id),),
+            )
+            order = cur.fetchone()
+            if not order:
+                raise ValueError('سفارش پیدا نشد.')
+            if order[0] != 'pending' or order[1]:
+                raise ValueError('سفارش دیگر در انتظار پرداخت نیست.')
+            if order[2]:
+                raise ValueError('مهلت پرداخت سفارش تمام شده است.')
         cur.execute(
             'INSERT INTO "PaymentReceipts" '
             '("OrderId","WalletTransactionId","TelegramId","ReceiptType","FileId","Text") '

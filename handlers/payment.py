@@ -21,16 +21,22 @@ from db import (
     get_setting, get_bool_setting, save_payment_receipt,
     validate_order_financials, order_belongs_to, bind_order_authority,
     get_order_payment_expected, record_order_payment_verified,
+    is_order_payment_expired,
     prepare_card_order_payment, cancel_order_and_refund,
+    expire_order_and_refund,
     approve_card_order_payment, reject_card_order_payment,
     log_payment_attempt,
 )
-from payments import request_payment, verify_payment
+from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
 import time
 import g2bulk
 
-ZP_TTL_SEC = 15 * 60  # مهلت درگاه زرین‌پال
+try:
+    _ttl_minutes = int(os.getenv('ORDER_PAYMENT_TTL_MINUTES', '15'))
+except ValueError:
+    _ttl_minutes = 15
+ZP_TTL_SEC = max(5, min(_ttl_minutes, 120)) * 60
 ZP_MAX_CHECKS = 10
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
@@ -489,37 +495,50 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elapsed = time.time() - started
     left = max(0, int(ZP_TTL_SEC - elapsed))
 
-    ok, ref_id = verify_payment(payable, authority)
+    verify_status, ref_id = verify_payment_detailed(payable, authority)
+    ok = verify_status == 'verified'
     if not ok:
-        expired = elapsed >= ZP_TTL_SEC or checks >= ZP_MAX_CHECKS
+        expired = is_order_payment_expired(order_id)
         log_payment_attempt(
             provider='zarinpal', event='verify',
-            status='failed' if expired else 'pending',
+            status='failed' if expired and verify_status == 'not_paid' else 'pending',
             amount=payable, order_id=order_id, authority=authority,
             telegram_id=update.effective_user.id,
-            message='درگاه پرداخت را تأیید نکرد.',
+            message=f'gateway status={verify_status}',
         )
         kb = zarinpal_pay_keyboard(
             order_id,
             f"https://payment.zarinpal.com/pg/StartPay/{authority}",
         )
-        if expired:
+        if expired and verify_status == 'not_paid':
+            canceled, refunded, _expire_error = expire_order_and_refund(order_id)
+            refund_text = (
+                f"\n💰 {refunded:,} تومان به کیف پولت برگشت."
+                if canceled and refunded else ''
+            )
             await query.edit_message_text(
-                f"❌ *پرداخت تایید نشد*\n"
+                f"⌛ *مهلت پرداخت تمام شد*\n"
                 f"سفارش `#{order_id}`\n"
                 f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-                f"مهلت درگاه تمام شد یا پرداختی ثبت نشده.\n"
-                f"اگر پول کم نشده، دوباره «زرین‌پال» را بزن یا *کارت‌به‌کارت* را انتخاب کن.",
+                f"پرداختی در درگاه ثبت نشده و سفارش لغو شد."
+                f"{refund_text}",
                 parse_mode='Markdown',
-                reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
             )
+            ctx.user_data.pop('pending_order', None)
+            (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
         else:
             mins = max(1, (left + 59) // 60)
+            unavailable = (
+                "\n⚠️ ارتباط با درگاه موقتاً برقرار نشد؛ برای جلوگیری از لغو "
+                "اشتباه، سفارش دوباره بررسی می‌شود."
+                if verify_status == 'unavailable' else ''
+            )
             await query.edit_message_text(
                 f"⏳ هنوز پرداخت تایید نشده (بررسی {checks}/{ZP_MAX_CHECKS}).\n"
                 f"اگر پرداخت کردی چند لحظه صبر کن و دوباره بزن.\n"
                 f"⏱ حدود *{mins}* دقیقه از مهلت مانده.\n"
                 f"اگر لینک را باز نکردی / پرداخت نکردی، صبر کن تا مهلت تمام شود یا روش دیگر را انتخاب کن.\n"
+                f"{unavailable}\n"
                 f"{VPN_WARNING}",
                 parse_mode='Markdown',
                 reply_markup=kb,
@@ -765,8 +784,33 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
             provider='card_transfer', event='receipt_submitted', status='pending',
             amount=expected, order_id=order_id, telegram_id=user.id,
         )
+    except ValueError as e:
+        ctx.user_data.pop('pending_order', None)
+        error_text = str(e)
+        if 'مهلت پرداخت' in error_text:
+            _canceled, refunded, _expire_error = expire_order_and_refund(order_id)
+            text = "⏳ مهلت پرداخت تمام شده و سفارش لغو شد."
+            if refunded:
+                text += f"\n💰 {refunded:,} تومان به کیف پولت برگشت."
+        else:
+            text = f"❌ رسید ثبت نشد: {error_text}"
+        if via_query:
+            await via_query.edit_message_text(text)
+            await via_query.message.reply_text(
+                "چه کاری برات بکنم؟", reply_markup=main_menu()
+            )
+        else:
+            await update.message.reply_text(text, reply_markup=main_menu())
+        return ConversationHandler.END
     except Exception as e:
         print(f'[CARD] receipt persistence failed: {e}')
+        ctx.user_data.pop('pending_order', None)
+        target = via_query.message if via_query else update.message
+        await target.reply_text(
+            "❌ ذخیره رسید انجام نشد. لطفاً دوباره تلاش کن.",
+            reply_markup=main_menu(),
+        )
+        return ConversationHandler.END
 
     admin_ok = False
     from admin_notify import admin_ids

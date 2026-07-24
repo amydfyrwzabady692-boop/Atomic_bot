@@ -60,11 +60,19 @@ def _post(url, payload):
     except urllib.error.HTTPError as e:
         try:
             result = json.loads(e.read().decode())
-            return result if isinstance(result, dict) else {}
+            if isinstance(result, dict):
+                result['_http_status'] = e.code
+                if e.code >= 500:
+                    result['_transport_error'] = True
+                return result
+            return {'_http_status': e.code}
         except Exception:
-            return {}
+            return {
+                '_http_status': e.code,
+                '_transport_error': e.code >= 500,
+            }
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        return {}
+        return {'_transport_error': True}
 
 
 def request_payment(amount_toman, description, callback_url, mobile=''):
@@ -104,7 +112,7 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
         print(f'[ZARINPAL] request exception: {e}')
         return None, None, f'خطای ارتباط با زرین‌پال: {e}'
 
-    if not res:
+    if not res or res.get('_transport_error'):
         return None, None, 'پاسخ خالی از زرین‌پال (احتمالاً قطعی شبکه سرور).'
 
     data = res.get('data') or {}
@@ -128,17 +136,18 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
     return None, None, msg
 
 
-def verify_payment(amount_toman, authority):
+def verify_payment_detailed(amount_toman, authority):
+    """خروجی status/ref: verified | not_paid | unavailable | invalid."""
     merchant = _merchant()
     authority = str(authority or '').strip()
     if not merchant or not authority or len(authority) > 100:
-        return False, None
+        return 'invalid', None
     try:
         amount_toman = checked_amount(
             amount_toman, minimum=MIN_GATEWAY_AMOUNT, label='مبلغ تأیید درگاه'
         )
     except ValueError:
-        return False, None
+        return 'invalid', None
     payload = {
         'merchant_id': merchant,
         'amount': amount_toman,
@@ -147,8 +156,15 @@ def verify_payment(amount_toman, authority):
     try:
         res = _post(_base() + 'verify.json', payload)
     except Exception:
-        return False, None
+        return 'unavailable', None
+    if not res or res.get('_transport_error'):
+        return 'unavailable', None
     data = res.get('data') or {}
     if data.get('code') in (100, 101) and data.get('ref_id'):
-        return True, str(data['ref_id'])
-    return False, None
+        return 'verified', str(data['ref_id'])
+    return 'not_paid', None
+
+
+def verify_payment(amount_toman, authority):
+    status, ref_id = verify_payment_detailed(amount_toman, authority)
+    return status == 'verified', ref_id

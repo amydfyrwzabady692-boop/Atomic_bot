@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS "Orders" (
     "PaymentExpectedAmount" INTEGER CHECK ("PaymentExpectedAmount" IS NULL OR "PaymentExpectedAmount" > 0),
     "PaymentVerifiedAt" TIMESTAMPTZ,
     "PaymentRefId" VARCHAR(100),
+    "PaymentExpiresAt" TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '15 minutes'),
     "WalletPaid" INTEGER NOT NULL DEFAULT 0 CHECK ("WalletPaid" >= 0),
     "Status" VARCHAR(30) NOT NULL DEFAULT 'pending',
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -61,6 +62,9 @@ CREATE TABLE IF NOT EXISTS "Orders" (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_payment_authority
 ON "Orders" ("PaymentAuthority")
 WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> '';
+CREATE INDEX IF NOT EXISTS idx_orders_payment_expiry
+ON "Orders" ("PaymentExpiresAt")
+WHERE "Status"='pending' AND "PaymentVerifiedAt" IS NULL;
 
 CREATE TABLE IF NOT EXISTS "OrderItems" (
     "Id" SERIAL PRIMARY KEY,

@@ -45,8 +45,11 @@ from handlers.premium_admin import (
 from admin_notify import is_admin
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
-    fulfill_order, get_order,
+    fulfill_order, get_order, list_expired_unpaid_orders,
+    expire_order_and_refund, record_order_payment_verified,
+    log_payment_attempt,
 )
+from payments import verify_payment_detailed
 from webapp import start_web_server
 
 logging.basicConfig(
@@ -94,18 +97,22 @@ async def post_init(app):
     app.bot_data['_g2_reconcile_task'] = asyncio.create_task(
         _g2_reconcile_loop(app), name='g2bulk-reconcile'
     )
+    app.bot_data['_payment_expiry_task'] = asyncio.create_task(
+        _payment_expiry_loop(app), name='payment-expiry'
+    )
     _log_startup_checks()
 
 
 async def post_shutdown(app):
-    task = app.bot_data.pop('_g2_reconcile_task', None)
-    if not task:
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for key in ('_g2_reconcile_task', '_payment_expiry_task'):
+        task = app.bot_data.pop(key, None)
+        if not task:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 async def _g2_reconcile_loop(app):
@@ -132,6 +139,88 @@ async def _g2_reconcile_loop(app):
             raise
         except Exception:
             logging.getLogger(__name__).exception('G2Bulk reconciliation failed')
+        await asyncio.sleep(30)
+
+
+async def _payment_expiry_loop(app):
+    """لغو سفارش منقضی؛ پرداخت زرین‌پال پیش از لغو دوباره از بانک پرسیده می‌شود."""
+    while True:
+        try:
+            rows = await asyncio.to_thread(list_expired_unpaid_orders, 50)
+            for order_id, method, authority, expected, telegram_id in rows:
+                if method == 'zarinpal' and authority and expected:
+                    verify_status, ref_id = await asyncio.to_thread(
+                        verify_payment_detailed, expected, authority
+                    )
+                    if verify_status == 'unavailable':
+                        continue
+                    if verify_status == 'verified':
+                        recorded, record_status = await asyncio.to_thread(
+                            record_order_payment_verified,
+                            order_id, 'zarinpal', expected,
+                            authority, ref_id,
+                        )
+                        if recorded:
+                            if record_status == 'verified':
+                                await asyncio.to_thread(
+                                    log_payment_attempt,
+                                    provider='zarinpal', event='expiry_verified',
+                                    status='success', amount=expected,
+                                    order_id=order_id, authority=authority,
+                                    ref_id=ref_id, telegram_id=telegram_id,
+                                )
+                            success, delivery = await asyncio.to_thread(
+                                fulfill_order, order_id
+                            )
+                            if telegram_id:
+                                text = (
+                                    f'✅ پرداخت سفارش #{order_id} در بررسی نهایی '
+                                    f'تأیید شد. وضعیت تحویل: {delivery}'
+                                    if success else
+                                    f'⚠️ پرداخت سفارش #{order_id} تأیید شد؛ '
+                                    'پشتیبانی تحویل را پیگیری می‌کند.'
+                                )
+                                try:
+                                    await app.bot.send_message(
+                                        chat_id=int(telegram_id), text=text
+                                    )
+                                except Exception:
+                                    pass
+                        continue
+                    if verify_status != 'not_paid':
+                        continue
+                canceled, refunded, _error = await asyncio.to_thread(
+                    expire_order_and_refund, order_id
+                )
+                if not canceled:
+                    continue
+                await asyncio.to_thread(
+                    log_payment_attempt,
+                    provider=method or 'none', event='order_expired',
+                    status='canceled', amount=expected,
+                    order_id=order_id, authority=authority,
+                    telegram_id=telegram_id,
+                    message=f'payment timeout; wallet refund={refunded}',
+                )
+                if telegram_id:
+                    refund_text = (
+                        f'\n💰 {refunded:,} تومان به کیف پول برگشت.'
+                        if refunded else ''
+                    )
+                    try:
+                        await app.bot.send_message(
+                            chat_id=int(telegram_id),
+                            text=(
+                                f'⌛ مهلت پرداخت سفارش #{order_id} تمام شد و '
+                                f'سفارش خودکار لغو شد.{refund_text}'
+                            ),
+                        )
+                    except Exception:
+                        pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception('Payment expiry sweep failed')
         await asyncio.sleep(30)
 
 

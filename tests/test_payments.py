@@ -79,6 +79,34 @@ class GatewayVerifyTests(unittest.TestCase):
             (True, '987654'),
         )
 
+    @patch.object(payments, '_merchant', return_value='merchant')
+    @patch.object(payments, '_base', return_value='https://api.example/')
+    @patch.object(
+        payments, '_post',
+        return_value={'_transport_error': 'timeout'},
+    )
+    def test_transport_failure_is_not_treated_as_unpaid(
+        self, _post, _base, _merchant
+    ):
+        self.assertEqual(
+            payments.verify_payment_detailed(10_000, 'A123'),
+            ('unavailable', None),
+        )
+
+    @patch.object(payments, '_merchant', return_value='merchant')
+    @patch.object(payments, '_base', return_value='https://api.example/')
+    @patch.object(
+        payments, '_post',
+        return_value={'data': {'code': -51}, 'errors': []},
+    )
+    def test_definitive_gateway_rejection_is_unpaid(
+        self, _post, _base, _merchant
+    ):
+        self.assertEqual(
+            payments.verify_payment_detailed(10_000, 'A123'),
+            ('not_paid', None),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
