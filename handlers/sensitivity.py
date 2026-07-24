@@ -10,6 +10,7 @@ from db import (
     get_or_create_user, create_order, add_order_item, get_wallet_balance,
     list_sense_packages, get_sense_package,
 )
+from payment_safety import checked_amount
 
 # قیمت‌ها به تومان
 SENSE_PC_PACKS = {
@@ -100,6 +101,15 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pack = SENSE_PC_PACKS.get(key)
     if not pack or (row and not row[5]):
         await query.edit_message_text("بسته پیدا نشد.", reply_markup=main_menu())
+        return
+
+    try:
+        pack['price'] = checked_amount(pack.get('price'), label='قیمت بسته')
+    except ValueError:
+        await query.edit_message_text(
+            "❌ قیمت این بسته معتبر نیست؛ سفارش ساخته نشد.",
+            reply_markup=main_menu(),
+        )
         return
 
     user = update.effective_user

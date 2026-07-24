@@ -25,15 +25,15 @@ CREATE INDEX IF NOT EXISTS idx_users_telegram ON "Users" ("TelegramId");
 CREATE TABLE IF NOT EXISTS "GemPackages" (
     "Id" SERIAL PRIMARY KEY,
     "Title" VARCHAR(255) NOT NULL,
-    "Amount" INTEGER NOT NULL,
+    "Amount" INTEGER NOT NULL CHECK ("Amount" > 0),
     "BonusAmount" INTEGER NOT NULL DEFAULT 0,
-    "Price" INTEGER NOT NULL,
+    "Price" INTEGER NOT NULL CHECK ("Price" > 0),
     "OldPrice" INTEGER NULL,
     "PlanType" VARCHAR(20) NOT NULL DEFAULT 'once',
     "PurchaseType" VARCHAR(30) NOT NULL DEFAULT 'by_id',
     "AutoDeliver" BOOLEAN NOT NULL DEFAULT true,
     "G2BulkCatalogueName" VARCHAR(100),
-    "Stock" INTEGER NOT NULL DEFAULT 9999,
+    "Stock" INTEGER NOT NULL DEFAULT 9999 CHECK ("Stock" >= 0),
     "IsAvailable" BOOLEAN NOT NULL DEFAULT true,
     "IsActive" BOOLEAN NOT NULL DEFAULT true,
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -46,21 +46,28 @@ CREATE TABLE IF NOT EXISTS "Orders" (
     "Email" VARCHAR(254) NOT NULL DEFAULT '',
     "Phone" VARCHAR(30) NOT NULL DEFAULT '',
     "TelegramId" VARCHAR(64),
-    "TotalAmount" INTEGER NOT NULL,
-    "DiscountAmount" INTEGER NOT NULL DEFAULT 0,
+    "TotalAmount" INTEGER NOT NULL CHECK ("TotalAmount" > 0),
+    "DiscountAmount" INTEGER NOT NULL DEFAULT 0 CHECK ("DiscountAmount" >= 0 AND "DiscountAmount" < "TotalAmount"),
     "PaymentMethod" VARCHAR(30) NOT NULL DEFAULT 'pending',
     "PaymentAuthority" VARCHAR(100),
+    "PaymentExpectedAmount" INTEGER CHECK ("PaymentExpectedAmount" IS NULL OR "PaymentExpectedAmount" > 0),
+    "PaymentVerifiedAt" TIMESTAMPTZ,
+    "PaymentRefId" VARCHAR(100),
+    "WalletPaid" INTEGER NOT NULL DEFAULT 0 CHECK ("WalletPaid" >= 0),
     "Status" VARCHAR(30) NOT NULL DEFAULT 'pending',
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_payment_authority
+ON "Orders" ("PaymentAuthority")
+WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> '';
 
 CREATE TABLE IF NOT EXISTS "OrderItems" (
     "Id" SERIAL PRIMARY KEY,
     "OrderId" INTEGER NOT NULL REFERENCES "Orders"("Id") ON DELETE CASCADE,
     "ProductId" INTEGER NULL,
     "ProductName" VARCHAR(255) NOT NULL,
-    "Price" INTEGER NOT NULL,
-    "Quantity" INTEGER NOT NULL DEFAULT 1
+    "Price" INTEGER NOT NULL CHECK ("Price" > 0),
+    "Quantity" INTEGER NOT NULL DEFAULT 1 CHECK ("Quantity" > 0)
 );
 
 CREATE TABLE IF NOT EXISTS "GemOrderInfo" (
@@ -83,20 +90,23 @@ CREATE TABLE IF NOT EXISTS "GemOrderInfo" (
 CREATE TABLE IF NOT EXISTS "Wallets" (
     "Id" SERIAL PRIMARY KEY,
     "UserId" INTEGER UNIQUE NOT NULL REFERENCES "Users"("Id") ON DELETE CASCADE,
-    "Balance" INTEGER NOT NULL DEFAULT 0,
+    "Balance" INTEGER NOT NULL DEFAULT 0 CHECK ("Balance" >= 0),
     "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS "WalletTransactions" (
     "Id" SERIAL PRIMARY KEY,
     "WalletId" INTEGER NOT NULL REFERENCES "Wallets"("Id") ON DELETE CASCADE,
-    "Amount" INTEGER NOT NULL,
+    "Amount" INTEGER NOT NULL CHECK ("Amount" > 0),
     "Kind" VARCHAR(10) NOT NULL DEFAULT 'charge',
     "Description" VARCHAR(255) NOT NULL DEFAULT '',
     "Authority" VARCHAR(100),
     "IsPaid" BOOLEAN NOT NULL DEFAULT false,
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_authority
+ON "WalletTransactions" ("Authority")
+WHERE "Authority" IS NOT NULL AND "Authority" <> '';
 
 CREATE TABLE IF NOT EXISTS "SupportTickets" (
     "Id" SERIAL PRIMARY KEY,

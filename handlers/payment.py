@@ -15,11 +15,14 @@ from keyboards import (
     admin_card_keyboard, main_menu, pay_method_keyboard, admin_failed_order_keyboard,
 )
 from db import (
-    get_order, set_order_authority, update_order_status, fulfill_order,
-    wallet_spend, get_or_create_user, set_order_payment_method,
+    get_order, update_order_status, fulfill_order, get_or_create_user,
     order_requires_kyc, is_kyc_approved, get_order_items, get_gem_infos_for_order,
-    get_order_payable, apply_wallet_to_order, get_wallet_balance, refund_order_wallet,
-    get_setting, get_bool_setting, save_payment_receipt, mark_receipt_reviewed,
+    get_order_payable, apply_wallet_to_order, get_wallet_balance,
+    get_setting, get_bool_setting, save_payment_receipt,
+    validate_order_financials, order_belongs_to, bind_order_authority,
+    get_order_payment_expected, record_order_payment_verified,
+    prepare_card_order_payment, cancel_order_and_refund,
+    approve_card_order_payment, reject_card_order_payment,
 )
 from payments import request_payment, verify_payment
 from admin_notify import notify_admin, is_admin
@@ -138,6 +141,21 @@ def _order_pay_keyboard(order_id, db_id=None):
         wallet_balance=bal,
         remaining=remaining,
     )
+
+
+def _order_for_user(update, ctx, order_id):
+    """سفارش را فقط به مالک واقعی تلگرام برمی‌گرداند."""
+    user = update.effective_user
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
+    order = get_order(order_id)
+    if not order or not order_belongs_to(
+        order_id, user_db_id=db_id, telegram_id=user.id
+    ):
+        return None, db_id
+    return order, db_id
 
 
 async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
@@ -274,9 +292,9 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'order_id': order_id,
         'tg_id': update.effective_user.id,
     }
-    order = get_order(order_id)
+    order, db_id = _order_for_user(update, ctx, order_id)
     if not order or order[3] not in ('pending',):
-        await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
+        await query.edit_message_text("❌ سفارش پیدا نشد، متعلق به شما نیست یا قابل پرداخت نیست.")
         return
     if not get_bool_setting('zarinpal_enabled', True):
         await query.edit_message_text(
@@ -291,16 +309,11 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await prompt_kyc_for_order(query, update.effective_user, order_id)
         return
 
-    payable = get_order_payable(order_id)
-    if payable <= 0:
-        success, status = fulfill_order(order_id)
-        if status == 'sense_manual':
-            await _notify_sense_sale(ctx.bot, order_id)
+    valid, _net_total, payable, financial_error = validate_order_financials(order_id)
+    if not valid or payable <= 0:
         await query.edit_message_text(
-            _success_user_text(order_id, status or 'delivered'),
-            parse_mode='Markdown',
+            f"❌ اطلاعات مالی سفارش امن نیست: {financial_error or 'مبلغ قابل پرداخت صفر است.'}"
         )
-        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
 
     total = order[2]
@@ -321,6 +334,21 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if order[5]:
+        expected = get_order_payment_expected(order_id)
+        if expected != payable:
+            await query.edit_message_text(
+                "❌ مبلغ لینک قبلی با سفارش تطابق ندارد. سفارش را لغو و دوباره ثبت کن."
+            )
+            return
+        pay_url = f"https://payment.zarinpal.com/pg/StartPay/{order[5]}"
+        await query.edit_message_text(
+            _zarinpal_link_text(order_id, payable, pay_url),
+            parse_mode='Markdown',
+            reply_markup=zarinpal_pay_keyboard(order_id, pay_url),
+        )
+        return
+
     callback_url = f"{callback_base}/payment/callback?order={order_id}"
     authority, pay_url, err = request_payment(
         payable,
@@ -337,7 +365,15 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    set_order_authority(order_id, authority, payment_method='zarinpal')
+    bound, bind_error = bind_order_authority(
+        order_id, authority, payable, user_db_id=db_id
+    )
+    if not bound:
+        await query.edit_message_text(
+            f"❌ لینک ساخته شد اما به سفارش متصل نشد: {bind_error or 'خطای هم‌زمانی'}\n"
+            "برای امنیت پرداخت از این لینک استفاده نکن و سفارش را دوباره بررسی کن."
+        )
+        return
     pending['authority'] = authority
     pending['order_id'] = order_id
     pending['payable'] = payable
@@ -377,9 +413,9 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("در حال بررسی…")
     order_id = int(query.data.split('_')[-1])
-    order = get_order(order_id)
+    order, _db_id = _order_for_user(update, ctx, order_id)
     if not order:
-        await query.edit_message_text("❌ سفارش پیدا نشد.")
+        await query.edit_message_text("❌ سفارش پیدا نشد یا متعلق به شما نیست.")
         return
     if order[3] in ('paid', 'delivered', 'completed', 'processing'):
         await query.edit_message_text(
@@ -396,7 +432,12 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     meta = (ctx.user_data.get('zp_meta') or {}).get(str(order_id)) or {}
     started = float(meta.get('started') or time.time())
     checks = int(meta.get('checks') or 0) + 1
-    payable = int(meta.get('payable') or get_order_payable(order_id) or order[2])
+    payable = get_order_payment_expected(order_id)
+    if payable <= 0:
+        await query.edit_message_text(
+            "❌ مبلغ ثابت درگاه برای این سفارش ثبت نشده؛ پرداخت تأیید نمی‌شود."
+        )
+        return
     meta.update({'started': started, 'checks': checks, 'payable': payable})
     ctx.user_data.setdefault('zp_meta', {})[str(order_id)] = meta
     elapsed = time.time() - started
@@ -432,6 +473,19 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    recorded, record_status = record_order_payment_verified(
+        order_id, 'zarinpal', payable, authority=authority, ref_id=ref_id
+    )
+    if not recorded:
+        await _alert_fulfill_issue(
+            ctx.bot, order_id, f'payment proof rejected: {record_status}', 'zarinpal'
+        )
+        await query.edit_message_text(
+            "⚠️ بانک پرداخت را گزارش کرد اما تطبیق امنیتی سفارش ناموفق بود.\n"
+            "هیچ جمی ارسال نشد؛ پشتیبانی تراکنش را بررسی می‌کند."
+        )
+        return
+
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)
     (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
@@ -458,9 +512,9 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     order_id = int(query.data.split('_')[-1])
-    order = get_order(order_id)
+    order, db_id = _order_for_user(update, ctx, order_id)
     if not order or order[3] != 'pending':
-        await query.edit_message_text("❌ این سفارش قابل پرداخت نیست.")
+        await query.edit_message_text("❌ سفارش متعلق به شما نیست یا قابل پرداخت نیست.")
         return
     if not get_bool_setting('card_transfer_enabled', True):
         await query.edit_message_text(
@@ -469,18 +523,11 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    payable = get_order_payable(order_id)
-    if payable <= 0:
-        success, status = fulfill_order(order_id)
-        if status == 'sense_manual':
-            await _notify_sense_sale(ctx.bot, order_id)
-        await query.edit_message_text(
-            _success_user_text(order_id, status or 'delivered'),
-            parse_mode='Markdown',
-        )
+    prepared, payable, prepare_error = prepare_card_order_payment(order_id, db_id)
+    if not prepared:
+        await query.edit_message_text(f"❌ {prepare_error or 'کارت‌به‌کارت فعال نشد.'}")
         return
 
-    set_order_payment_method(order_id, 'card_transfer')
     total = order[2]
     wallet_paid = int(order[7] or 0)
     card_number = get_setting('card_number', CARD_NUMBER)
@@ -561,7 +608,6 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if remaining <= 0:
-        set_order_payment_method(order_id, 'wallet')
         success, status = fulfill_order(order_id)
         ctx.user_data.pop('pending_order', None)
         if success and status == 'sense_manual':
@@ -589,11 +635,14 @@ async def paid_claim_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     order_id = int(query.data.split('_')[-1])
-    order = get_order(order_id)
-    if not order or order[3] != 'pending':
+    order, _db_id = _order_for_user(update, ctx, order_id)
+    payable = get_order_payment_expected(order_id) if order else 0
+    if (
+        not order or order[3] != 'pending'
+        or order[4] != 'card_transfer' or payable <= 0
+    ):
         await query.edit_message_text("❌ سفارشی برای ارسال رسید پیدا نشد.")
         return ConversationHandler.END
-    payable = get_order_payable(order_id)
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
         'total': payable,
@@ -616,6 +665,18 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
         return ConversationHandler.END
     order_id = pending['order_id']
     user = update.effective_user
+    order = get_order(order_id)
+    expected = get_order_payment_expected(order_id)
+    if (
+        not order or order[3] != 'pending' or order[4] != 'card_transfer'
+        or expected <= 0 or int(pending.get('total') or 0) != expected
+        or not order_belongs_to(order_id, telegram_id=user.id)
+    ):
+        await update.message.reply_text(
+            "❌ سفارش یا مبلغ رسید با حساب شما تطابق ندارد؛ رسید ثبت نشد.",
+            reply_markup=main_menu(),
+        )
+        return ConversationHandler.END
     file_id = ''
     receipt_text = ''
     if receipt_msg:
@@ -711,17 +772,19 @@ async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pending = ctx.user_data.pop('pending_order', None)
     oid = order_id or (pending or {}).get('order_id')
     if oid:
-        order = get_order(oid)
-        if order and order[3] == 'pending':
-            refunded = refund_order_wallet(oid)
-            update_order_status(oid, 'canceled')
+        canceled, refunded, cancel_error = cancel_order_and_refund(
+            oid, telegram_id=update.effective_user.id
+        )
+        if canceled:
             msg = "❌ پرداخت لغو شد."
             if refunded:
                 msg += f"\n💰 {refunded:,} تومان به کیف پول برگشت."
             await query.edit_message_text(msg)
             await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
             return ConversationHandler.END
-    await query.edit_message_text("❌ پرداخت لغو شد.")
+    await query.edit_message_text(
+        f"❌ لغو انجام نشد: {cancel_error if oid else 'سفارش پیدا نشد.'}"
+    )
     await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
     return ConversationHandler.END
 
@@ -733,13 +796,19 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
-    mark_receipt_reviewed(order_id=order_id, status='approved')
     order = get_order(order_id)
     if not order:
         await _edit_review_message(query, "❌ سفارش پیدا نشد.")
         return
     if order[3] in ('delivered', 'completed'):
         await _edit_review_message(query, f"سفارش #{order_id} قبلاً تحویل شده.")
+        return
+
+    approved, approve_error = approve_card_order_payment(order_id)
+    if not approved:
+        await _edit_review_message(
+            query, f"❌ تأیید امن انجام نشد: {approve_error}"
+        )
         return
 
     success, status = fulfill_order(order_id)
@@ -787,12 +856,11 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
-    mark_receipt_reviewed(order_id=order_id, status='rejected')
     order = get_order(order_id)
-    refunded = 0
-    if order and order[3] == 'pending':
-        refunded = refund_order_wallet(order_id)
-        update_order_status(order_id, 'canceled')
+    rejected, refunded, reject_error = reject_card_order_payment(order_id)
+    if not rejected:
+        await _edit_review_message(query, f"❌ رد امن انجام نشد: {reject_error}")
+        return
     await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.")
     if order and order[6]:
         extra = f"\n💰 {refunded:,} تومان به کیف پول برگشت." if refunded else ""
@@ -831,17 +899,29 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     order = get_order(order_id)
     if not order:
         return False, 'order not found'
-    if order[3] in ('paid', 'delivered', 'completed', 'processing'):
-        return True, 'already processed'
     if not status_ok:
         return False, 'user canceled'
-    auth = authority or order[5]
-    if order[5] and authority and order[5] != authority:
+    if (
+        order[4] != 'zarinpal'
+        or not authority
+        or not order[5]
+        or order[5] != authority
+    ):
         return False, 'authority mismatch'
-    payable = get_order_payable(order_id) or order[2]
+    if order[3] in ('paid', 'delivered', 'completed', 'processing'):
+        return True, 'already processed'
+    auth = authority
+    payable = get_order_payment_expected(order_id)
+    if payable <= 0:
+        return False, 'missing expected amount'
     ok, ref_id = verify_payment(payable, auth)
     if not ok:
         return False, 'verify failed'
+    recorded, record_status = record_order_payment_verified(
+        order_id, 'zarinpal', payable, authority=auth, ref_id=ref_id
+    )
+    if not recorded:
+        return False, f'payment proof rejected: {record_status}'
     success, st = fulfill_order(order_id)
     tg_id = order[6]
     if success:

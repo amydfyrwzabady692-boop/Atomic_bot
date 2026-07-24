@@ -64,7 +64,8 @@ def create_web_app(bot_app):
                     'FROM "WalletTransactions" t '
                     'JOIN "Wallets" w ON w."Id"=t."WalletId" '
                     'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
-                    'WHERE t."Authority"=%s',
+                    'WHERE t."Authority"=%s AND t."Kind"=\'charge\' '
+                    'AND t."Authority" NOT LIKE \'wcard_%%\'',
                     (authority,),
                 )
                 row = cur.fetchone()
@@ -76,6 +77,12 @@ def create_web_app(bot_app):
                 if not ok:
                     return web.Response(text=html_fail, content_type='text/html')
                 done, _uid, amt, new_bal = complete_wallet_charge_by_authority(authority)
+                if not done:
+                    logger.warning(
+                        'wallet callback verified but completion failed authority=%s',
+                        authority,
+                    )
+                    return web.Response(text=html_fail, content_type='text/html')
                 if done and telegram_id:
                     try:
                         await bot_app.bot.send_message(
