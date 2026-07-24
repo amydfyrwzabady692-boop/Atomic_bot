@@ -14,6 +14,7 @@ from db import (
     get_gems_by_id, get_gem, get_or_create_user, create_order,
     add_order_item, add_gem_order_info, get_wallet_balance,
 )
+from payment_safety import checked_amount
 
 GEM_UID, GEM_CONFIRM = range(2)
 
@@ -205,6 +206,32 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not info or not info.get('game_uid'):
         await query.edit_message_text("❌ اطلاعات سفارش ناقص است.")
         return ConversationHandler.END
+
+    # Never trust a price cached in Telegram state. The package may have been
+    # changed, disabled, or sold out since the confirmation screen was opened.
+    current = get_gem(info.get('pk'))
+    if not current or _gem_sold_out(current):
+        ctx.user_data.pop('gem_buy', None)
+        await query.edit_message_text(
+            "❌ این بسته دیگر موجود یا فعال نیست. لطفاً دوباره از فهرست انتخاب کن."
+        )
+        return ConversationHandler.END
+    try:
+        current_price = checked_amount(current[4], label='قیمت بسته')
+        current_amount = checked_amount(current[2], maximum=1_000_000, label='مقدار جم')
+    except ValueError:
+        ctx.user_data.pop('gem_buy', None)
+        await query.edit_message_text(
+            "❌ قیمت یا مقدار این بسته معتبر نیست؛ سفارش ساخته نشد."
+        )
+        return ConversationHandler.END
+    info.update({
+        'title': current[1],
+        'amount': current_amount,
+        'price': current_price,
+        'auto_deliver': bool(current[8]),
+        'catalogue': current[9] or str(current_amount),
+    })
 
     user = update.effective_user
     db_id, _ = get_or_create_user(

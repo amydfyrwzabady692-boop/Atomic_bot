@@ -4,6 +4,7 @@
 # Virtual env
 .venv/
 venv/
+.test-deps/
 
 # Python
 __pycache__/

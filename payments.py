@@ -2,10 +2,12 @@
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 from dotenv import load_dotenv
+from payment_safety import MIN_GATEWAY_AMOUNT, checked_amount
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
@@ -53,12 +55,16 @@ def _post(url, payload):
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read().decode())
+            result = json.loads(r.read().decode())
+            return result if isinstance(result, dict) else {}
     except urllib.error.HTTPError as e:
         try:
-            return json.loads(e.read().decode())
+            result = json.loads(e.read().decode())
+            return result if isinstance(result, dict) else {}
         except Exception:
             return {}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return {}
 
 
 def request_payment(amount_toman, description, callback_url, mobile=''):
@@ -66,12 +72,24 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
     merchant = _merchant()
     if not merchant:
         return None, None, 'مرچنت زرین‌پال تنظیم نشده است.'
-    if not (callback_url or '').startswith('https://'):
+    try:
+        amount_toman = checked_amount(
+            amount_toman, minimum=MIN_GATEWAY_AMOUNT, label='مبلغ درگاه'
+        )
+    except ValueError as e:
+        return None, None, str(e)
+    parsed_callback = urllib.parse.urlparse(str(callback_url or ''))
+    if (
+        parsed_callback.scheme != 'https'
+        or not parsed_callback.hostname
+        or parsed_callback.username
+        or parsed_callback.password
+    ):
         return None, None, 'آدرس بازگشت درگاه باید HTTPS باشد. SSL دامنه را فعال کن.'
 
     payload = {
         'merchant_id': merchant,
-        'amount': int(amount_toman),
+        'amount': amount_toman,
         'currency': 'IRT',
         'description': (description or 'Atomic Bot')[:255],
         'callback_url': callback_url,
@@ -112,11 +130,18 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
 
 def verify_payment(amount_toman, authority):
     merchant = _merchant()
-    if not merchant or not authority:
+    authority = str(authority or '').strip()
+    if not merchant or not authority or len(authority) > 100:
+        return False, None
+    try:
+        amount_toman = checked_amount(
+            amount_toman, minimum=MIN_GATEWAY_AMOUNT, label='مبلغ تأیید درگاه'
+        )
+    except ValueError:
         return False, None
     payload = {
         'merchant_id': merchant,
-        'amount': int(amount_toman),
+        'amount': amount_toman,
         'authority': authority,
     }
     try:
@@ -124,6 +149,6 @@ def verify_payment(amount_toman, authority):
     except Exception:
         return False, None
     data = res.get('data') or {}
-    if data.get('code') in (100, 101):
-        return True, data.get('ref_id')
+    if data.get('code') in (100, 101) and data.get('ref_id'):
+        return True, str(data['ref_id'])
     return False, None

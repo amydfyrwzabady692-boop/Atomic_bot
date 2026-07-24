@@ -9,6 +9,7 @@ import psycopg
 from dotenv import load_dotenv
 
 import g2bulk
+from payment_safety import checked_amount, order_amounts, valid_owner
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
@@ -103,18 +104,21 @@ def get_gem(pk):
 
 
 def decrement_gem_stock(gem_package_id, qty=1):
+    qty = checked_amount(qty, maximum=1_000, label='تعداد')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'UPDATE "GemPackages" SET "Stock" = GREATEST("Stock" - %s, 0) '
-            'WHERE "Id"=%s AND COALESCE("AutoDeliver", false)=false',
-            (qty, gem_package_id),
+            'UPDATE "GemPackages" SET "Stock" = "Stock" - %s '
+            'WHERE "Id"=%s AND COALESCE("AutoDeliver", false)=false AND "Stock">=%s',
+            (qty, gem_package_id, qty),
         )
         conn.commit()
+        return cur.rowcount == 1
 
 
 # ─── Orders ─────────────────────────────────────────────────────────────────────
 def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
                  payment_method='zarinpal'):
+    total = checked_amount(total, label='مبلغ سفارش')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "Orders" '
@@ -138,13 +142,159 @@ def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
         return order_id
 
 
-def set_order_authority(order_id, authority, payment_method='zarinpal'):
+def set_order_authority(order_id, authority, payment_method='zarinpal',
+                        expected_amount=None, user_db_id=None):
+    """سازگاری با فراخوان‌های قدیمی؛ ثبت بدون مبلغ مورد انتظار ممنوع است."""
+    if payment_method != 'zarinpal' or expected_amount is None:
+        return False, 'ثبت درگاه بدون مبلغ ثابت مجاز نیست.'
+    return bind_order_authority(
+        order_id, authority, expected_amount, user_db_id=user_db_id
+    )
+
+
+def _locked_order_financials(cur, order_id):
+    cur.execute(
+        'SELECT "Id","UserId","TelegramId","TotalAmount","DiscountAmount",'
+        'COALESCE("WalletPaid",0),"Status","PaymentMethod","PaymentAuthority",'
+        '"PaymentExpectedAmount","PaymentVerifiedAt" '
+        'FROM "Orders" WHERE "Id"=%s FOR UPDATE',
+        (int(order_id),),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise ValueError('سفارش پیدا نشد.')
+    cur.execute(
+        'SELECT COALESCE(SUM("Price"*"Quantity"),0) FROM "OrderItems" WHERE "OrderId"=%s',
+        (int(order_id),),
+    )
+    item_total = int(cur.fetchone()[0] or 0)
+    net_total, payable = order_amounts(row[3], row[4], row[5], item_total)
+    return row, net_total, payable
+
+
+def validate_order_financials(order_id):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            row, net_total, payable = _locked_order_financials(cur, order_id)
+            conn.rollback()
+            return True, net_total, payable, None
+    except ValueError as e:
+        return False, 0, 0, str(e)
+
+
+def order_belongs_to(order_id, *, user_db_id=None, telegram_id=None):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'UPDATE "Orders" SET "PaymentAuthority"=%s, "PaymentMethod"=%s WHERE "Id"=%s',
-            (authority, payment_method, order_id),
+            'SELECT "UserId","TelegramId" FROM "Orders" WHERE "Id"=%s',
+            (int(order_id),),
         )
-        conn.commit()
+        row = cur.fetchone()
+        return bool(row and valid_owner(
+            row[0], row[1], user_db_id=user_db_id, telegram_id=telegram_id
+        ))
+
+
+def bind_order_authority(order_id, authority, expected_amount, user_db_id=None):
+    """Authority را همراه مبلغ ثابت و فقط روی سفارش سالم/درانتظار ثبت می‌کند."""
+    authority = str(authority or '').strip()
+    if not authority or len(authority) > 100:
+        return False, 'کد درگاه نامعتبر است.'
+    try:
+        expected_amount = checked_amount(
+            expected_amount, minimum=1, label='مبلغ مورد انتظار درگاه'
+        )
+        with get_conn() as conn, conn.cursor() as cur:
+            row, _net, payable = _locked_order_financials(cur, order_id)
+            if row[6] != 'pending' or row[10]:
+                return False, 'سفارش دیگر قابل پرداخت نیست.'
+            if user_db_id is not None and int(row[1]) != int(user_db_id):
+                return False, 'سفارش متعلق به این کاربر نیست.'
+            if row[8] and row[8] != authority:
+                return False, 'برای سفارش از قبل یک لینک درگاه فعال است.'
+            if payable != expected_amount:
+                return False, 'مبلغ سفارش هنگام ساخت لینک تغییر کرده است.'
+            cur.execute(
+                'UPDATE "Orders" SET "PaymentAuthority"=%s,"PaymentMethod"=\'zarinpal\','
+                '"PaymentExpectedAmount"=%s WHERE "Id"=%s AND "Status"=\'pending\'',
+                (authority, expected_amount, int(order_id)),
+            )
+            conn.commit()
+            return cur.rowcount == 1, None
+    except ValueError as e:
+        return False, str(e)
+
+
+def prepare_card_order_payment(order_id, user_db_id):
+    """انتخاب کارت‌به‌کارت فقط برای سفارش سالمی که لینک درگاه فعال ندارد."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            row, _net, payable = _locked_order_financials(cur, order_id)
+            if row[6] != 'pending' or row[10]:
+                return False, 0, 'سفارش قابل پرداخت نیست.'
+            if int(row[1]) != int(user_db_id):
+                return False, 0, 'سفارش متعلق به این کاربر نیست.'
+            if row[8]:
+                return False, 0, (
+                    'برای این سفارش لینک زرین‌پال فعال است؛ همان لینک را بررسی کن '
+                    'یا سفارش را لغو و دوباره ثبت کن.'
+                )
+            checked_amount(payable, label='مبلغ کارت‌به‌کارت')
+            cur.execute(
+                'UPDATE "Orders" SET "PaymentMethod"=\'card_transfer\','
+                '"PaymentExpectedAmount"=%s WHERE "Id"=%s AND "Status"=\'pending\'',
+                (payable, int(order_id)),
+            )
+            conn.commit()
+            return cur.rowcount == 1, payable, None
+    except ValueError as e:
+        return False, 0, str(e)
+
+
+def get_order_payment_expected(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "PaymentExpectedAmount" FROM "Orders" WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+
+def record_order_payment_verified(order_id, method, expected_amount,
+                                  authority=None, ref_id=None):
+    """اثبات پرداخت را اتمیک ثبت و سفارش را برای تحویل claim می‌کند."""
+    try:
+        expected_amount = checked_amount(expected_amount, label='مبلغ تأییدشده')
+        with get_conn() as conn, conn.cursor() as cur:
+            row, _net, payable = _locked_order_financials(cur, order_id)
+            if row[10]:
+                if row[7] != method:
+                    return False, 'payment method mismatch'
+                if payable != expected_amount or int(row[9] or 0) != expected_amount:
+                    return False, 'payment amount mismatch'
+                if authority and row[8] != authority:
+                    return False, 'authority mismatch'
+                return True, 'already_verified'
+            if row[6] != 'pending':
+                return False, f'invalid status: {row[6]}'
+            if row[7] != method:
+                return False, 'payment method mismatch'
+            if payable != expected_amount or int(row[9] or 0) != expected_amount:
+                return False, 'payment amount mismatch'
+            if method == 'zarinpal' and (
+                not authority or row[8] != authority
+            ):
+                return False, 'authority mismatch'
+            cur.execute(
+                'UPDATE "Orders" SET "PaymentVerifiedAt"=now(),"PaymentRefId"=%s,'
+                '"Status"=\'processing\' WHERE "Id"=%s AND "Status"=\'pending\' '
+                'AND "PaymentVerifiedAt" IS NULL',
+                (str(ref_id or '')[:100], int(order_id)),
+            )
+            conn.commit()
+            return cur.rowcount == 1, 'verified'
+    except ValueError as e:
+        return False, str(e)
 
 
 def set_order_payment_method(order_id, payment_method):
@@ -169,10 +319,8 @@ def get_order(order_id):
 
 
 def get_order_payable(order_id):
-    order = get_order(order_id)
-    if not order:
-        return 0
-    return max(0, int(order[2]) - int(order[7] or 0))
+    ok, _net, payable, _error = validate_order_financials(order_id)
+    return payable if ok else 0
 
 
 def set_order_wallet_paid(order_id, amount):
@@ -187,24 +335,59 @@ def set_order_wallet_paid(order_id, amount):
 def apply_wallet_to_order(user_db_id, order_id):
     """کسر موجودی به اندازه ممکن از مبلغ باقی‌مانده.
     خروجی: (ok, used, remaining, new_balance, error)"""
-    order = get_order(order_id)
-    if not order or order[3] != 'pending':
-        return False, 0, 0, 0, 'سفارش قابل پرداخت نیست.'
-    total = int(order[2])
-    already = int(order[7] or 0)
-    remaining = max(0, total - already)
-    if remaining <= 0:
-        return False, 0, 0, get_wallet_balance(user_db_id), 'مبلغی برای پرداخت نمانده.'
-    bal = get_wallet_balance(user_db_id)
-    if bal <= 0:
-        return False, 0, remaining, bal, 'موجودی کیف پول صفر است.'
-    use = min(bal, remaining)
-    ok, new_bal = wallet_spend(user_db_id, use, desc=f'پرداخت سفارش #{order_id} (کیف پول)')
-    if not ok:
-        return False, 0, remaining, bal, 'کسر موجودی ناموفق بود.'
-    set_order_wallet_paid(order_id, already + use)
-    new_remaining = max(0, total - (already + use))
-    return True, use, new_remaining, new_bal, None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            row, net_total, remaining = _locked_order_financials(cur, order_id)
+            if row[6] != 'pending' or row[10]:
+                return False, 0, 0, 0, 'سفارش قابل پرداخت نیست.'
+            if int(row[1]) != int(user_db_id):
+                return False, 0, remaining, 0, 'سفارش متعلق به این کاربر نیست.'
+            if row[8]:
+                return False, 0, remaining, 0, (
+                    'برای این سفارش لینک درگاه فعال است؛ ابتدا سفارش را لغو و دوباره ثبت کن.'
+                )
+            if remaining <= 0:
+                return False, 0, 0, 0, 'مبلغی برای پرداخت نمانده.'
+            cur.execute(
+                'SELECT "Id","Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+                (int(user_db_id),),
+            )
+            wallet = cur.fetchone()
+            balance = int(wallet[1] if wallet else 0)
+            if not wallet or balance <= 0:
+                return False, 0, remaining, balance, 'موجودی کیف پول صفر است.'
+            use = min(balance, remaining)
+            checked_amount(use, label='مبلغ کسر کیف پول')
+            new_balance = balance - use
+            new_wallet_paid = int(row[5]) + use
+            new_remaining = net_total - new_wallet_paid
+            cur.execute(
+                'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+                (new_balance, wallet[0]),
+            )
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+                'VALUES (%s,%s,\'spend\',%s,true,now())',
+                (wallet[0], use, f'پرداخت سفارش #{order_id} (کیف پول)'),
+            )
+            if new_remaining == 0:
+                cur.execute(
+                    'UPDATE "Orders" SET "WalletPaid"=%s,"PaymentMethod"=\'wallet\','
+                    '"PaymentExpectedAmount"=%s,"PaymentVerifiedAt"=now(),'
+                    '"PaymentRefId"=%s,"Status"=\'processing\' WHERE "Id"=%s',
+                    (new_wallet_paid, net_total, f'wallet:{order_id}', int(order_id)),
+                )
+            else:
+                cur.execute(
+                    'UPDATE "Orders" SET "WalletPaid"=%s,"PaymentMethod"=\'pending\','
+                    '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL WHERE "Id"=%s',
+                    (new_wallet_paid, int(order_id)),
+                )
+            conn.commit()
+            return True, use, new_remaining, new_balance, None
+    except ValueError as e:
+        return False, 0, 0, 0, str(e)
 
 
 def refund_order_wallet(order_id):
@@ -221,7 +404,109 @@ def refund_order_wallet(order_id):
     return paid
 
 
+def cancel_order_and_refund(order_id, telegram_id=None):
+    """لغو و بازپرداخت سهم کیف پول در یک تراکنش و فقط پیش از اثبات پرداخت."""
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            row, _net, _payable = _locked_order_financials(cur, order_id)
+        except ValueError as e:
+            return False, 0, str(e)
+        if telegram_id is not None and str(row[2] or '') != str(telegram_id):
+            return False, 0, 'سفارش متعلق به این کاربر نیست.'
+        if row[6] != 'pending' or row[10]:
+            return False, 0, 'سفارش پرداخت‌شده یا در حال پردازش قابل لغو نیست.'
+        if row[8]:
+            return False, 0, (
+                'برای سفارش لینک درگاه صادر شده است. برای جلوگیری از گم‌شدن پرداخت، '
+                'لغو خودکار ممکن نیست؛ ابتدا وضعیت پرداخت باید بررسی شود.'
+            )
+        refunded = int(row[5] or 0)
+        if refunded:
+            cur.execute(
+                'SELECT "Id","Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+                (row[1],),
+            )
+            wallet = cur.fetchone()
+            if not wallet:
+                return False, 0, 'کیف پول کاربر پیدا نشد.'
+            cur.execute(
+                'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+                (int(wallet[1]) + refunded, wallet[0]),
+            )
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+                'VALUES (%s,%s,\'charge\',%s,true,now())',
+                (wallet[0], refunded, f'برگشت کیف پول سفارش #{order_id}'),
+            )
+        cur.execute(
+            'UPDATE "Orders" SET "WalletPaid"=0,"Status"=\'canceled\','
+            '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        conn.commit()
+        return True, refunded, None
+
+
+def approve_card_order_payment(order_id):
+    """تأیید اتمیک کارت‌به‌کارت؛ بدون رسید تصویری، مبلغ سالم و وضعیت pending ممنوع."""
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            row, _net, payable = _locked_order_financials(cur, order_id)
+        except ValueError as e:
+            return False, str(e)
+        if row[6] != 'pending' or row[10]:
+            return False, 'سفارش قبلاً بررسی یا پردازش شده است.'
+        if row[7] != 'card_transfer':
+            return False, 'روش پرداخت سفارش کارت‌به‌کارت نیست.'
+        if payable <= 0:
+            return False, 'مبلغ قابل پرداخت سفارش نامعتبر است.'
+        if int(row[9] or 0) != payable:
+            return False, 'مبلغ ثابت رسید با مانده سفارش تطابق ندارد.'
+        cur.execute(
+            'SELECT "Id" FROM "PaymentReceipts" '
+            'WHERE "OrderId"=%s AND "Status"=\'pending\' AND "FileId"<>\'\' '
+            'ORDER BY "Id" DESC LIMIT 1 FOR UPDATE',
+            (int(order_id),),
+        )
+        receipt = cur.fetchone()
+        if not receipt:
+            return False, 'رسید تصویری تأییدنشده‌ای برای سفارش وجود ندارد.'
+        cur.execute(
+            'UPDATE "Orders" SET "PaymentExpectedAmount"=%s,'
+            '"PaymentVerifiedAt"=now(),"PaymentRefId"=%s,"Status"=\'processing\' '
+            'WHERE "Id"=%s AND "Status"=\'pending\'',
+            (payable, f'card-receipt:{receipt[0]}', int(order_id)),
+        )
+        if cur.rowcount != 1:
+            return False, 'سفارش هم‌زمان توسط درخواست دیگری پردازش شد.'
+        cur.execute(
+            'UPDATE "PaymentReceipts" SET "Status"=\'approved\',"ReviewedAt"=now() '
+            'WHERE "OrderId"=%s AND "Status"=\'pending\'',
+            (int(order_id),),
+        )
+        conn.commit()
+        return True, 'verified'
+
+
+def reject_card_order_payment(order_id):
+    """رد رسید و بازگشت اتمیک سهم کیف پول."""
+    ok, refunded, error = cancel_order_and_refund(order_id)
+    if not ok:
+        return False, 0, error
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "PaymentReceipts" SET "Status"=\'rejected\',"ReviewedAt"=now() '
+            'WHERE "OrderId"=%s AND "Status"=\'pending\'',
+            (int(order_id),),
+        )
+        conn.commit()
+    return True, refunded, None
+
+
 def add_order_item(order_id, product_name, price, qty=1, product_id=None):
+    price = checked_amount(price, label='قیمت قلم سفارش')
+    qty = checked_amount(qty, maximum=1_000, label='تعداد قلم سفارش')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "OrderItems" '
@@ -321,60 +606,134 @@ def is_sense_order(order_id) -> bool:
     return any('پک سنس' in (it[1] or '') for it in items)
 
 
-def fulfill_order(order_id):
-    """پس از پرداخت موفق: جم → G2Bulk ؛ پک سنس → تحویل دستی ادمین."""
-    order = get_order(order_id)
-    if not order:
-        return False, 'سفارش پیدا نشد.'
-    if order[3] in ('paid', 'delivered', 'completed'):
-        pass
-    else:
-        update_order_status(order_id, 'paid')
-
-    infos = get_gem_infos_for_order(order_id)
-    if not infos and is_sense_order(order_id):
-        update_order_status(order_id, 'delivered')
-        return True, 'sense_manual'
-
-    delivered = 0
-    total_auto = 0
-    for info in infos:
-        info_id, pkg_id, game_uid, player_name, auto_deliver, catalogue, g2_id, amount = info
-        if not auto_deliver:
-            decrement_gem_stock(pkg_id, 1)
-            continue
-        total_auto += 1
-        if g2_id:
-            delivered += 1
-            continue
-        catalogue_name = catalogue or str(amount)
-        result = g2bulk.place_game_order(
-            catalogue_name=catalogue_name,
-            player_id=game_uid,
-            remark=f'Atomic Bot order #{order_id}',
-            idempotency_key=g2bulk.idempotency_key(order_id, info_id),
+def _reserve_manual_gem(info_id, package_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT COALESCE("G2BulkStatus",\'\') FROM "GemOrderInfo" '
+            'WHERE "Id"=%s FOR UPDATE',
+            (int(info_id),),
         )
-        if result['ok']:
-            update_gem_g2bulk(
-                info_id,
-                order_id_g2=result['order_id'],
-                status=result.get('status', 'PENDING'),
-                player_name=result.get('player_name') or player_name,
-            )
-            delivered += 1
-        else:
-            update_gem_g2bulk(info_id, status='FAILED')
+        row = cur.fetchone()
+        if not row:
+            return False
+        if row[0] == 'MANUAL_PENDING':
+            return True
+        cur.execute(
+            'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
+            'WHERE "Id"=%s AND COALESCE("AutoDeliver",false)=false AND "Stock">0',
+            (int(package_id),),
+        )
+        if cur.rowcount != 1:
+            return False
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\' WHERE "Id"=%s',
+            (int(info_id),),
+        )
+        conn.commit()
+        return True
 
-    if total_auto and delivered == total_auto:
-        update_order_status(order_id, 'delivered')
-        return True, 'delivered'
-    if total_auto == 0:
-        update_order_status(order_id, 'paid')
-        return True, 'paid'
-    if delivered:
-        update_order_status(order_id, 'processing')
-        return True, 'processing'
-    return False, 'تحویل خودکار ناموفق بود. پشتیبانی بررسی می‌کند.'
+
+def fulfill_order(order_id):
+    """تحویل فقط پس از اثبات پرداخت و با قفل سراسری idempotent برای هر سفارش."""
+    order_id = int(order_id)
+    lock_namespace = 41827
+    with get_conn() as lock_conn, lock_conn.cursor() as lock_cur:
+        lock_cur.execute(
+            'SELECT pg_try_advisory_lock(%s,%s)',
+            (lock_namespace, order_id),
+        )
+        if not lock_cur.fetchone()[0]:
+            return True, 'processing'
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    'SELECT "Status","PaymentVerifiedAt","PaymentMethod",'
+                    '"PaymentExpectedAmount","PaymentRefId",COALESCE("WalletPaid",0) '
+                    'FROM "Orders" WHERE "Id"=%s',
+                    (order_id,),
+                )
+                payment = cur.fetchone()
+            if not payment:
+                return False, 'سفارش پیدا نشد.'
+            status, verified_at, method, expected, payment_ref, wallet_paid = payment
+            if status in ('delivered', 'completed'):
+                return True, 'delivered'
+            if not verified_at or not payment_ref:
+                return False, 'پرداخت سفارش تأیید نشده است.'
+            ok, net_total, payable, error = validate_order_financials(order_id)
+            if not ok:
+                return False, error
+            try:
+                expected = checked_amount(expected, label='مبلغ تأییدشده سفارش')
+            except ValueError as e:
+                return False, str(e)
+            if method == 'wallet':
+                if wallet_paid != net_total or payable != 0 or expected != net_total:
+                    return False, 'اثبات پرداخت کیف پول با مبلغ سفارش تطابق ندارد.'
+            elif method in ('zarinpal', 'card_transfer'):
+                if payable <= 0 or expected != payable:
+                    return False, 'اثبات پرداخت با مانده سفارش تطابق ندارد.'
+            else:
+                return False, 'روش پرداخت تأییدشده معتبر نیست.'
+            update_order_status(order_id, 'processing')
+
+            infos = get_gem_infos_for_order(order_id)
+            if not infos and is_sense_order(order_id):
+                update_order_status(order_id, 'delivered')
+                return True, 'sense_manual'
+            if not infos:
+                return False, 'سفارش قلم قابل تحویل ندارد.'
+
+            delivered = 0
+            total_auto = 0
+            total_manual = 0
+            manual_ok = True
+            for info in infos:
+                (info_id, pkg_id, game_uid, player_name, auto_deliver,
+                 catalogue, g2_id, amount) = info
+                if not auto_deliver:
+                    total_manual += 1
+                    manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
+                    continue
+                total_auto += 1
+                if g2_id:
+                    delivered += 1
+                    continue
+                if not game_uid or not g2bulk.is_supported_amount(amount):
+                    update_gem_g2bulk(info_id, status='FAILED')
+                    continue
+                result = g2bulk.place_game_order(
+                    catalogue_name=catalogue or str(amount),
+                    player_id=game_uid,
+                    remark=f'Atomic Bot order #{order_id}',
+                    idempotency_key=g2bulk.idempotency_key(order_id, info_id),
+                )
+                if result.get('ok') and result.get('order_id'):
+                    update_gem_g2bulk(
+                        info_id,
+                        order_id_g2=result['order_id'],
+                        status=result.get('status', 'PENDING'),
+                        player_name=result.get('player_name') or player_name,
+                    )
+                    delivered += 1
+                else:
+                    update_gem_g2bulk(info_id, status='FAILED')
+
+            if total_auto and delivered == total_auto and manual_ok:
+                update_order_status(order_id, 'delivered')
+                return True, 'delivered'
+            if total_auto == 0 and manual_ok:
+                update_order_status(order_id, 'paid')
+                return True, 'paid'
+            if delivered or (total_manual and manual_ok):
+                update_order_status(order_id, 'processing')
+                return True, 'processing'
+            return False, 'تحویل خودکار ناموفق بود. پشتیبانی بررسی می‌کند.'
+        finally:
+            lock_cur.execute(
+                'SELECT pg_advisory_unlock(%s,%s)',
+                (lock_namespace, order_id),
+            )
 
 
 # ─── Wallet ─────────────────────────────────────────────────────────────────────
@@ -400,7 +759,7 @@ def get_wallet_balance(user_db_id):
 
 
 def wallet_charge(user_db_id, amount, desc='', authority=None):
-    amount = int(amount)
+    amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute('SELECT "Id", "Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE', (user_db_id,))
         row = cur.fetchone()
@@ -428,7 +787,7 @@ def wallet_charge(user_db_id, amount, desc='', authority=None):
 
 
 def wallet_spend(user_db_id, amount, desc=''):
-    amount = int(amount)
+    amount = checked_amount(amount, label='مبلغ برداشت کیف پول')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute('SELECT "Id", "Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE', (user_db_id,))
         row = cur.fetchone()
@@ -452,13 +811,17 @@ def wallet_spend(user_db_id, amount, desc=''):
 
 def create_wallet_charge_tx(user_db_id, amount, authority):
     """ثبت تراکنش شارژ در انتظار تایید درگاه."""
+    amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
+    authority = str(authority or '').strip()
+    if not authority or len(authority) > 100:
+        raise ValueError('کد تراکنش شارژ نامعتبر است.')
     wallet_id, _ = get_or_create_wallet(user_db_id)
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "WalletTransactions" '
             '("WalletId", "Amount", "Kind", "Description", "Authority", "IsPaid", "CreatedAt") '
             'VALUES (%s, %s, %s, %s, %s, false, now()) RETURNING "Id"',
-            (wallet_id, int(amount), 'charge', f'شارژ کیف پول {int(amount):,} تومان', authority),
+            (wallet_id, amount, 'charge', f'شارژ کیف پول {amount:,} تومان', authority),
         )
         tx_id = cur.fetchone()[0]
         conn.commit()
@@ -469,16 +832,26 @@ def complete_wallet_charge_by_authority(authority):
     """پس از verify زرین‌پال، موجودی را شارژ کن. خروجی: (ok, user_id, amount, new_balance)"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT t."Id", t."WalletId", t."Amount", t."IsPaid", w."UserId", w."Balance" '
-            'FROM "WalletTransactions" t '
-            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
-            'WHERE t."Authority"=%s AND t."Kind"=\'charge\'',
+            'SELECT "Id","WalletId","Amount","IsPaid" FROM "WalletTransactions" '
+            'WHERE "Authority"=%s AND "Kind"=\'charge\' FOR UPDATE',
             (authority,),
         )
         row = cur.fetchone()
         if not row:
             return False, None, 0, 0
-        tx_id, wallet_id, amount, is_paid, user_id, balance = row
+        tx_id, wallet_id, amount, is_paid = row
+        try:
+            amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
+        except ValueError:
+            return False, None, 0, 0
+        cur.execute(
+            'SELECT "UserId","Balance" FROM "Wallets" WHERE "Id"=%s FOR UPDATE',
+            (wallet_id,),
+        )
+        wallet = cur.fetchone()
+        if not wallet:
+            return False, None, 0, 0
+        user_id, balance = wallet
         if is_paid:
             return True, user_id, amount, balance
         new_bal = balance + amount
@@ -492,6 +865,95 @@ def complete_wallet_charge_by_authority(authority):
         )
         conn.commit()
         return True, user_id, amount, new_bal
+
+
+def approve_wallet_card_charge(tx_id):
+    """شارژ کارت‌به‌کارت فقط با رسید تصویری pending و به‌صورت اتمیک."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "WalletId","Amount","Authority","IsPaid" '
+            'FROM "WalletTransactions" WHERE "Id"=%s AND "Kind"=\'charge\' FOR UPDATE',
+            (int(tx_id),),
+        )
+        tx = cur.fetchone()
+        if not tx:
+            return False, None, 0, 0, 'تراکنش پیدا نشد.'
+        wallet_id, amount, authority, is_paid = tx
+        if is_paid:
+            cur.execute(
+                'SELECT "UserId","Balance" FROM "Wallets" WHERE "Id"=%s',
+                (wallet_id,),
+            )
+            wallet = cur.fetchone()
+            return True, wallet[0], int(amount), int(wallet[1]), 'already_paid'
+        if not str(authority or '').startswith('wcard_'):
+            return False, None, 0, 0, 'تراکنش کارت‌به‌کارت نیست.'
+        try:
+            amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
+        except ValueError as e:
+            return False, None, 0, 0, str(e)
+        cur.execute(
+            'SELECT "Id" FROM "PaymentReceipts" '
+            'WHERE "WalletTransactionId"=%s AND "Status"=\'pending\' AND "FileId"<>\'\' '
+            'ORDER BY "Id" DESC LIMIT 1 FOR UPDATE',
+            (int(tx_id),),
+        )
+        receipt = cur.fetchone()
+        if not receipt:
+            return False, None, 0, 0, 'رسید تصویری تأییدنشده‌ای وجود ندارد.'
+        cur.execute(
+            'SELECT "UserId","Balance" FROM "Wallets" WHERE "Id"=%s FOR UPDATE',
+            (wallet_id,),
+        )
+        wallet = cur.fetchone()
+        if not wallet:
+            return False, None, 0, 0, 'کیف پول پیدا نشد.'
+        user_id, balance = wallet
+        new_balance = int(balance) + amount
+        cur.execute(
+            'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+            (new_balance, wallet_id),
+        )
+        cur.execute(
+            'UPDATE "WalletTransactions" SET "IsPaid"=true WHERE "Id"=%s',
+            (int(tx_id),),
+        )
+        cur.execute(
+            'UPDATE "PaymentReceipts" SET "Status"=\'approved\',"ReviewedAt"=now() '
+            'WHERE "WalletTransactionId"=%s AND "Status"=\'pending\'',
+            (int(tx_id),),
+        )
+        conn.commit()
+        return True, user_id, amount, new_balance, 'approved'
+
+
+def reject_wallet_card_charge(tx_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "IsPaid","Authority" FROM "WalletTransactions" '
+            'WHERE "Id"=%s AND "Kind"=\'charge\' FOR UPDATE',
+            (int(tx_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, 'تراکنش پیدا نشد.'
+        if row[0]:
+            return False, 'شارژ قبلاً اعمال شده و قابل رد نیست.'
+        if not str(row[1] or '').startswith('wcard_'):
+            return False, 'تراکنش کارت‌به‌کارت نیست.'
+        cur.execute(
+            'UPDATE "WalletTransactions" SET '
+            '"Description"=COALESCE("Description",\'\') || \' [rejected]\','
+            '"Authority"=\'rejected_\' || "Id"::text WHERE "Id"=%s',
+            (int(tx_id),),
+        )
+        cur.execute(
+            'UPDATE "PaymentReceipts" SET "Status"=\'rejected\',"ReviewedAt"=now() '
+            'WHERE "WalletTransactionId"=%s AND "Status"=\'pending\'',
+            (int(tx_id),),
+        )
+        conn.commit()
+        return True, None
 
 
 def get_order_by_authority(authority):
@@ -520,6 +982,48 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "WalletPaid" INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_payment_authority
+           ON "Orders" ("PaymentAuthority")
+           WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> ''""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_authority
+           ON "WalletTransactions" ("Authority")
+           WHERE "Authority" IS NOT NULL AND "Authority" <> ''""",
+        '''DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_orders_financials') THEN
+                ALTER TABLE "Orders" ADD CONSTRAINT ck_orders_financials
+                CHECK ("TotalAmount">0 AND "DiscountAmount">=0
+                       AND "DiscountAmount"<"TotalAmount" AND "WalletPaid">=0
+                       AND ("PaymentExpectedAmount" IS NULL OR "PaymentExpectedAmount">0))
+                NOT VALID;
+            END IF;
+        END $$''',
+        '''DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_order_items_financials') THEN
+                ALTER TABLE "OrderItems" ADD CONSTRAINT ck_order_items_financials
+                CHECK ("Price">0 AND "Quantity">0) NOT VALID;
+            END IF;
+        END $$''',
+        '''DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_wallet_balance_nonnegative') THEN
+                ALTER TABLE "Wallets" ADD CONSTRAINT ck_wallet_balance_nonnegative
+                CHECK ("Balance">=0) NOT VALID;
+            END IF;
+        END $$''',
+        '''DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_wallet_tx_amount_positive') THEN
+                ALTER TABLE "WalletTransactions" ADD CONSTRAINT ck_wallet_tx_amount_positive
+                CHECK ("Amount">0) NOT VALID;
+            END IF;
+        END $$''',
+        '''DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_gem_package_financials') THEN
+                ALTER TABLE "GemPackages" ADD CONSTRAINT ck_gem_package_financials
+                CHECK ("Amount">0 AND "Price">0 AND "Stock">=0) NOT VALID;
+            END IF;
+        END $$''',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "ReferredById" INTEGER REFERENCES "Users"("Id") ON DELETE SET NULL',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardNumber" VARCHAR(32) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardVerified" BOOLEAN NOT NULL DEFAULT false',
@@ -589,11 +1093,16 @@ def ensure_admin_schema():
         )''',
     ]
     with get_conn() as conn, conn.cursor() as cur:
-        for sql in stmts:
+        for index, sql in enumerate(stmts):
+            savepoint = f'schema_patch_{index}'
+            cur.execute(f'SAVEPOINT {savepoint}')
             try:
                 cur.execute(sql)
             except Exception as e:
+                cur.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
                 print(f'[DB] schema patch skipped: {sql[:40]}… ({e})')
+            finally:
+                cur.execute(f'RELEASE SAVEPOINT {savepoint}')
         conn.commit()
 
 
@@ -753,6 +1262,22 @@ def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_
         return rid
 
 
+def get_payment_receipt(order_id=None, wallet_tx_id=None):
+    """آخرین رسید ثبت‌شده برای سفارش یا شارژ کیف پول."""
+    field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
+    value = order_id if order_id is not None else wallet_tx_id
+    if value is None:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT "Id","TelegramId","FileId","Text","Status","CreatedAt" '
+            f'FROM "PaymentReceipts" WHERE {field}=%s '
+            f'ORDER BY "Id" DESC LIMIT 1',
+            (value,),
+        )
+        return cur.fetchone()
+
+
 def mark_receipt_reviewed(order_id=None, wallet_tx_id=None, status='approved'):
     field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
     value = order_id if order_id is not None else wallet_tx_id
@@ -809,11 +1334,12 @@ def get_sense_package(package_id):
 
 
 def add_sense_package(title, platform, price, description=''):
+    price = checked_amount(price, label='قیمت بسته')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "SensePackages" ("Title","Platform","Price","Description") '
             'VALUES (%s,%s,%s,%s) RETURNING "Id"',
-            (title, platform, int(price), description or ''),
+            (title, platform, price, description or ''),
         )
         value = cur.fetchone()[0]
         conn.commit()
@@ -825,7 +1351,7 @@ def update_sense_package(package_id, field, value):
     if field not in allowed:
         raise ValueError('فیلد نامعتبر')
     if field == 'Price':
-        value = int(value)
+        value = checked_amount(value, label='قیمت بسته')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f'UPDATE "SensePackages" SET "{field}"=%s WHERE "Id"=%s',
                     (value, int(package_id)))
@@ -833,13 +1359,18 @@ def update_sense_package(package_id, field, value):
 
 
 def add_gem_package(title, amount, price, stock=9999):
+    amount = checked_amount(amount, maximum=1_000_000, label='مقدار جم')
+    price = checked_amount(price, label='قیمت بسته')
+    stock = int(stock)
+    if stock < 0:
+        raise ValueError('موجودی نمی‌تواند منفی باشد')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "GemPackages" '
             '("Title","Amount","BonusAmount","Price","PlanType","PurchaseType",'
             '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive") '
             'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,%s,true,true) RETURNING "Id"',
-            (title, int(amount), int(price), str(amount), int(stock)),
+            (title, amount, price, str(amount), stock),
         )
         value = cur.fetchone()[0]
         conn.commit()
@@ -851,8 +1382,14 @@ def update_gem_package(package_id, field, value):
                'G2BulkCatalogueName', 'AutoDeliver'}
     if field not in allowed:
         raise ValueError('فیلد نامعتبر')
-    if field in {'Amount', 'Price', 'Stock'}:
+    if field == 'Amount':
+        value = checked_amount(value, maximum=1_000_000, label='مقدار جم')
+    elif field == 'Price':
+        value = checked_amount(value, label='قیمت بسته')
+    elif field == 'Stock':
         value = int(value)
+        if value < 0:
+            raise ValueError('موجودی نمی‌تواند منفی باشد')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f'UPDATE "GemPackages" SET "{field}"=%s WHERE "Id"=%s',
                     (value, int(package_id)))
@@ -899,12 +1436,16 @@ def add_category(title):
 
 
 def add_store_product(title, price, stock=0, category_id=None, description=''):
+    price = checked_amount(price, label='قیمت محصول')
+    stock = int(stock)
+    if stock < 0:
+        raise ValueError('موجودی نمی‌تواند منفی باشد')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "StoreProducts" '
             '("Title","Price","Stock","CategoryId","Description") VALUES (%s,%s,%s,%s,%s) '
             'RETURNING "Id"',
-            (title, int(price), int(stock), category_id, description or ''),
+            (title, price, stock, category_id, description or ''),
         )
         value = cur.fetchone()[0]
         conn.commit()
@@ -912,11 +1453,19 @@ def add_store_product(title, price, stock=0, category_id=None, description=''):
 
 
 def add_promo_code(code, code_type, value, max_uses=1):
+    code_type = str(code_type or '').strip().lower()
+    max_uses = checked_amount(max_uses, maximum=1_000_000, label='تعداد استفاده')
+    if code_type == 'discount':
+        value = checked_amount(value, maximum=100, label='درصد تخفیف')
+    elif code_type == 'gift':
+        value = checked_amount(value, label='مبلغ هدیه')
+    else:
+        raise ValueError('نوع کد معتبر نیست')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "PromoCodes" ("Code","CodeType","Value","MaxUses") '
             'VALUES (%s,%s,%s,%s) RETURNING "Id"',
-            (code.strip().upper(), code_type, int(value), int(max_uses)),
+            (code.strip().upper(), code_type, value, max_uses),
         )
         result = cur.fetchone()[0]
         conn.commit()
@@ -1105,8 +1654,9 @@ def admin_set_wallet_balance(user_db_id, new_balance, desc='تنظیم موجو�
 
 def create_wallet_card_charge(user_db_id, amount):
     """شارژ کارت‌به‌کارت در انتظار تایید ادمین. خروجی: tx_id, authority"""
-    import time
-    authority = f"wcard_{user_db_id}_{int(time.time())}"
+    import uuid
+    amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
+    authority = f"wcard_{uuid.uuid4().hex}"
     tx_id = create_wallet_charge_tx(user_db_id, amount, authority)
     return tx_id, authority
 

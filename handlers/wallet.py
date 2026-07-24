@@ -17,11 +17,13 @@ from keyboards import (
 from db import (
     get_or_create_user, get_wallet_balance, create_wallet_charge_tx,
     complete_wallet_charge_by_authority, create_wallet_card_charge,
-    get_conn, get_wallet_tx, mark_wallet_tx_rejected,
+    get_conn, get_wallet_tx, approve_wallet_card_charge,
+    reject_wallet_card_charge,
     get_setting, get_bool_setting,
-    save_payment_receipt, mark_receipt_reviewed,
+    save_payment_receipt,
 )
 from payments import request_payment, verify_payment
+from payment_safety import MIN_WALLET_CHARGE, checked_amount
 from admin_notify import is_admin, notify_admin
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
@@ -84,6 +86,13 @@ async def wallet_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _show_charge_methods(reply, amount):
+    try:
+        amount = checked_amount(
+            amount, minimum=MIN_WALLET_CHARGE, label='مبلغ شارژ کیف پول'
+        )
+    except ValueError as e:
+        await reply(f"❌ {e}", reply_markup=wallet_keyboard())
+        return False
     await reply(
         f"✦ *شارژ کیف پول*\n"
         f"مبلغ: *{amount:,}* تومان\n"
@@ -92,12 +101,21 @@ async def _show_charge_methods(reply, amount):
         parse_mode='Markdown',
         reply_markup=wallet_charge_method_keyboard(amount),
     )
+    return True
 
 
 async def wallet_charge_preset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    amount = int(query.data.split('_')[1])
+    try:
+        amount = checked_amount(
+            query.data.split('_')[1],
+            minimum=MIN_WALLET_CHARGE,
+            label='مبلغ شارژ کیف پول',
+        )
+    except ValueError as e:
+        await query.edit_message_text(f"❌ {e}", reply_markup=wallet_keyboard())
+        return ConversationHandler.END
 
     async def reply(text, **kwargs):
         await query.edit_message_text(text, **kwargs)
@@ -121,10 +139,13 @@ async def wallet_charge_custom_amount(update: Update, ctx: ContextTypes.DEFAULT_
     raw = (update.message.text or '').strip()
     raw = raw.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'))
     raw = raw.replace(',', '').replace('،', '').replace(' ', '')
-    if not raw.isdigit() or int(raw) < 10000:
-        await update.message.reply_text("⚠️ مبلغ نامعتبر است. حداقل ۱۰٬۰۰۰ تومان.")
+    try:
+        amount = checked_amount(
+            raw, minimum=MIN_WALLET_CHARGE, label='مبلغ شارژ کیف پول'
+        )
+    except ValueError as e:
+        await update.message.reply_text(f"⚠️ {e}")
         return WAIT_CUSTOM
-    amount = int(raw)
 
     async def reply(text, **kwargs):
         await update.message.reply_text(text, **kwargs)
@@ -136,7 +157,15 @@ async def wallet_charge_custom_amount(update: Update, ctx: ContextTypes.DEFAULT_
 async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    amount = int(query.data.replace('wpay_zp_', ''))
+    try:
+        amount = checked_amount(
+            query.data.replace('wpay_zp_', ''),
+            minimum=MIN_WALLET_CHARGE,
+            label='مبلغ شارژ کیف پول',
+        )
+    except ValueError as e:
+        await query.edit_message_text(f"❌ {e}", reply_markup=wallet_keyboard())
+        return
     user = update.effective_user
     db_id = ctx.user_data.get('db_id')
     if not db_id:
@@ -203,7 +232,15 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    amount = int(query.data.replace('wpay_card_', ''))
+    try:
+        amount = checked_amount(
+            query.data.replace('wpay_card_', ''),
+            minimum=MIN_WALLET_CHARGE,
+            label='مبلغ شارژ کیف پول',
+        )
+    except ValueError as e:
+        await query.edit_message_text(f"❌ {e}", reply_markup=wallet_keyboard())
+        return
     user = update.effective_user
     db_id = ctx.user_data.get('db_id')
     if not db_id:
@@ -283,16 +320,28 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elapsed = time.time() - started
     left = max(0, int(ZP_TTL_SEC - elapsed))
 
+    user = update.effective_user
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT "Amount", "IsPaid" FROM "WalletTransactions" WHERE "Authority"=%s',
+            'SELECT t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+            'WHERE t."Authority"=%s AND t."Kind"=\'charge\'',
             (authority,),
         )
         row = cur.fetchone()
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
         return
-    amount, is_paid = row
+    amount, is_paid, owner_db_id, owner_tg_id = row
+    if int(owner_db_id) != int(db_id) or str(owner_tg_id or '') != str(user.id):
+        await query.edit_message_text("❌ این تراکنش شارژ متعلق به شما نیست.")
+        return
     if is_paid:
         bal = get_wallet_balance(ctx.user_data.get('db_id') or 0)
         await query.edit_message_text(
@@ -356,6 +405,16 @@ async def wallet_card_done_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     if not info:
         await query.edit_message_text("❌ اطلاعات شارژ پیدا نشد. دوباره از کیف پول شروع کن.")
         return ConversationHandler.END
+    row = get_wallet_tx(info.get('tx_id'))
+    if (
+        not row or row[3]
+        or int(row[4]) != int(info.get('db_id') or 0)
+        or str(row[5] or '') != str(update.effective_user.id)
+        or int(row[1]) != int(info.get('amount') or 0)
+        or not str(row[2] or '').startswith('wcard_')
+    ):
+        await query.edit_message_text("❌ اطلاعات شارژ با حساب شما تطابق ندارد.")
+        return ConversationHandler.END
     ctx.user_data['wallet_card'] = info
     ctx.user_data['wallet_card_key'] = tx_key
     await query.edit_message_text(
@@ -374,6 +433,17 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tx_id = info['tx_id']
     amount = info['amount']
+    row = get_wallet_tx(tx_id)
+    if (
+        not row or row[3] or int(row[1]) != int(amount)
+        or str(row[5] or '') != str(user.id)
+        or not str(row[2] or '').startswith('wcard_')
+    ):
+        await update.message.reply_text(
+            "❌ تراکنش منقضی، پرداخت‌شده یا متعلق به حساب دیگری است.",
+            reply_markup=wallet_keyboard(),
+        )
+        return ConversationHandler.END
     uname = f"@{user.username}" if user.username else "—"
     caption = (
         f"🆕 رسید شارژ کیف پول\n"
@@ -433,6 +503,15 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def wallet_receipt_photo_required(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Keep the flow open until an actual image receipt is received."""
+    await update.message.reply_text(
+        "⚠️ لطفاً عکس رسید را به‌صورت Photo یا فایل تصویری ارسال کن؛ "
+        "متن و فایل غیرتصویری برای بررسی پرداخت پذیرفته نمی‌شود."
+    )
+    return WAIT_WCARD_RECEIPT
+
+
 async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -440,7 +519,6 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_ok_', ''))
-    mark_receipt_reviewed(wallet_tx_id=tx_id, status='approved')
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
@@ -450,9 +528,9 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_paid:
         await query.edit_message_text(f"این شارژ قبلاً تایید شده (#{tx_id}).")
         return
-    done, _uid, amt, new_bal = complete_wallet_charge_by_authority(authority)
+    done, _uid, amt, new_bal, approve_status = approve_wallet_card_charge(tx_id)
     if not done:
-        await query.edit_message_text("❌ اعمال شارژ ناموفق بود.")
+        await query.edit_message_text(f"❌ اعمال شارژ ناموفق بود: {approve_status}")
         return
     try:
         await query.edit_message_caption(
@@ -486,7 +564,6 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_no_', ''))
-    mark_receipt_reviewed(wallet_tx_id=tx_id, status='rejected')
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
@@ -495,7 +572,10 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_paid:
         await query.edit_message_text("این شارژ قبلاً اعمال شده؛ قابل رد نیست.")
         return
-    mark_wallet_tx_rejected(tx_id)
+    rejected, reject_error = reject_wallet_card_charge(tx_id)
+    if not rejected:
+        await query.edit_message_text(f"❌ رد شارژ انجام نشد: {reject_error}")
+        return
     try:
         await query.edit_message_caption(caption=f"❌ شارژ کیف پول #{tx_id} رد شد.")
     except Exception:
@@ -529,8 +609,12 @@ def wallet_conversation_handler():
             ],
             WAIT_WCARD_RECEIPT: [
                 MessageHandler(
-                    (filters.PHOTO | filters.Document.ALL | (filters.TEXT & ~filters.COMMAND)),
+                    (filters.PHOTO | filters.Document.IMAGE),
                     wallet_card_receipt,
+                ),
+                MessageHandler(
+                    (filters.TEXT & ~filters.COMMAND) | filters.Document.ALL,
+                    wallet_receipt_photo_required,
                 ),
             ],
         },
