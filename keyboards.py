@@ -152,16 +152,15 @@ def card_payment_keyboard(order_id):
 
 def receipt_skip_keyboard(order_id):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('⏭ بدون رسید ادامه بده', callback_data=f'paid_skip_{order_id}')],
-        [InlineKeyboardButton('❌ انصراف', callback_data=f'cancel_order_{order_id}')],
+        [InlineKeyboardButton('❌ انصراف از پرداخت', callback_data=f'cancel_order_{order_id}')],
     ])
 
 
 def admin_card_keyboard(order_id):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('✅ تایید سفارش', callback_data=f'admin_ok_{order_id}'),
-            InlineKeyboardButton('❌ رد سفارش', callback_data=f'admin_no_{order_id}'),
+            InlineKeyboardButton('✅ تأیید پرداخت', callback_data=f'admin_ok_{order_id}'),
+            InlineKeyboardButton('❌ رد پرداخت', callback_data=f'admin_no_{order_id}'),
         ],
     ])
 

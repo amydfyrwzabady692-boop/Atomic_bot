@@ -11,7 +11,8 @@ from admin_notify import admin_id, is_admin
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
-    delete_simple_record, get_gem, get_order_admin, get_sense_package, get_setting,
+    delete_simple_record, get_gem, get_order_admin, get_payment_receipt,
+    get_sense_package, get_setting,
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
@@ -20,6 +21,60 @@ from db import (
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
 WAIT_VALUE = 50
+
+COMPOUND_FIELDS = {
+    'product': (
+        ('عنوان محصول', 'مثال: اکانت لول 70'),
+        ('قیمت به تومان', 'مثال: 500000'),
+        ('موجودی', 'مثال: 2'),
+        ('شناسه دسته‌بندی', 'اگر دسته ندارد، عدد 0 را بفرست'),
+    ),
+    'promo:gift': (
+        ('کد هدیه', 'مثال: GIFT100'),
+        ('مبلغ هدیه به تومان', 'مثال: 100000'),
+        ('تعداد استفاده', 'مثال: 5'),
+    ),
+    'promo:discount': (
+        ('کد تخفیف', 'مثال: OFF20'),
+        ('درصد تخفیف', 'عددی بین 1 تا 100'),
+        ('تعداد استفاده', 'مثال: 100'),
+    ),
+    'gemadd': (
+        ('عنوان بسته', 'مثال: بسته 110 جمی'),
+        ('مقدار جم', 'مثال: 110'),
+        ('قیمت به تومان', 'مثال: 200000'),
+        ('موجودی', 'مثال: 9999'),
+    ),
+    'senseadd': (
+        ('عنوان پک سنس', 'مثال: پک سنس حرفه‌ای'),
+        ('پلتفرم', 'فقط pc یا mobile'),
+        ('قیمت به تومان', 'مثال: 1000000'),
+        ('توضیح', 'متن کوتاه؛ برای خالی بودن یک خط تیره بفرست'),
+    ),
+    'adminadd': (
+        ('شناسه عددی تلگرام', 'مثال: 123456789'),
+        ('نام مدیر', 'مثال: علی'),
+    ),
+}
+
+
+def _compound_prompt(action, index):
+    fields = COMPOUND_FIELDS[action]
+    title, hint = fields[index]
+    return (
+        f"مرحله {index + 1} از {len(fields)} — *{title}*\n"
+        f"{hint}\n\n/cancel برای انصراف"
+    )
+
+
+def _split_compound(raw):
+    """ورودی یک‌خطی قدیمی را نیز با |، خط جدید یا جداکننده فارسی می‌پذیرد."""
+    normalized = raw.replace('│', '|').replace('｜', '|')
+    if '|' in normalized:
+        return [part.strip() for part in normalized.split('|')]
+    if '\n' in normalized:
+        return [part.strip() for part in normalized.splitlines() if part.strip()]
+    return None
 
 
 def _kb(rows):
@@ -166,16 +221,34 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not order:
             await _edit(query, 'سفارش پیدا نشد.', [_back('admx_receipts')])
         else:
-            await _edit(query, (
+            caption = (
                 f'🧾 سفارش #{oid}\n'
                 f'کاربر: {order[7] or "—"} @{order[8] or "—"}\n'
                 f'شناسه: {order[1]}\nمبلغ: {order[2]:,} تومان\n'
                 f'روش: {order[4]}\nوضعیت: {order[5]}'
-            ), [
-                [InlineKeyboardButton('✅ تایید', callback_data=f'admin_ok_{oid}'),
-                 InlineKeyboardButton('❌ رد', callback_data=f'admin_no_{oid}')],
-                _back('admx_receipts'),
-            ])
+            )
+            receipt = get_payment_receipt(order_id=oid)
+            if receipt and receipt[2]:
+                try:
+                    await query.message.reply_photo(
+                        photo=receipt[2], caption=caption,
+                        reply_markup=admin_card_keyboard(oid),
+                    )
+                except Exception:
+                    await query.message.reply_document(
+                        document=receipt[2], caption=caption,
+                        reply_markup=admin_card_keyboard(oid),
+                    )
+                await query.edit_message_text(
+                    f'🧾 تصویر رسید سفارش #{oid} در پیام بعدی نمایش داده شد.',
+                    reply_markup=_kb([_back('admx_receipts')]),
+                )
+            else:
+                await _edit(query, caption + '\n\n⚠️ فایل تصویری برای این رسید ثبت نشده.', [
+                    [InlineKeyboardButton('✅ تایید', callback_data=f'admin_ok_{oid}'),
+                     InlineKeyboardButton('❌ رد', callback_data=f'admin_no_{oid}')],
+                    _back('admx_receipts'),
+                ])
     elif data == 'admx_gems':
         rows = admin_list_gems()
         buttons = [[InlineKeyboardButton(
@@ -358,7 +431,13 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not action:
         action, prompt = INPUT_ACTIONS[data]
     ctx.user_data['admin_ext_action'] = action
-    await query.edit_message_text(prompt + '\n\n/cancel برای انصراف')
+    if action in COMPOUND_FIELDS:
+        ctx.user_data['admin_ext_draft'] = []
+        await query.edit_message_text(
+            _compound_prompt(action, 0), parse_mode='Markdown'
+        )
+    else:
+        await query.edit_message_text(prompt + '\n\n/cancel برای انصراف')
     return WAIT_VALUE
 
 
@@ -368,6 +447,26 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     action = ctx.user_data.pop('admin_ext_action', '')
     raw = (update.message.text or '').strip()
     try:
+        if action in COMPOUND_FIELDS:
+            supplied = _split_compound(raw)
+            if supplied is not None:
+                p = supplied
+                ctx.user_data.pop('admin_ext_draft', None)
+            else:
+                p = ctx.user_data.get('admin_ext_draft', [])
+                p.append(raw)
+                if len(p) < len(COMPOUND_FIELDS[action]):
+                    ctx.user_data['admin_ext_draft'] = p
+                    ctx.user_data['admin_ext_action'] = action
+                    await update.message.reply_text(
+                        _compound_prompt(action, len(p)), parse_mode='Markdown'
+                    )
+                    return WAIT_VALUE
+                ctx.user_data.pop('admin_ext_draft', None)
+            if len(p) != len(COMPOUND_FIELDS[action]):
+                raise ValueError(
+                    f'این بخش دقیقاً {len(COMPOUND_FIELDS[action])} مقدار نیاز دارد.'
+                )
         if action == 'broadcast':
             sent, failed = 0, 0
             status = await update.message.reply_text('⏳ ارسال شروع شد…')
@@ -410,26 +509,27 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             add_category(raw)
             await update.message.reply_text('✅ دسته‌بندی اضافه شد.', reply_markup=admin_home_keyboard())
         elif action == 'product':
-            p = [x.strip() for x in raw.split('|')]
-            add_store_product(p[0], int(p[1].replace(',', '')), int(p[2]), int(p[3]) if p[3] else None)
+            category_id = int(p[3]) if p[3] not in ('', '0', '-') else None
+            add_store_product(p[0], int(p[1].replace(',', '')), int(p[2]), category_id)
             await update.message.reply_text('✅ محصول اضافه شد.', reply_markup=admin_home_keyboard())
         elif action.startswith('promo:'):
-            p = [x.strip() for x in raw.split('|')]
+            if action == 'promo:discount' and not 1 <= int(p[1]) <= 100:
+                raise ValueError('درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.')
             add_promo_code(p[0], action.split(':')[1], p[1], p[2])
             await update.message.reply_text('✅ کد ساخته شد.', reply_markup=admin_home_keyboard())
         elif action == 'gemadd':
-            p = [x.strip() for x in raw.split('|')]
             add_gem_package(p[0], p[1], p[2].replace(',', ''), p[3])
             await update.message.reply_text('✅ بسته جم اضافه شد.', reply_markup=admin_home_keyboard())
         elif action == 'senseadd':
-            p = [x.strip() for x in raw.split('|')]
             platform = p[1].lower()
             if platform not in ('pc', 'mobile'):
                 raise ValueError('پلتفرم فقط pc یا mobile است.')
-            add_sense_package(p[0], platform, p[2].replace(',', ''), p[3] if len(p) > 3 else '')
+            add_sense_package(
+                p[0], platform, p[2].replace(',', ''),
+                '' if p[3] == '-' else p[3],
+            )
             await update.message.reply_text('✅ پک سنس اضافه شد.', reply_markup=admin_home_keyboard())
         elif action == 'adminadd':
-            p = [x.strip() for x in raw.split('|', 1)]
             if not p[0].isdigit():
                 raise ValueError('شناسه تلگرام باید عددی باشد.')
             add_bot_admin(p[0], p[1] if len(p) > 1 else '')
@@ -446,7 +546,18 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('✅ پک سنس ویرایش شد.', reply_markup=admin_home_keyboard())
     except (ValueError, IndexError) as e:
         ctx.user_data['admin_ext_action'] = action
-        await update.message.reply_text(f'❌ ورودی نامعتبر: {e}\nدوباره بفرست یا /cancel بزن.')
+        if action in COMPOUND_FIELDS:
+            ctx.user_data['admin_ext_draft'] = []
+            retry = '\n\nفرم از مرحله اول شروع شد.'
+        else:
+            retry = ''
+        await update.message.reply_text(
+            f'❌ ورودی نامعتبر: {e}{retry}\nدوباره بفرست یا /cancel بزن.'
+        )
+        if action in COMPOUND_FIELDS:
+            await update.message.reply_text(
+                _compound_prompt(action, 0), parse_mode='Markdown'
+            )
         return WAIT_VALUE
     except Exception as e:
         await update.message.reply_text(f'❌ عملیات انجام نشد: {e}', reply_markup=admin_home_keyboard())
@@ -455,6 +566,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_input_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop('admin_ext_action', None)
+    ctx.user_data.pop('admin_ext_draft', None)
     await update.message.reply_text('انصراف.', reply_markup=admin_home_keyboard())
     return ConversationHandler.END
 

@@ -753,6 +753,22 @@ def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_
         return rid
 
 
+def get_payment_receipt(order_id=None, wallet_tx_id=None):
+    """آخرین رسید ثبت‌شده برای سفارش یا شارژ کیف پول."""
+    field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
+    value = order_id if order_id is not None else wallet_tx_id
+    if value is None:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT "Id","TelegramId","FileId","Text","Status","CreatedAt" '
+            f'FROM "PaymentReceipts" WHERE {field}=%s '
+            f'ORDER BY "Id" DESC LIMIT 1',
+            (value,),
+        )
+        return cur.fetchone()
+
+
 def mark_receipt_reviewed(order_id=None, wallet_tx_id=None, status='approved'):
     field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
     value = order_id if order_id is not None else wallet_tx_id

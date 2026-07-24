@@ -1,4 +1,5 @@
 """پرداخت سفارش جم: زرین‌پال، کارت‌به‌کارت، کیف پول + تایید ادمین."""
+from html import escape
 import os
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from keyboards import (
 from db import (
     get_order, set_order_authority, update_order_status, fulfill_order,
     wallet_spend, get_or_create_user, set_order_payment_method,
-    order_requires_kyc, is_kyc_approved, get_order_items,
+    order_requires_kyc, is_kyc_approved, get_order_items, get_gem_infos_for_order,
     get_order_payable, apply_wallet_to_order, get_wallet_balance, refund_order_wallet,
     get_setting, get_bool_setting, save_payment_receipt, mark_receipt_reviewed,
 )
@@ -56,6 +57,71 @@ WAIT_RECEIPT = 0
 VPN_WARNING = (
     "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و لینک را در مرورگر باز کن.\n"
 )
+
+
+def _receipt_admin_caption(order_id, pending, user, receipt_text=''):
+    """کپشن کوتاه و امن برای کارت بررسی رسید ادمین."""
+    order = get_order(order_id)
+    items = get_order_items(order_id)
+    shop = get_setting('shop_name', 'Atomic Shop') or 'Atomic Shop'
+    item_lines = []
+    for item in items[:5]:
+        qty = int(item[3] or 1)
+        item_lines.append(
+            f"• {escape(str(item[1] or 'محصول')[:70])}"
+            + (f" × {qty}" if qty > 1 else "")
+        )
+    if len(items) > 5:
+        item_lines.append(f"• و {len(items) - 5} مورد دیگر")
+    products = '\n'.join(item_lines) or '• محصول ثبت‌شده در سفارش'
+    game_lines = []
+    try:
+        for info in get_gem_infos_for_order(order_id)[:3]:
+            game_uid = info[2] or '—'
+            player = info[3] or 'در انتظار دریافت'
+            game_lines.append(
+                f"🎮 آیدی بازی: <code>{escape(str(game_uid)[:50])}</code>\n"
+                f"🏷 نام داخل بازی: {escape(str(player)[:80])}"
+            )
+    except Exception:
+        # سفارش‌های فروشگاه و پک سنس طبیعتاً اطلاعات بازی ندارند.
+        pass
+    game_info = ('\n' + '\n'.join(game_lines)) if game_lines else ''
+    username = f"@{user.username}" if user.username else "ندارد"
+    total = int(order[2] if order else pending.get('total', 0))
+    wallet_paid = int(order[7] if order else 0)
+    card_paid = int(pending.get('total', max(0, total - wallet_paid)))
+    note = (receipt_text or '').strip()
+    note_line = f"\n📝 توضیح رسید: {escape(note[:180])}" if note else ''
+    return (
+        f"🧾 <b>بررسی پرداخت {escape(shop)}</b>\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🛍 <b>سفارش #{order_id}</b>\n"
+        f"{products}\n\n"
+        f"💳 مبلغ واریزی: <b>{card_paid:,} تومان</b>\n"
+        f"💰 مبلغ کل: {total:,} تومان\n"
+        + (f"👛 کسر از کیف پول: {wallet_paid:,} تومان\n" if wallet_paid else "")
+        + f"🔖 روش پرداخت: کارت‌به‌کارت\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"👤 کاربر: {escape(user.full_name or '—')}\n"
+        f"🔗 نام کاربری: {escape(username)}\n"
+        f"🆔 شناسه تلگرام: <code>{user.id}</code>"
+        f"{game_info}"
+        f"{note_line}\n\n"
+        f"پس از تطبیق عکس رسید و مبلغ، پرداخت را تأیید یا رد کنید."
+    )
+
+
+async def _edit_review_message(query, text, reply_markup=None, parse_mode=None):
+    """نتیجه بررسی را روی پیام متنی، عکس یا فایل رسید ثبت می‌کند."""
+    if query.message and (query.message.photo or query.message.document):
+        await query.edit_message_caption(
+            caption=text, parse_mode=parse_mode, reply_markup=reply_markup
+        )
+    else:
+        await query.edit_message_text(
+            text=text, parse_mode=parse_mode, reply_markup=reply_markup
+        )
 
 
 def _order_pay_keyboard(order_id, db_id=None):
@@ -536,7 +602,8 @@ async def paid_claim_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "🧾 *ارسال رسید پرداخت*\n"
         "━━━━━━━━━━━━━━━\n"
-        "عکس رسید یا کد پیگیری را همین‌جا بفرست.",
+        "لطفاً *عکس رسید* را همین‌جا بفرست.\n"
+        "در صورت نیاز می‌توانی کد پیگیری را در کپشن عکس بنویسی.",
         parse_mode='Markdown',
         reply_markup=receipt_skip_keyboard(order_id),
     )
@@ -569,24 +636,32 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
     recipients = admin_ids()
     if recipients:
         try:
-            uname = f"@{user.username}" if user.username else "—"
+            caption = _receipt_admin_caption(
+                order_id, pending, user, receipt_text=receipt_text
+            )
             for aid in recipients:
-                await ctx.bot.send_message(
-                    chat_id=aid,
-                    text=(
-                        f"🆕 رسید کارت‌به‌کارت — سفارش #{order_id}\n"
-                        f"مبلغ: {pending['total']:,} ت\n"
-                        f"کاربر: {user.full_name} ({uname})\n"
-                        f"تلگرام: `{user.id}`\n\n"
-                        f"پس از بررسی، تایید یا رد کن:"
-                    ),
-                    parse_mode='Markdown',
-                    reply_markup=admin_card_keyboard(order_id),
-                )
-                if receipt_msg:
-                    await ctx.bot.copy_message(
-                        chat_id=aid, from_chat_id=receipt_msg.chat_id,
-                        message_id=receipt_msg.message_id,
+                if receipt_msg and receipt_msg.photo:
+                    await ctx.bot.send_photo(
+                        chat_id=aid,
+                        photo=receipt_msg.photo[-1].file_id,
+                        caption=caption,
+                        parse_mode='HTML',
+                        reply_markup=admin_card_keyboard(order_id),
+                    )
+                elif receipt_msg and receipt_msg.document:
+                    await ctx.bot.send_document(
+                        chat_id=aid,
+                        document=receipt_msg.document.file_id,
+                        caption=caption,
+                        parse_mode='HTML',
+                        reply_markup=admin_card_keyboard(order_id),
+                    )
+                else:
+                    await ctx.bot.send_message(
+                        chat_id=aid,
+                        text=caption,
+                        parse_mode='HTML',
+                        reply_markup=admin_card_keyboard(order_id),
                     )
             admin_ok = True
         except Exception as e:
@@ -619,10 +694,13 @@ async def receive_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await _finalize_card(update, ctx, receipt_msg=update.message)
 
 
-async def skip_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    return await _finalize_card(update, ctx, receipt_msg=None, via_query=query)
+async def receipt_photo_required(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📷 برای بررسی پرداخت، ارسال *عکس رسید* الزامی است.\n"
+        "لطفاً رسید را به‌صورت عکس یا فایل تصویری بفرست.",
+        parse_mode='Markdown',
+    )
+    return WAIT_RECEIPT
 
 
 async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -658,17 +736,18 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     mark_receipt_reviewed(order_id=order_id, status='approved')
     order = get_order(order_id)
     if not order:
-        await query.edit_message_text("❌ سفارش پیدا نشد.")
+        await _edit_review_message(query, "❌ سفارش پیدا نشد.")
         return
     if order[3] in ('delivered', 'completed'):
-        await query.edit_message_text(f"سفارش #{order_id} قبلاً تحویل شده.")
+        await _edit_review_message(query, f"سفارش #{order_id} قبلاً تحویل شده.")
         return
 
     success, status = fulfill_order(order_id)
     tg_id = order[6]
     if success and status == 'sense_manual':
         await _notify_sense_sale(ctx.bot, order_id)
-        await query.edit_message_text(
+        await _edit_review_message(
+            query,
             f"✅ سفارش #{order_id} تایید شد (پک سنس).\nآیدی کاربر برایت ارسال شد."
         )
         await _notify_user(
@@ -677,7 +756,9 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"✅ سفارش #{order_id} تایید شد.\nپک سنس به‌زودی در پیوی برات ارسال می‌شود.",
         )
     elif success and status in ('delivered', 'paid'):
-        await query.edit_message_text(f"✅ سفارش #{order_id} تایید و پردازش شد ({status}).")
+        await _edit_review_message(
+            query, f"✅ سفارش #{order_id} تایید و پردازش شد ({status})."
+        )
         await _notify_user(
             ctx.bot,
             tg_id,
@@ -686,7 +767,8 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await _alert_fulfill_issue(ctx.bot, order_id, status, 'card_transfer')
-        await query.edit_message_text(
+        await _edit_review_message(
+            query,
             f"⚠️ تایید شد ولی تحویل کامل نشد: `{status}`\nدکمه تلاش مجدد در اعلان ادمین است.",
             parse_mode='Markdown',
             reply_markup=admin_failed_order_keyboard(order_id, str(tg_id or '')),
@@ -711,7 +793,7 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if order and order[3] == 'pending':
         refunded = refund_order_wallet(order_id)
         update_order_status(order_id, 'canceled')
-    await query.edit_message_text(f"❌ سفارش #{order_id} رد شد.")
+    await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.")
     if order and order[6]:
         extra = f"\n💰 {refunded:,} تومان به کیف پول برگشت." if refunded else ""
         await _notify_user(
@@ -728,10 +810,13 @@ def payment_conversation_handler():
         states={
             WAIT_RECEIPT: [
                 MessageHandler(
-                    (filters.PHOTO | filters.Document.ALL | (filters.TEXT & ~filters.COMMAND)),
+                    (filters.PHOTO | filters.Document.IMAGE),
                     receive_receipt,
                 ),
-                CallbackQueryHandler(skip_receipt, pattern=r'^paid_skip_\d+$'),
+                MessageHandler(
+                    (filters.TEXT & ~filters.COMMAND) | filters.Document.ALL,
+                    receipt_photo_required,
+                ),
                 CallbackQueryHandler(cancel_order, pattern=r'^cancel_order_\d+$'),
             ],
         },
