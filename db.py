@@ -3,12 +3,14 @@
 جدول‌ها و ستون‌ها PascalCase هستند و داخل گیومه قرار می‌گیرند.
 """
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import psycopg
 from dotenv import load_dotenv
 
 import g2bulk
+import profitability
 from payment_safety import checked_amount, order_amounts, valid_owner
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
@@ -601,6 +603,125 @@ def update_gem_g2bulk(info_id, order_id_g2=None, status=None, player_name=None):
         conn.commit()
 
 
+def record_gem_profit_snapshot(info_id, order_id, supplier_cost_usd, rate_info):
+    """هزینه و نرخ همان لحظه را یک‌بار و بدون امکان بازنویسی ذخیره می‌کند."""
+    try:
+        cost_usd = Decimal(str(supplier_cost_usd))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    if cost_usd <= 0:
+        return False
+    rate_info = rate_info or {}
+    rate = rate_info.get('rate') if rate_info.get('ok') else None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT o."TotalAmount",o."DiscountAmount",oi."Price",oi."Quantity",'
+                '(SELECT COALESCE(SUM(x."Price"*x."Quantity"),0) '
+                ' FROM "OrderItems" x WHERE x."OrderId"=o."Id") '
+                'FROM "GemOrderInfo" g '
+                'JOIN "Orders" o ON o."Id"=g."OrderId" '
+                'JOIN "OrderItems" oi ON oi."Id"=g."OrderItemId" '
+                'WHERE g."Id"=%s AND o."Id"=%s',
+                (int(info_id), int(order_id)),
+            )
+            row = cur.fetchone()
+            if not row or int(row[4] or 0) <= 0:
+                return False
+            net_sale = int(row[0]) - int(row[1] or 0)
+            item_subtotal = int(row[2]) * int(row[3])
+            sale_amount = profitability.allocate_sale_amount(
+                net_sale, item_subtotal, int(row[4])
+            )
+            supplier_toman = gross_profit = None
+            if rate:
+                supplier_toman, gross_profit = profitability.calculate_gross_profit(
+                    sale_amount, cost_usd, int(rate)
+                )
+            cur.execute(
+                'INSERT INTO "OrderProfitSnapshots" '
+                '("OrderId","GemOrderInfoId","SaleAmountToman","SupplierCostUsd",'
+                '"UsdTomanRate","SupplierCostToman","GrossProfitToman","FxSource",'
+                '"FxObservedMs","CapturedAt") '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,now()) '
+                'ON CONFLICT ("GemOrderInfoId") DO NOTHING',
+                (
+                    int(order_id), int(info_id), sale_amount, cost_usd,
+                    int(rate) if rate else None, supplier_toman, gross_profit,
+                    str(rate_info.get('source') or 'rate_unavailable')[:80],
+                    rate_info.get('observed_ms'),
+                ),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+    except Exception:
+        return False
+
+
+def profit_report_stats():
+    """سود ناخالص تحقق‌یافته؛ فقط سفارش G2 تکمیل‌شده با snapshot دقیق."""
+    with get_conn() as conn, conn.cursor() as cur:
+        condition = (
+            'g."G2BulkStatus"=\'COMPLETED\' '
+            'AND p."GrossProfitToman" IS NOT NULL'
+        )
+        cur.execute(
+            'SELECT COUNT(*),COALESCE(SUM(p."SaleAmountToman"),0),'
+            'COALESCE(SUM(p."SupplierCostToman"),0),'
+            'COALESCE(SUM(p."GrossProfitToman"),0),'
+            'COALESCE(SUM(p."SupplierCostUsd"),0) '
+            'FROM "OrderProfitSnapshots" p '
+            'JOIN "GemOrderInfo" g ON g."Id"=p."GemOrderInfoId" '
+            f'WHERE {condition}'
+        )
+        all_time = cur.fetchone()
+        cur.execute(
+            'SELECT COUNT(*),COALESCE(SUM(p."SaleAmountToman"),0),'
+            'COALESCE(SUM(p."SupplierCostToman"),0),'
+            'COALESCE(SUM(p."GrossProfitToman"),0) '
+            'FROM "OrderProfitSnapshots" p '
+            'JOIN "GemOrderInfo" g ON g."Id"=p."GemOrderInfoId" '
+            f'WHERE {condition} AND p."CapturedAt">=now()-interval \'30 days\''
+        )
+        month = cur.fetchone()
+        cur.execute(
+            'SELECT COUNT(*) FROM "GemOrderInfo" g '
+            'JOIN "Orders" o ON o."Id"=g."OrderId" '
+            'LEFT JOIN "OrderProfitSnapshots" p ON p."GemOrderInfoId"=g."Id" '
+            'WHERE g."G2BulkStatus"=\'COMPLETED\' '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND (p."Id" IS NULL OR p."GrossProfitToman" IS NULL)'
+        )
+        missing = int(cur.fetchone()[0] or 0)
+        return {
+            'count': int(all_time[0] or 0),
+            'sales': int(all_time[1] or 0),
+            'cost': int(all_time[2] or 0),
+            'profit': int(all_time[3] or 0),
+            'cost_usd': float(all_time[4] or 0),
+            'month_count': int(month[0] or 0),
+            'month_sales': int(month[1] or 0),
+            'month_cost': int(month[2] or 0),
+            'month_profit': int(month[3] or 0),
+            'missing': missing,
+        }
+
+
+def list_profit_snapshots(limit=20):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT p."OrderId",gp."Amount",p."SaleAmountToman",'
+            'p."SupplierCostUsd",p."UsdTomanRate",p."SupplierCostToman",'
+            'p."GrossProfitToman",p."FxSource",p."CapturedAt",g."G2BulkStatus" '
+            'FROM "OrderProfitSnapshots" p '
+            'JOIN "GemOrderInfo" g ON g."Id"=p."GemOrderInfoId" '
+            'JOIN "GemPackages" gp ON gp."Id"=g."GemPackageId" '
+            'ORDER BY p."Id" DESC LIMIT %s',
+            (max(1, min(int(limit), 50)),),
+        )
+        return cur.fetchall()
+
+
 def get_order_items(order_id):
     """(Id, ProductName, Price, Quantity, ProductId)"""
     with get_conn() as conn, conn.cursor() as cur:
@@ -738,6 +859,18 @@ def fulfill_order(order_id):
                         status=api_status,
                         player_name=result.get('player_name') or player_name,
                     )
+                    supplier_cost = result.get('cost_usd')
+                    if not supplier_cost:
+                        _available, supplier_cost, _balance, _error = (
+                            g2bulk.can_fulfill(
+                                amount, catalogue or str(amount), force=False
+                            )
+                        )
+                    if supplier_cost:
+                        record_gem_profit_snapshot(
+                            info_id, order_id, supplier_cost,
+                            profitability.get_usd_toman_rate(force=False),
+                        )
                     if api_status == 'COMPLETED':
                         delivered += 1
                     else:
@@ -1139,6 +1272,22 @@ def ensure_admin_schema():
             "Message" VARCHAR(500) NOT NULL DEFAULT '',
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''CREATE TABLE IF NOT EXISTS "OrderProfitSnapshots" (
+            "Id" BIGSERIAL PRIMARY KEY,
+            "OrderId" INTEGER NOT NULL REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "GemOrderInfoId" INTEGER UNIQUE NOT NULL
+                REFERENCES "GemOrderInfo"("Id") ON DELETE CASCADE,
+            "SaleAmountToman" INTEGER NOT NULL CHECK ("SaleAmountToman">0),
+            "SupplierCostUsd" NUMERIC(18,6) NOT NULL CHECK ("SupplierCostUsd">0),
+            "UsdTomanRate" INTEGER,
+            "SupplierCostToman" INTEGER,
+            "GrossProfitToman" INTEGER,
+            "FxSource" VARCHAR(80) NOT NULL DEFAULT '',
+            "FxObservedMs" BIGINT,
+            "CapturedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_profit_snapshots_captured
+           ON "OrderProfitSnapshots" ("CapturedAt" DESC)''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
            ON "PaymentAttempts" ("Status", "CreatedAt" DESC)''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_order

@@ -31,15 +31,20 @@ _EDITABLE = {
 }
 
 
-def _keyboard():
-    return InlineKeyboardMarkup([
+def _keyboard(user_id=None):
+    rows = [
         [InlineKeyboardButton('✏️ نام فروشگاه', callback_data='studio_edit_shop')],
         [InlineKeyboardButton('✨ متن خوش‌آمد', callback_data='studio_edit_welcome')],
         [InlineKeyboardButton('🎧 متن پشتیبانی', callback_data='studio_edit_support')],
         [InlineKeyboardButton('💵 موجودی G2Bulk', callback_data='studio_g2')],
         [InlineKeyboardButton('📒 گزارش پرداخت فقط‌خواندنی', callback_data='studio_payments')],
         [InlineKeyboardButton('🔄 بروزرسانی', callback_data='studio_home')],
-    ])
+    ]
+    if user_id is not None and is_admin(user_id):
+        rows.append([
+            InlineKeyboardButton('🔙 پنل اصلی ادمین', callback_data='adm_home')
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _guard(update):
@@ -74,7 +79,7 @@ async def studio_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'این بخش برای ظاهر، متن‌ها و گزارش‌های فقط‌خواندنی است.\n'
         'به مرچنت، کارت، کیف پول کاربران و مدیریت ادمین‌ها دسترسی ندارد.',
         parse_mode='Markdown',
-        reply_markup=_keyboard(),
+        reply_markup=_keyboard(update.effective_user.id),
     )
 
 
@@ -87,7 +92,7 @@ async def studio_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'studio_home':
         await query.edit_message_text(
             '⭐ استودیوی مدیر پریمیوم\nیک بخش را انتخاب کن.',
-            reply_markup=_keyboard(),
+            reply_markup=_keyboard(update.effective_user.id),
         )
     elif data == 'studio_g2':
         snapshot = g2bulk.get_inventory_snapshot(force=True)
@@ -102,7 +107,7 @@ async def studio_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text = '\n'.join(lines)
         await query.edit_message_text(
             text, parse_mode='Markdown' if snapshot.get('ok') else None,
-            reply_markup=_keyboard(),
+            reply_markup=_keyboard(update.effective_user.id),
         )
     elif data == 'studio_payments':
         rows = list_payment_attempts(limit=20)
@@ -121,7 +126,8 @@ async def studio_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not rows:
             lines.append('هنوز رویدادی ثبت نشده است.')
         await query.edit_message_text(
-            '\n'.join(lines), parse_mode='Markdown', reply_markup=_keyboard()
+            '\n'.join(lines), parse_mode='Markdown',
+            reply_markup=_keyboard(update.effective_user.id)
         )
 
 
@@ -156,13 +162,17 @@ async def studio_edit_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     set_setting(key, value)
     ctx.user_data.pop('studio_edit', None)
-    await update.message.reply_text('✅ ذخیره شد.', reply_markup=_keyboard())
+    await update.message.reply_text(
+        '✅ ذخیره شد.', reply_markup=_keyboard(update.effective_user.id)
+    )
     return ConversationHandler.END
 
 
 async def studio_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop('studio_edit', None)
-    await update.message.reply_text('انصراف.', reply_markup=_keyboard())
+    await update.message.reply_text(
+        'انصراف.', reply_markup=_keyboard(update.effective_user.id)
+    )
     return ConversationHandler.END
 
 

@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS "GemOrderInfo" (
     "G2BulkStatus" VARCHAR(30)
 );
 
+CREATE TABLE IF NOT EXISTS "OrderProfitSnapshots" (
+    "Id" BIGSERIAL PRIMARY KEY,
+    "OrderId" INTEGER NOT NULL REFERENCES "Orders"("Id") ON DELETE CASCADE,
+    "GemOrderInfoId" INTEGER UNIQUE NOT NULL REFERENCES "GemOrderInfo"("Id") ON DELETE CASCADE,
+    "SaleAmountToman" INTEGER NOT NULL CHECK ("SaleAmountToman" > 0),
+    "SupplierCostUsd" NUMERIC(18,6) NOT NULL CHECK ("SupplierCostUsd" > 0),
+    "UsdTomanRate" INTEGER CHECK ("UsdTomanRate" IS NULL OR "UsdTomanRate" > 0),
+    "SupplierCostToman" INTEGER CHECK ("SupplierCostToman" IS NULL OR "SupplierCostToman" > 0),
+    "GrossProfitToman" INTEGER,
+    "FxSource" VARCHAR(80) NOT NULL DEFAULT '',
+    "FxObservedMs" BIGINT,
+    "CapturedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_profit_snapshots_captured
+ON "OrderProfitSnapshots" ("CapturedAt" DESC);
+
 CREATE TABLE IF NOT EXISTS "Wallets" (
     "Id" SERIAL PRIMARY KEY,
     "UserId" INTEGER UNIQUE NOT NULL REFERENCES "Users"("Id") ON DELETE CASCADE,

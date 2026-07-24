@@ -11,6 +11,7 @@ from telegram.ext import (
 
 from admin_notify import admin_id, is_admin
 import g2bulk
+import profitability
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
@@ -20,6 +21,7 @@ from db import (
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
+    list_profit_snapshots, profit_report_stats,
 )
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
@@ -168,7 +170,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
             [InlineKeyboardButton('🧾 رسیدهای تاییدنشده', callback_data='admx_receipts')],
             [InlineKeyboardButton('📒 گزارش پرداخت‌ها', callback_data='admx_payments_all')],
+            [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
             [InlineKeyboardButton('💵 موجودی G2Bulk', callback_data='admx_g2balance')],
+            [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
             _back(),
         ])
     elif data.startswith('admx_payments_'):
@@ -214,6 +218,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ], markdown=True)
     elif data == 'admx_g2balance':
         snapshot = g2bulk.get_inventory_snapshot(force=True)
+        fx = profitability.get_usd_toman_rate(force=True)
         if not snapshot.get('ok'):
             text = (
                 '❌ دریافت موجودی G2Bulk ناموفق بود.\n'
@@ -225,6 +230,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '💵 *موجودی زنده G2Bulk*',
                 '━━━━━━━━━━━━━━━',
                 f'موجودی: *${balance:,.4f} {snapshot["currency"]}*',
+                (
+                    f'نرخ مبنای هزینه: *{int(fx["rate"]):,} تومان*'
+                    if fx.get('ok') else
+                    'نرخ مبنای هزینه: دریافت نشد'
+                ),
                 '',
                 'توان خرید تقریبی:',
             ]
@@ -236,6 +246,54 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_g2balance')],
             _back('admx_finance'),
         ], markdown=snapshot.get('ok', False))
+    elif data == 'admx_profit':
+        stats = profit_report_stats()
+        margin = (
+            stats['profit'] * 100 / stats['sales'] if stats['sales'] else 0
+        )
+        lines = [
+            '📈 *سود ناخالص فروش جم*',
+            '━━━━━━━━━━━━━━━',
+            f'فروش‌های دارای snapshot: *{stats["count"]:,}*',
+            f'جمع فروش: *{stats["sales"]:,} تومان*',
+            f'هزینه تأمین: *{stats["cost"]:,} تومان* '
+            f'(${stats["cost_usd"]:,.4f})',
+            f'سود ناخالص کل: *{stats["profit"]:,} تومان*',
+            f'حاشیه سود: *{margin:.2f}%*',
+            '',
+            f'۳۰ روز اخیر: *{stats["month_profit"]:,} تومان* سود '
+            f'از {stats["month_count"]:,} فروش',
+        ]
+        if stats['missing']:
+            lines.extend([
+                '',
+                f'⚠️ {stats["missing"]:,} سفارش قدیمی/بدون نرخ دقیق در سود کل '
+                'محاسبه نشده است.',
+            ])
+        rows = list_profit_snapshots(15)
+        if rows:
+            lines.extend(['', 'آخرین snapshotها:'])
+        for row in rows:
+            (oid, gems, sale, cost_usd, rate, cost_toman, profit,
+             source, created, g2_status) = row
+            if profit is None:
+                profit_text = 'نرخ ناموجود'
+            else:
+                profit_text = f'{int(profit):,} ت'
+            source_label = str(source or '').replace('_', '-')
+            lines.append(
+                f'• #{oid} · {gems} جم · فروش {int(sale):,} ت · '
+                f'هزینه ${float(cost_usd):.4f} × '
+                f'{int(rate or 0):,} · سود {profit_text}\n'
+                f'  {source_label} · {g2_status} · {str(created)[:16]}'
+            )
+            if len('\n'.join(lines)) > 3650:
+                lines.append('…')
+                break
+        await _edit(query, '\n'.join(lines), [
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_profit')],
+            _back('admx_finance'),
+        ], markdown=True)
     elif data == 'admx_actions':
         await _edit(query, '📨 عملیات کاربران و سفارش‌ها', [
             [InlineKeyboardButton('📣 ارسال پیام همگانی', callback_data='admi_broadcast')],
@@ -265,6 +323,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     elif data == 'admx_stats':
         s = admin_stats_full()
+        profit = profit_report_stats()
         text = (
             '📊 *آمار کلی ربات*\n'
             '━━━━━━━━━━━━━━━\n'
@@ -273,6 +332,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'موجودی کل کاربران: *{s["wallet_sum"]:,}* تومان\n'
             f'تعداد کل فروش: *{s["sales_count"]:,}*\n'
             f'جمع کل فروش: *{s["sales_sum"]:,}* تومان\n'
+            f'سود ناخالص ثبت‌شده جم: *{profit["profit"]:,}* تومان\n'
             f'سفارش‌های باز: *{s["open_orders"]:,}*\n'
             f'رسیدهای در انتظار: *{len(list_pending_receipts(100)):,}*\n'
             f'تیکت باز: *{s["open_tickets"]:,}*'
@@ -495,6 +555,10 @@ INPUT_ACTIONS = {
     'admi_ordersearch': ('ordersearch', 'شماره سفارش را بفرست (مثلاً 123).'),
     'admi_zpmerchant': ('setting:zarinpal_merchant_id', 'مرچنت آیدی زرین‌پال را بفرست.'),
     'admi_callback': ('setting:payment_callback_base', 'آدرس HTTPS پایه callback را بفرست.'),
+    'admi_usdrate': (
+        'setting:usd_toman_rate',
+        'نرخ پشتیبان هر دلار به تومان را بفرست؛ فقط هنگام قطع نرخ زنده استفاده می‌شود.',
+    ),
     'admi_cardnumber': ('setting:card_number', 'شماره کارت ۱۶ رقمی را بفرست.'),
     'admi_cardholder': ('setting:card_holder', 'نام صاحب کارت را بفرست.'),
     'admi_cardbank': ('setting:card_bank', 'نام بانک را بفرست.'),
@@ -617,6 +681,11 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     or parsed.username or parsed.password
                 ):
                     raise ValueError('آدرس callback باید HTTPS معتبر و بدون رمز داخل URL باشد.')
+            if key == 'usd_toman_rate':
+                rate = int(raw.replace(',', ''))
+                if not 10_000 <= rate <= 10_000_000:
+                    raise ValueError('نرخ دلار خارج از محدوده مجاز است.')
+                raw = str(rate)
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             set_setting(key, raw)

@@ -216,6 +216,14 @@ def admin_home_keyboard():
             InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_support'),
             InlineKeyboardButton('⚙️ تنظیمات', callback_data='admx_settings'),
         ],
+        [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
+        [
+            InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home'),
+            InlineKeyboardButton('👮 لیست و مدیر پریمیوم', callback_data='admx_admins'),
+        ],
+        [InlineKeyboardButton(
+            '➕ افزودن ادمین کامل با شناسه', callback_data='admi_admin'
+        )],
         [InlineKeyboardButton('بروزرسانی', callback_data='adm_home')],
     ])
 

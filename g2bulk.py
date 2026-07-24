@@ -184,6 +184,7 @@ def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None)
             'order_id': order.get('order_id'),
             'status': order.get('status', 'PENDING'),
             'player_name': order.get('player_name', ''),
+            'cost_usd': order.get('price'),
         }
     return {
         'ok': False,

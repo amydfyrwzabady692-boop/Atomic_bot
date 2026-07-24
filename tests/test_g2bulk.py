@@ -72,6 +72,23 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['status'], 'PENDING')
 
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={
+            'success': True,
+            'order': {
+                'order_id': 42,
+                'status': 'PENDING',
+                'price': '0.875',
+            },
+        },
+    )
+    def test_order_returns_exact_supplier_cost(self, _request, _api_key):
+        result = g2bulk.place_game_order('110 Diamonds', '12345')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['cost_usd'], '0.875')
+
 
 if __name__ == '__main__':
     unittest.main()
