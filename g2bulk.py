@@ -1,12 +1,15 @@
 """کلاینت G2Bulk — تایید آیدی و تحویل خودکار جم فری‌فایر (Middle East)."""
 import json
 import os
+import re
+import time
 import uuid
 import urllib.error
 import urllib.request
 
 BASE_URL = 'https://api.g2bulk.com/v1'
 G2BULK_ME_AMOUNTS = (110, 231, 583, 1188, 2420)
+_inventory_cache = {'at': 0.0, 'value': None}
 
 
 def _api_key():
@@ -46,9 +49,16 @@ def _request(method, path, body=None, idempotency_key=None):
     except urllib.error.HTTPError as e:
         raw = e.read().decode('utf-8', errors='replace')
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            if isinstance(result, dict):
+                result.setdefault('_http_status', e.code)
+                return result
+            return {'success': False, 'message': str(result), '_http_status': e.code}
         except ValueError:
-            return {'success': False, 'message': raw or str(e)}
+            return {
+                'success': False, 'message': raw or str(e),
+                '_http_status': e.code,
+            }
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
         return {'success': False, 'message': str(e)}
 
@@ -66,6 +76,87 @@ def check_player_id(user_id):
         'ok': False,
         'error': data.get('message') or 'آیدی بازی معتبر نیست. لطفاً دوباره بررسی کنید.',
     }
+
+
+def get_inventory_snapshot(force=False):
+    """موجودی دلاری و قیمت زنده کاتالوگ بازی را با کش کوتاه برمی‌گرداند."""
+    if not is_configured():
+        return {'ok': False, 'error': 'API key not configured'}
+    now = time.monotonic()
+    cached = _inventory_cache.get('value')
+    # خطای احراز/شبکه را حتی در حالت force کوتاه‌مدت cache کن؛ طبق مستند API،
+    # تکرار 401 می‌تواند IP را مسدود کند.
+    if cached and not cached.get('ok') and now - _inventory_cache.get('at', 0) < 60:
+        return cached
+    if not force and cached and now - _inventory_cache.get('at', 0) < 45:
+        return cached
+
+    me = _request('GET', '/getMe')
+    if not me.get('success') or me.get('balance') is None:
+        result = {
+            'ok': False,
+            'error': me.get('message') or 'دریافت موجودی G2Bulk ناموفق بود.',
+        }
+        _inventory_cache.update(at=now, value=result)
+        return result
+    catalogue = _request('GET', f'/games/{_game_code()}/catalogue')
+    if not catalogue.get('success'):
+        result = {
+            'ok': False,
+            'error': catalogue.get('message') or 'دریافت کاتالوگ G2Bulk ناموفق بود.',
+        }
+        _inventory_cache.update(at=now, value=result)
+        return result
+    try:
+        balance = float(me['balance'])
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'موجودی برگشتی G2Bulk معتبر نیست.'}
+
+    prices = {}
+    names = {}
+    for item in catalogue.get('catalogues') or []:
+        name = str(item.get('name') or '')
+        match = re.search(r'\d+', name)
+        try:
+            package_amount = int(match.group()) if match else None
+            cost = float(item.get('amount'))
+        except (TypeError, ValueError):
+            continue
+        if package_amount and cost > 0:
+            prices[package_amount] = cost
+            names[package_amount] = name
+    result = {
+        'ok': True,
+        'balance': balance,
+        'currency': str(me.get('currency') or 'USD'),
+        'prices': prices,
+        'names': names,
+        'username': me.get('username') or '',
+    }
+    _inventory_cache.update(at=now, value=result)
+    return result
+
+
+def can_fulfill(amount, catalogue_name='', force=False):
+    """بررسی می‌کند یک بسته با موجودی فعلی حساب API قابل سفارش است."""
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return False, None, None, 'مقدار بسته نامعتبر است.'
+    snapshot = get_inventory_snapshot(force=force)
+    if not snapshot.get('ok'):
+        return False, None, None, snapshot.get('error')
+    cost = snapshot['prices'].get(amount)
+    if cost is None and catalogue_name:
+        match = re.search(r'\d+', str(catalogue_name))
+        if match:
+            cost = snapshot['prices'].get(int(match.group()))
+    if cost is None:
+        return False, None, snapshot['balance'], 'بسته در کاتالوگ زنده API پیدا نشد.'
+    available = snapshot['balance'] + 1e-9 >= cost
+    return available, cost, snapshot['balance'], (
+        None if available else 'موجودی دلاری API برای این بسته کافی نیست.'
+    )
 
 
 def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None):
@@ -97,6 +188,29 @@ def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None)
     return {
         'ok': False,
         'error': data.get('message') or 'ثبت سفارش در G2Bulk ناموفق بود.',
+    }
+
+
+def get_game_order_status(order_id):
+    """وضعیت زنده یک سفارش شارژ مستقیم را دریافت می‌کند."""
+    if not is_configured() or not str(order_id or '').strip():
+        return {'ok': False, 'error': 'شناسه سفارش یا API key موجود نیست.'}
+    data = _request(
+        'POST', '/games/order/status', {'order_id': str(order_id).strip()}
+    )
+    order = data.get('order') if isinstance(data.get('order'), dict) else {}
+    status = str(
+        order.get('status') or data.get('status') or ''
+    ).strip().upper()
+    if status in {'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED'}:
+        return {
+            'ok': True,
+            'status': 'FAILED' if status == 'CANCELED' else status,
+            'player_name': order.get('player_name') or data.get('player_name') or '',
+        }
+    return {
+        'ok': False,
+        'error': data.get('message') or 'وضعیت سفارش G2Bulk قابل تشخیص نیست.',
     }
 
 

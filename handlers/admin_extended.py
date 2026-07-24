@@ -1,5 +1,7 @@
 """بخش‌های توسعه‌یافته پنل تلگرامی ادمین."""
 import asyncio
+import uuid
+from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -8,6 +10,7 @@ from telegram.ext import (
 )
 
 from admin_notify import admin_id, is_admin
+import g2bulk
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
@@ -16,7 +19,7 @@ from db import (
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
-    update_sense_package,
+    update_sense_package, list_payment_attempts, payment_attempt_stats,
 )
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
@@ -54,6 +57,10 @@ COMPOUND_FIELDS = {
     'adminadd': (
         ('شناسه عددی تلگرام', 'مثال: 123456789'),
         ('نام مدیر', 'مثال: علی'),
+    ),
+    'premiumadminadd': (
+        ('شناسه عددی تلگرام', 'کاربر باید قبلاً ربات را /start کرده باشد'),
+        ('نام مدیر پریمیوم', 'مثال: طراح فروشگاه'),
     ),
 }
 
@@ -95,6 +102,28 @@ async def _guard(update):
     return False
 
 
+async def _owner_guard(update):
+    owner = admin_id()
+    if owner and update.effective_user and int(update.effective_user.id) == int(owner):
+        return True
+    if update.callback_query:
+        await update.callback_query.answer(
+            'مدیریت دسترسی‌ها فقط برای مدیر اصلی فعال است.', show_alert=True
+        )
+    elif update.message:
+        await update.message.reply_text(
+            'مدیریت دسترسی‌ها فقط برای مدیر اصلی فعال است.'
+        )
+    return False
+
+
+def _mask_secret(value):
+    value = str(value or '')
+    if len(value) < 9:
+        return 'تنظیم نشده' if not value else '••••'
+    return f'{value[:4]}…{value[-4:]}'
+
+
 async def _edit(query, text, rows, markdown=False):
     await query.edit_message_text(
         text, parse_mode='Markdown' if markdown else None, reply_markup=_kb(rows)
@@ -122,11 +151,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         zp = get_setting('zarinpal_enabled', '1') != '0'
         card = get_setting('card_transfer_enabled', '1') != '0'
         number = get_setting('card_number', '') or 'تنظیم نشده'
-        merchant = get_setting('zarinpal_merchant_id', '') or 'از env سرور'
+        merchant = get_setting('zarinpal_merchant_id', '')
         await _edit(query, (
             '💳 امور مالی\n\n'
             f'زرین‌پال: {"✅" if zp else "❌"}\n'
-            f'مرچنت: {merchant}\n'
+            f'مرچنت: {_mask_secret(merchant) if merchant else "از env سرور"}\n'
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
             f'شماره کارت: {number}'
         ), [
@@ -138,8 +167,75 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('✏️ صاحب کارت', callback_data='admi_cardholder')],
             [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
             [InlineKeyboardButton('🧾 رسیدهای تاییدنشده', callback_data='admx_receipts')],
+            [InlineKeyboardButton('📒 گزارش پرداخت‌ها', callback_data='admx_payments_all')],
+            [InlineKeyboardButton('💵 موجودی G2Bulk', callback_data='admx_g2balance')],
             _back(),
         ])
+    elif data.startswith('admx_payments_'):
+        selected = data.replace('admx_payments_', '')
+        status = None if selected == 'all' else selected
+        rows = list_payment_attempts(status=status, limit=30)
+        counts, success_sum = payment_attempt_stats()
+        lines = [
+            '📒 *گزارش پرداخت‌ها — ۳۰ روز اخیر*',
+            '━━━━━━━━━━━━━━━',
+            f'موفق: *{counts.get("success", 0):,}* · '
+            f'ناموفق: *{counts.get("failed", 0):,}* · '
+            f'لغو/رد: *{counts.get("canceled", 0) + counts.get("rejected", 0):,}*',
+            f'جمع رویدادهای موفق: *{success_sum:,}* تومان',
+            '',
+        ]
+        for row in rows:
+            (_pid, oid, txid, tg, provider, event, st, amount,
+             _authority, ref_id, _message, created) = row
+            target = f'سفارش #{oid}' if oid else f'کیف #{txid}' if txid else '—'
+            icon = '✅' if st == 'success' else '⏳' if st == 'pending' else '❌'
+            provider_label = str(provider).replace('_', '-').replace('`', '')
+            event_label = str(event).replace('_', '-').replace('`', '')
+            safe_ref = ''.join(
+                c for c in str(ref_id or '') if c.isalnum() or c in '-.'
+            )[:100]
+            entry = (
+                f'{icon} {target} · {provider_label}/{event_label}\n'
+                f'   {int(amount or 0):,} ت · `{tg or "—"}` · {str(created)[:16]}'
+                + (f'\n   پیگیری: `{safe_ref}`' if safe_ref else '')
+            )
+            if len('\n'.join(lines)) + len(entry) > 3700:
+                lines.append('… ادامه رویدادها در فیلترهای بالا قابل مشاهده است.')
+                break
+            lines.append(entry)
+        if not rows:
+            lines.append('رویدادی ثبت نشده است.')
+        await _edit(query, '\n'.join(lines), [
+            [InlineKeyboardButton('همه', callback_data='admx_payments_all'),
+             InlineKeyboardButton('موفق', callback_data='admx_payments_success'),
+             InlineKeyboardButton('ناموفق', callback_data='admx_payments_failed')],
+            _back('admx_finance'),
+        ], markdown=True)
+    elif data == 'admx_g2balance':
+        snapshot = g2bulk.get_inventory_snapshot(force=True)
+        if not snapshot.get('ok'):
+            text = (
+                '❌ دریافت موجودی G2Bulk ناموفق بود.\n'
+                f'{snapshot.get("error") or "خطای نامشخص"}'
+            )
+        else:
+            balance = float(snapshot['balance'])
+            lines = [
+                '💵 *موجودی زنده G2Bulk*',
+                '━━━━━━━━━━━━━━━',
+                f'موجودی: *${balance:,.4f} {snapshot["currency"]}*',
+                '',
+                'توان خرید تقریبی:',
+            ]
+            for amount, cost in sorted(snapshot['prices'].items()):
+                count = int(balance // cost) if cost > 0 else 0
+                lines.append(f'• {amount:,} جم · ${cost:.4f} · حدود *{count}* سفارش')
+            text = '\n'.join(lines)
+        await _edit(query, text, [
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_g2balance')],
+            _back('admx_finance'),
+        ], markdown=snapshot.get('ok', False))
     elif data == 'admx_actions':
         await _edit(query, '📨 عملیات کاربران و سفارش‌ها', [
             [InlineKeyboardButton('📣 ارسال پیام همگانی', callback_data='admi_broadcast')],
@@ -322,6 +418,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         delete_simple_record(tables[kind], rid)
         await query.edit_message_text('✅ حذف شد.', reply_markup=_kb([_back(backs[kind])]))
     elif data.startswith('admx_adminremove_'):
+        if not await _owner_guard(update):
+            return
         tg = data.rsplit('_', 1)[1]
         if admin_id() and str(admin_id()) == tg:
             await query.answer('مدیر اصلی env قابل حذف نیست.', show_alert=True)
@@ -361,11 +459,15 @@ async def _show_simple_list(query, data):
             buttons.append([InlineKeyboardButton(
                 f'👑 مدیر اصلی · {admin_id()}', callback_data='admx_noop'
             )])
-        for tg, title, active, _ in rows:
+        for tg, title, active, _, role in rows:
+            role_label = '⭐ پریمیوم' if role == 'premium' else '🛡 مدیر'
             buttons.append([InlineKeyboardButton(
-                f'❌ {title or "مدیر"} · {tg}', callback_data=f'admx_adminremove_{tg}'
+                f'❌ {role_label} · {title or "بدون نام"} · {tg}',
+                callback_data=f'admx_adminremove_{tg}'
             )])
-        buttons.extend([[InlineKeyboardButton('➕ افزودن مدیر', callback_data='admi_admin')],
+        buttons.extend([
+                        [InlineKeyboardButton('➕ مدیر کامل', callback_data='admi_admin'),
+                         InlineKeyboardButton('⭐ مدیر پریمیوم', callback_data='admi_premiumadmin')],
                         _back('admx_settings')])
         await _edit(query, '👮 مدیران ربات\nبرای حذف روی مدیر بزن.', buttons)
         return
@@ -408,6 +510,11 @@ INPUT_ACTIONS = {
     'admi_gemadd': ('gemadd', 'قالب: عنوان | مقدار جم | قیمت | موجودی\nمثال: بسته 110 جمی | 110 | 200000 | 9999'),
     'admi_senseadd': ('senseadd', 'قالب: عنوان | پلتفرم pc/mobile | قیمت | توضیح'),
     'admi_admin': ('adminadd', 'قالب: شناسه عددی تلگرام | نام مدیر\nمثال: 123456789 | علی'),
+    'admi_premiumadmin': (
+        'premiumadminadd',
+        'قالب: شناسه عددی تلگرام | نام مدیر پریمیوم\n'
+        'کاربر باید ابتدا ربات را /start کرده باشد.',
+    ),
 }
 
 
@@ -417,6 +524,8 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update):
         return ConversationHandler.END
     data = query.data
+    if data in ('admi_admin', 'admi_premiumadmin') and not await _owner_guard(update):
+        return ConversationHandler.END
     action = None
     prompt = None
     for prefix, field in (
@@ -496,8 +605,18 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         elif action.startswith('setting:'):
             key = action.split(':', 1)[1]
-            if key == 'payment_callback_base' and not raw.startswith('https://'):
-                raise ValueError('آدرس callback باید با https:// شروع شود.')
+            if key == 'zarinpal_merchant_id':
+                try:
+                    raw = str(uuid.UUID(raw.strip()))
+                except (ValueError, AttributeError):
+                    raise ValueError('مرچنت زرین‌پال باید UUID معتبر باشد.') from None
+            if key == 'payment_callback_base':
+                parsed = urlparse(raw)
+                if (
+                    parsed.scheme != 'https' or not parsed.hostname
+                    or parsed.username or parsed.password
+                ):
+                    raise ValueError('آدرس callback باید HTTPS معتبر و بدون رمز داخل URL باشد.')
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             set_setting(key, raw)
@@ -529,11 +648,19 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '' if p[3] == '-' else p[3],
             )
             await update.message.reply_text('✅ پک سنس اضافه شد.', reply_markup=admin_home_keyboard())
-        elif action == 'adminadd':
+        elif action in ('adminadd', 'premiumadminadd'):
+            if not await _owner_guard(update):
+                return ConversationHandler.END
             if not p[0].isdigit():
                 raise ValueError('شناسه تلگرام باید عددی باشد.')
-            add_bot_admin(p[0], p[1] if len(p) > 1 else '')
-            await update.message.reply_text('✅ مدیر اضافه شد.', reply_markup=admin_home_keyboard())
+            role = 'premium' if action == 'premiumadminadd' else 'admin'
+            add_bot_admin(
+                p[0], p[1] if len(p) > 1 else '', role=role,
+                added_by=update.effective_user.id,
+            )
+            await update.message.reply_text(
+                '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
+            )
         elif action.startswith(('gemprice:', 'gemtitle:', 'gemstock:')):
             kind, gid = action.split(':')
             field = {'gemprice': 'Price', 'gemtitle': 'Title', 'gemstock': 'Stock'}[kind]

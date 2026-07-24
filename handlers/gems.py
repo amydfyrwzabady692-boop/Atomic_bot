@@ -42,6 +42,15 @@ def _gem_sold_out(g):
     return (not available) or stock <= 0
 
 
+def _gem_api_availability(g, force=False):
+    if not g or not bool(g[8]):
+        return True, None
+    available, _cost, _balance, error = g2bulk.can_fulfill(
+        g[2], g[9] or str(g[2]), force=force
+    )
+    return available, error
+
+
 async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gems = get_gems_by_id()
     text = (
@@ -96,8 +105,11 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "(کارت ملی + دست‌نوشته + کارت بانکی).\n"
             "کارت‌به‌کارت بدون احراز است."
         )
-    if _gem_sold_out(g):
+    api_available, api_error = _gem_api_availability(g)
+    if _gem_sold_out(g) or not api_available:
         text += "\n\n❌ این بسته فعلاً ناموجود است."
+        if api_error:
+            text += "\nموجودی سرویس تأمین برای این بسته کافی یا قابل بررسی نیست."
         await query.edit_message_text(text, parse_mode='Markdown',
                                       reply_markup=gems_list_keyboard(get_gems_by_id()))
         return
@@ -111,7 +123,8 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     pk = int(query.data.split('_')[1])
     g = get_gem(pk)
-    if not g or _gem_sold_out(g):
+    api_available, _api_error = _gem_api_availability(g) if g else (False, None)
+    if not g or _gem_sold_out(g) or not api_available:
         await query.edit_message_text("❌ این بسته در دسترس نیست.")
         return ConversationHandler.END
 
@@ -210,7 +223,10 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Never trust a price cached in Telegram state. The package may have been
     # changed, disabled, or sold out since the confirmation screen was opened.
     current = get_gem(info.get('pk'))
-    if not current or _gem_sold_out(current):
+    api_available, _api_error = (
+        _gem_api_availability(current, force=True) if current else (False, None)
+    )
+    if not current or _gem_sold_out(current) or not api_available:
         ctx.user_data.pop('gem_buy', None)
         await query.edit_message_text(
             "❌ این بسته دیگر موجود یا فعال نیست. لطفاً دوباره از فهرست انتخاب کن."

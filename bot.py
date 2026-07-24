@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,8 +39,14 @@ from handlers.admin import (
 from handlers.admin_extended import (
     admin_ext_router, admin_extended_conversation_handler,
 )
+from handlers.premium_admin import (
+    premium_admin_conversation_handler, studio_cmd, studio_router,
+)
 from admin_notify import is_admin
-from db import is_user_blocked, ensure_admin_schema
+from db import (
+    is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
+    fulfill_order, get_order,
+)
 from webapp import start_web_server
 
 logging.basicConfig(
@@ -82,7 +89,35 @@ async def post_init(app):
     except Exception as e:
         logging.getLogger(__name__).warning('ensure_admin_schema/prices: %s', e)
     await start_web_server(app)
+    app.create_task(_g2_reconcile_loop(app), name='g2bulk-reconcile')
     _log_startup_checks()
+
+
+async def _g2_reconcile_loop(app):
+    """سفارش‌های PENDING سرویس تأمین را بدون ثبت سفارش دوباره پیگیری می‌کند."""
+    while True:
+        try:
+            order_ids = await asyncio.to_thread(list_processing_auto_orders, 50)
+            for order_id in order_ids:
+                success, status = await asyncio.to_thread(fulfill_order, order_id)
+                if success and status == 'delivered':
+                    order = await asyncio.to_thread(get_order, order_id)
+                    if order and order[6]:
+                        try:
+                            await app.bot.send_message(
+                                chat_id=int(order[6]),
+                                text=(
+                                    f"✅ سفارش #{order_id} توسط سرویس تأمین تکمیل "
+                                    "و جم واریز شد."
+                                ),
+                            )
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception('G2Bulk reconciliation failed')
+        await asyncio.sleep(30)
 
 
 def _log_startup_checks():
@@ -134,6 +169,7 @@ def main():
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
     app.add_handler(CommandHandler('admin', admin_cmd))
+    app.add_handler(CommandHandler('studio', studio_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^/u_\d+$'), admin_user_cmd))
 
     app.add_handler(gem_conversation_handler())
@@ -143,6 +179,7 @@ def main():
     app.add_handler(kyc_conversation_handler())
     app.add_handler(admin_conversation_handler())
     app.add_handler(admin_extended_conversation_handler())
+    app.add_handler(premium_admin_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
     app.add_handler(CallbackQueryHandler(gems_menu, pattern='^gems$'))
@@ -188,6 +225,11 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_tickets, pattern='^adm_tickets$'))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))
+    app.add_handler(
+        CallbackQueryHandler(
+            studio_router, pattern=r'^studio_(?:home|g2|payments)$'
+        )
+    )
 
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))

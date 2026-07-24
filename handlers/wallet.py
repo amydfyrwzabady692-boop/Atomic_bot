@@ -20,7 +20,7 @@ from db import (
     get_conn, get_wallet_tx, approve_wallet_card_charge,
     reject_wallet_card_charge,
     get_setting, get_bool_setting,
-    save_payment_receipt,
+    save_payment_receipt, log_payment_attempt,
 )
 from payments import request_payment, verify_payment
 from payment_safety import MIN_WALLET_CHARGE, checked_amount
@@ -189,13 +189,17 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         callback_url,
     )
     if not authority or not pay_url:
+        log_payment_attempt(
+            provider='zarinpal', event='wallet_request', status='failed',
+            amount=amount, telegram_id=user.id, message=err,
+        )
         await query.edit_message_text(
             f"❌ ساخت لینک زرین‌پال ممکن نشد.\nعلت: {err or 'نامشخص'}",
             reply_markup=wallet_charge_method_keyboard(amount),
         )
         return
 
-    create_wallet_charge_tx(db_id, amount, authority)
+    tx_id = create_wallet_charge_tx(db_id, amount, authority)
     tx_key = authority[-12:]
     ctx.user_data['wallet_charge'] = {
         'authority': authority,
@@ -210,6 +214,11 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'checks': 0,
         'amount': amount,
     }
+    log_payment_attempt(
+        provider='zarinpal', event='wallet_request', status='pending',
+        amount=amount, wallet_tx_id=tx_id, telegram_id=user.id,
+        authority=authority,
+    )
 
     await query.edit_message_text(
         f"✦ *شارژ با زرین‌پال*\n"
@@ -327,7 +336,7 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['db_id'] = db_id
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
+            'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
             'FROM "WalletTransactions" t '
             'JOIN "Wallets" w ON w."Id"=t."WalletId" '
             'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
@@ -338,7 +347,7 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
         return
-    amount, is_paid, owner_db_id, owner_tg_id = row
+    tx_id, amount, is_paid, owner_db_id, owner_tg_id = row
     if int(owner_db_id) != int(db_id) or str(owner_tg_id or '') != str(user.id):
         await query.edit_message_text("❌ این تراکنش شارژ متعلق به شما نیست.")
         return
@@ -354,6 +363,12 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok, ref = verify_payment(amount, authority)
     if not ok:
         expired = elapsed >= ZP_TTL_SEC or checks >= ZP_MAX_CHECKS
+        log_payment_attempt(
+            provider='zarinpal', event='wallet_verify',
+            status='failed' if expired else 'pending',
+            amount=amount, wallet_tx_id=tx_id, telegram_id=user.id,
+            authority=authority, message='درگاه شارژ را تأیید نکرد.',
+        )
         kb = wallet_charge_pay_keyboard(
             tx_key, f"https://payment.zarinpal.com/pg/StartPay/{authority}"
         )
@@ -381,6 +396,11 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     done, _user_id, amt, new_bal = complete_wallet_charge_by_authority(authority)
     if done:
+        log_payment_attempt(
+            provider='zarinpal', event='wallet_verified', status='success',
+            amount=amt, wallet_tx_id=tx_id, telegram_id=user.id,
+            authority=authority, ref_id=ref,
+        )
         ctx.user_data.pop('wallet_charge', None)
         (ctx.application.bot_data.get('wallet_zp_meta') or {}).pop(tx_key, None)
         await query.edit_message_text(
@@ -459,6 +479,11 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             wallet_tx_id=tx_id, telegram_id=user.id, file_id=file_id,
             text=update.message.text or update.message.caption or '',
         )
+        log_payment_attempt(
+            provider='card_transfer', event='wallet_receipt_submitted',
+            status='pending', amount=amount, wallet_tx_id=tx_id,
+            telegram_id=user.id,
+        )
     except Exception as e:
         print(f'[WALLET] receipt persistence failed: {e}')
     try:
@@ -532,6 +557,13 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not done:
         await query.edit_message_text(f"❌ اعمال شارژ ناموفق بود: {approve_status}")
         return
+    if approve_status == 'approved':
+        log_payment_attempt(
+            provider='card_transfer', event='wallet_card_approved',
+            status='success', amount=amt, wallet_tx_id=tx_id,
+            telegram_id=tg_id,
+            message=f'approved by {update.effective_user.id}',
+        )
     try:
         await query.edit_message_caption(
             caption=f"✅ شارژ کیف پول #{tx_id} تایید شد — {amt:,} ت"
@@ -576,6 +608,12 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rejected:
         await query.edit_message_text(f"❌ رد شارژ انجام نشد: {reject_error}")
         return
+    log_payment_attempt(
+        provider='card_transfer', event='wallet_card_rejected',
+        status='rejected', amount=amount, wallet_tx_id=tx_id,
+        telegram_id=tg_id,
+        message=f'rejected by {update.effective_user.id}',
+    )
     try:
         await query.edit_message_caption(caption=f"❌ شارژ کیف پول #{tx_id} رد شد.")
     except Exception:

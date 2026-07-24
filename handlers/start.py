@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
 from db import get_or_create_user, is_user_blocked, get_setting
-from admin_notify import is_admin
+from admin_notify import is_admin, is_premium_admin
 
 
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -18,6 +18,7 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         first_name=user.first_name or '',
         last_name=user.last_name or '',
         username=user.username or '',
+        is_premium=bool(user.is_premium),
     )
     ctx.user_data['db_id'] = db_id
     ctx.user_data['tg_id'] = user.id
@@ -40,6 +41,8 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = custom.replace('{name}', name).replace('{welcome}', welcome) if custom else default_text
     if is_admin(user.id):
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
+    elif bool(user.is_premium) and is_premium_admin(user.id):
+        text += "\n\n⭐ مدیر پریمیوم: دستور `/studio` را بزن."
     try:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
     except Exception:

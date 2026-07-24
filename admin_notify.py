@@ -24,13 +24,24 @@ def is_admin(user_id) -> bool:
         return False
 
 
+def is_premium_admin(user_id) -> bool:
+    try:
+        from db import is_premium_editor
+        return is_premium_editor(user_id)
+    except Exception:
+        return False
+
+
 def admin_ids():
     ids = []
     if admin_id():
         ids.append(admin_id())
     try:
         from db import list_bot_admins
-        ids.extend(int(row[0]) for row in list_bot_admins() if row[2] and str(row[0]).isdigit())
+        ids.extend(
+            int(row[0]) for row in list_bot_admins()
+            if row[2] and row[4] == 'admin' and str(row[0]).isdigit()
+        )
     except Exception:
         pass
     return list(dict.fromkeys(ids))

@@ -1,6 +1,7 @@
 """سرور HTTP سبک برای callback زرین‌پال روی VPS."""
 import logging
 import os
+import asyncio
 from aiohttp import web
 
 logger = logging.getLogger(__name__)
@@ -11,6 +12,21 @@ def create_web_app(bot_app):
 
     async def health(_request):
         return web.Response(text='ok')
+
+    async def ready(_request):
+        try:
+            def check_db():
+                from db import get_conn
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute('SELECT 1')
+                    return cur.fetchone()[0] == 1
+
+            ok = await asyncio.wait_for(asyncio.to_thread(check_db), timeout=4)
+            if ok:
+                return web.json_response({'status': 'ready'})
+        except Exception:
+            logger.exception('readiness check failed')
+        return web.json_response({'status': 'not_ready'}, status=503)
 
     async def payment_callback(request):
         order_id = request.rel_url.query.get('order')
@@ -53,14 +69,16 @@ def create_web_app(bot_app):
             "<h2>شارژ ناموفق</h2><p>VPN را خاموش کن و دوباره تلاش کن.</p>"
             "</body></html>"
         )
-        if status != 'OK' or not authority:
+        if not authority:
             return web.Response(text=html_fail, content_type='text/html')
         try:
-            from db import get_conn, complete_wallet_charge_by_authority
+            from db import (
+                get_conn, complete_wallet_charge_by_authority, log_payment_attempt,
+            )
             from payments import verify_payment
             with get_conn() as conn, conn.cursor() as cur:
                 cur.execute(
-                    'SELECT t."Amount", t."IsPaid", w."UserId", u."TelegramId" '
+                    'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
                     'FROM "WalletTransactions" t '
                     'JOIN "Wallets" w ON w."Id"=t."WalletId" '
                     'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
@@ -71,10 +89,24 @@ def create_web_app(bot_app):
                 row = cur.fetchone()
             if not row:
                 return web.Response(text=html_fail, content_type='text/html')
-            amount, is_paid, user_id, telegram_id = row
+            tx_id, amount, is_paid, user_id, telegram_id = row
+            if status != 'OK':
+                log_payment_attempt(
+                    provider='zarinpal', event='wallet_callback',
+                    status='canceled', amount=amount, wallet_tx_id=tx_id,
+                    telegram_id=telegram_id, authority=authority,
+                    message='user canceled',
+                )
+                return web.Response(text=html_fail, content_type='text/html')
             if not is_paid:
                 ok, ref = verify_payment(amount, authority)
                 if not ok:
+                    log_payment_attempt(
+                        provider='zarinpal', event='wallet_callback',
+                        status='failed', amount=amount, wallet_tx_id=tx_id,
+                        telegram_id=telegram_id, authority=authority,
+                        message='verify failed',
+                    )
                     return web.Response(text=html_fail, content_type='text/html')
                 done, _uid, amt, new_bal = complete_wallet_charge_by_authority(authority)
                 if not done:
@@ -83,6 +115,11 @@ def create_web_app(bot_app):
                         authority,
                     )
                     return web.Response(text=html_fail, content_type='text/html')
+                log_payment_attempt(
+                    provider='zarinpal', event='wallet_verified',
+                    status='success', amount=amt, wallet_tx_id=tx_id,
+                    telegram_id=telegram_id, authority=authority, ref_id=ref,
+                )
                 if done and telegram_id:
                     try:
                         await bot_app.bot.send_message(
@@ -102,6 +139,7 @@ def create_web_app(bot_app):
             return web.Response(text=html_fail, content_type='text/html')
 
     app.router.add_get('/health', health)
+    app.router.add_get('/ready', ready)
     app.router.add_get('/payment/callback', payment_callback)
     app.router.add_get('/payment/wallet-callback', wallet_callback)
     # بعضی کلاینت‌ها POST هم می‌زنند

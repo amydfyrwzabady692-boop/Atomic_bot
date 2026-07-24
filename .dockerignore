@@ -1,6 +1,11 @@
 ﻿.env
 .venv
+.test-deps
+tests
 __pycache__
 *.pyc
 .git
 .idea
+.agents
+.codex
+*.log

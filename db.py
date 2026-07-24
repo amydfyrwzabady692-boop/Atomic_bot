@@ -27,7 +27,8 @@ def get_conn():
 
 
 # ─── Users ──────────────────────────────────────────────────────────────────────
-def get_or_create_user(telegram_id, first_name='', last_name='', username=''):
+def get_or_create_user(telegram_id, first_name='', last_name='', username='',
+                       is_premium=None):
     tg = str(telegram_id)
     uname_tg = (username or '').lstrip('@').strip()
     with get_conn() as conn, conn.cursor() as cur:
@@ -35,11 +36,19 @@ def get_or_create_user(telegram_id, first_name='', last_name='', username=''):
         row = cur.fetchone()
         if row:
             # همیشه نام و آیدی تلگرام را تازه نگه دار
-            cur.execute(
-                'UPDATE "Users" SET "FirstName"=%s, "LastName"=%s, "TelegramUsername"=%s '
-                'WHERE "Id"=%s',
-                (first_name or '', last_name or '', uname_tg, row[0]),
-            )
+            if is_premium is None:
+                cur.execute(
+                    'UPDATE "Users" SET "FirstName"=%s, "LastName"=%s, '
+                    '"TelegramUsername"=%s WHERE "Id"=%s',
+                    (first_name or '', last_name or '', uname_tg, row[0]),
+                )
+            else:
+                cur.execute(
+                    'UPDATE "Users" SET "FirstName"=%s, "LastName"=%s, '
+                    '"TelegramUsername"=%s, "IsTelegramPremium"=%s WHERE "Id"=%s',
+                    (first_name or '', last_name or '', uname_tg,
+                     bool(is_premium), row[0]),
+                )
             conn.commit()
             return row[0], False
 
@@ -52,10 +61,12 @@ def get_or_create_user(telegram_id, first_name='', last_name='', username=''):
         cur.execute(
             'INSERT INTO "Users" '
             '("password", "Username", "Email", "FirstName", "LastName", '
-            '"IsStaff", "IsActive", "IsSuperUser", "TelegramId", "TelegramUsername", "DateJoined") '
-            'VALUES (%s, %s, %s, %s, %s, false, true, false, %s, %s, now()) '
+            '"IsStaff", "IsActive", "IsSuperUser", "TelegramId", "TelegramUsername", '
+            '"IsTelegramPremium", "DateJoined") '
+            'VALUES (%s, %s, %s, %s, %s, false, true, false, %s, %s, %s, now()) '
             'RETURNING "Id"',
-            ('', uname, email, first_name or '', last_name or '', tg, uname_tg)
+            ('', uname, email, first_name or '', last_name or '', tg, uname_tg,
+             bool(is_premium))
         )
         new_id = cur.fetchone()[0]
         conn.commit()
@@ -686,6 +697,7 @@ def fulfill_order(order_id):
 
             delivered = 0
             total_auto = 0
+            processing_auto = 0
             total_manual = 0
             manual_ok = True
             for info in infos:
@@ -697,7 +709,17 @@ def fulfill_order(order_id):
                     continue
                 total_auto += 1
                 if g2_id:
-                    delivered += 1
+                    live = g2bulk.get_game_order_status(g2_id)
+                    if live.get('ok'):
+                        live_status = live['status']
+                        update_gem_g2bulk(
+                            info_id, status=live_status,
+                            player_name=live.get('player_name') or player_name,
+                        )
+                        if live_status == 'COMPLETED':
+                            delivered += 1
+                        elif live_status in ('PENDING', 'PROCESSING'):
+                            processing_auto += 1
                     continue
                 if not game_uid or not g2bulk.is_supported_amount(amount):
                     update_gem_g2bulk(info_id, status='FAILED')
@@ -709,23 +731,32 @@ def fulfill_order(order_id):
                     idempotency_key=g2bulk.idempotency_key(order_id, info_id),
                 )
                 if result.get('ok') and result.get('order_id'):
+                    api_status = str(result.get('status') or 'PENDING').upper()
                     update_gem_g2bulk(
                         info_id,
                         order_id_g2=result['order_id'],
-                        status=result.get('status', 'PENDING'),
+                        status=api_status,
                         player_name=result.get('player_name') or player_name,
                     )
-                    delivered += 1
+                    if api_status == 'COMPLETED':
+                        delivered += 1
+                    else:
+                        processing_auto += 1
                 else:
                     update_gem_g2bulk(info_id, status='FAILED')
 
             if total_auto and delivered == total_auto and manual_ok:
+                if total_manual:
+                    # قلم دستی فقط رزرو شده است؛ تا تحویل انسانی سفارش را
+                    # delivered اعلام نکن تا از پنل پیگیری حذف نشود.
+                    update_order_status(order_id, 'paid')
+                    return True, 'paid'
                 update_order_status(order_id, 'delivered')
                 return True, 'delivered'
             if total_auto == 0 and manual_ok:
                 update_order_status(order_id, 'paid')
                 return True, 'paid'
-            if delivered or (total_manual and manual_ok):
+            if delivered or processing_auto or (total_manual and manual_ok):
                 update_order_status(order_id, 'processing')
                 return True, 'processing'
             return False, 'تحویل خودکار ناموفق بود. پشتیبانی بررسی می‌کند.'
@@ -981,6 +1012,7 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "KycRejectReason" VARCHAR(255) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "IsTelegramPremium" BOOLEAN NOT NULL DEFAULT false',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "WalletPaid" INTEGER NOT NULL DEFAULT 0',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
@@ -1030,6 +1062,8 @@ def ensure_admin_schema():
         '''CREATE TABLE IF NOT EXISTS "BotAdmins" (
             "TelegramId" VARCHAR(64) PRIMARY KEY,
             "Title" VARCHAR(150) NOT NULL DEFAULT '',
+            "Role" VARCHAR(20) NOT NULL DEFAULT 'admin',
+            "AddedBy" VARCHAR(64),
             "IsActive" BOOLEAN NOT NULL DEFAULT true,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
@@ -1091,6 +1125,26 @@ def ensure_admin_schema():
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
             "ReviewedAt" TIMESTAMPTZ
         )''',
+        '''CREATE TABLE IF NOT EXISTS "PaymentAttempts" (
+            "Id" BIGSERIAL PRIMARY KEY,
+            "OrderId" INTEGER REFERENCES "Orders"("Id") ON DELETE SET NULL,
+            "WalletTransactionId" INTEGER REFERENCES "WalletTransactions"("Id") ON DELETE SET NULL,
+            "TelegramId" VARCHAR(64),
+            "Provider" VARCHAR(30) NOT NULL,
+            "Event" VARCHAR(40) NOT NULL,
+            "Status" VARCHAR(20) NOT NULL,
+            "Amount" INTEGER,
+            "Authority" VARCHAR(100),
+            "RefId" VARCHAR(100),
+            "Message" VARCHAR(500) NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
+           ON "PaymentAttempts" ("Status", "CreatedAt" DESC)''',
+        '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
+           ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC)''',
+        'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "Role" VARCHAR(20) NOT NULL DEFAULT \'admin\'',
+        'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "AddedBy" VARCHAR(64)',
     ]
     with get_conn() as conn, conn.cursor() as cur:
         for index, sql in enumerate(stmts):
@@ -1135,7 +1189,8 @@ def get_bool_setting(key, default=True):
 def list_bot_admins():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT "TelegramId", "Title", "IsActive", "CreatedAt" '
+            'SELECT "TelegramId", "Title", "IsActive", "CreatedAt", '
+            'COALESCE("Role",\'admin\') '
             'FROM "BotAdmins" ORDER BY "CreatedAt"'
         )
         return cur.fetchall()
@@ -1145,7 +1200,8 @@ def is_bot_admin(telegram_id):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                'SELECT 1 FROM "BotAdmins" WHERE "TelegramId"=%s AND "IsActive"=true',
+                'SELECT 1 FROM "BotAdmins" WHERE "TelegramId"=%s AND "IsActive"=true '
+                'AND COALESCE("Role",\'admin\')=\'admin\'',
                 (str(telegram_id),),
             )
             return cur.fetchone() is not None
@@ -1153,12 +1209,47 @@ def is_bot_admin(telegram_id):
         return False
 
 
-def add_bot_admin(telegram_id, title=''):
+def is_premium_editor(telegram_id):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT 1 FROM "BotAdmins" a JOIN "Users" u '
+                'ON u."TelegramId"=a."TelegramId" '
+                'WHERE a."TelegramId"=%s AND a."IsActive"=true '
+                'AND a."Role"=\'premium\' AND u."IsTelegramPremium"=true',
+                (str(telegram_id),),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def add_bot_admin(telegram_id, title='', role='admin', added_by=None):
+    telegram_id = str(telegram_id or '').strip()
+    if not telegram_id.isdigit() or not 1 <= int(telegram_id) < 2 ** 52:
+        raise ValueError('شناسه عددی تلگرام معتبر نیست.')
+    role = str(role or '').strip().lower()
+    if role not in ('admin', 'premium'):
+        raise ValueError('نقش مدیر معتبر نیست.')
     with get_conn() as conn, conn.cursor() as cur:
+        if role == 'premium':
+            cur.execute(
+                'SELECT "IsTelegramPremium" FROM "Users" WHERE "TelegramId"=%s',
+                (telegram_id,),
+            )
+            user = cur.fetchone()
+            if not user:
+                raise ValueError('کاربر باید ابتدا ربات را /start کند.')
+            if not user[0]:
+                raise ValueError(
+                    'این حساب در آخرین مراجعه Telegram Premium نبوده است.'
+                )
         cur.execute(
-            'INSERT INTO "BotAdmins" ("TelegramId","Title","IsActive") VALUES (%s,%s,true) '
-            'ON CONFLICT ("TelegramId") DO UPDATE SET "Title"=EXCLUDED."Title","IsActive"=true',
-            (str(telegram_id), str(title or '')),
+            'INSERT INTO "BotAdmins" ("TelegramId","Title","Role","AddedBy","IsActive") '
+            'VALUES (%s,%s,%s,%s,true) ON CONFLICT ("TelegramId") DO UPDATE SET '
+            '"Title"=EXCLUDED."Title","Role"=EXCLUDED."Role",'
+            '"AddedBy"=EXCLUDED."AddedBy","IsActive"=true',
+            (telegram_id, str(title or ''), role, str(added_by or '') or None),
         )
         conn.commit()
 
@@ -1260,6 +1351,82 @@ def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_
         rid = cur.fetchone()[0]
         conn.commit()
         return rid
+
+
+def log_payment_attempt(*, provider, event, status, amount=None, order_id=None,
+                        wallet_tx_id=None, telegram_id='', authority='', ref_id='',
+                        message=''):
+    """ثبت best-effort رویداد مالی؛ خرابی لاگ نباید مسیر پرداخت را متوقف کند."""
+    allowed_statuses = {'pending', 'success', 'failed', 'canceled', 'rejected'}
+    status = str(status or '').strip().lower()
+    if status not in allowed_statuses:
+        status = 'failed'
+    safe_amount = None
+    if amount not in (None, ''):
+        try:
+            safe_amount = checked_amount(amount, label='مبلغ رویداد پرداخت')
+        except ValueError:
+            safe_amount = None
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'INSERT INTO "PaymentAttempts" '
+                '("OrderId","WalletTransactionId","TelegramId","Provider","Event",'
+                '"Status","Amount","Authority","RefId","Message","CreatedAt") '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now()) RETURNING "Id"',
+                (
+                    int(order_id) if order_id is not None else None,
+                    int(wallet_tx_id) if wallet_tx_id is not None else None,
+                    str(telegram_id or '')[:64],
+                    str(provider or 'unknown')[:30],
+                    str(event or 'unknown')[:40],
+                    status,
+                    safe_amount,
+                    str(authority or '')[:100] or None,
+                    str(ref_id or '')[:100] or None,
+                    str(message or '')[:500],
+                ),
+            )
+            attempt_id = cur.fetchone()[0]
+            conn.commit()
+            return attempt_id
+    except Exception:
+        return None
+
+
+def list_payment_attempts(status=None, limit=30):
+    limit = max(1, min(int(limit), 100))
+    where = ''
+    args = []
+    if status:
+        where = 'WHERE "Status"=%s'
+        args.append(str(status))
+    args.append(limit)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","OrderId","WalletTransactionId","TelegramId","Provider",'
+            '"Event","Status","Amount","Authority","RefId","Message","CreatedAt" '
+            'FROM "PaymentAttempts" ' + where +
+            ' ORDER BY "Id" DESC LIMIT %s',
+            args,
+        )
+        return cur.fetchall()
+
+
+def payment_attempt_stats():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Status",COUNT(*) FROM "PaymentAttempts" '
+            'WHERE "CreatedAt">=now()-interval \'30 days\' GROUP BY "Status"'
+        )
+        counts = {row[0]: int(row[1]) for row in cur.fetchall()}
+        cur.execute(
+            'SELECT COALESCE(SUM("Amount"),0) FROM "PaymentAttempts" '
+            'WHERE "Status"=\'success\' AND "Event" IN '
+            '(\'verified\',\'card_approved\',\'wallet_verified\',\'wallet_card_approved\') '
+            'AND "CreatedAt">=now()-interval \'30 days\''
+        )
+        return counts, int(cur.fetchone()[0] or 0)
 
 
 def get_payment_receipt(order_id=None, wallet_tx_id=None):
@@ -1755,6 +1922,20 @@ def list_failed_deliveries(limit=20):
             (limit,),
         )
         return cur.fetchall()
+
+
+def list_processing_auto_orders(limit=50):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT DISTINCT o."Id" FROM "Orders" o '
+            'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
+            'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
+            'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND p."AutoDeliver"=true AND g."G2BulkOrderId" IS NOT NULL '
+            'ORDER BY o."Id" LIMIT %s',
+            (max(1, min(int(limit), 100)),),
+        )
+        return [int(row[0]) for row in cur.fetchall()]
 
 
 def list_open_orders(limit=20):

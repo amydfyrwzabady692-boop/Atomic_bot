@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS "Users" (
     "IsSuperUser" BOOLEAN NOT NULL DEFAULT false,
     "TelegramId" VARCHAR(64),
     "TelegramUsername" VARCHAR(150) NOT NULL DEFAULT '',
+    "IsTelegramPremium" BOOLEAN NOT NULL DEFAULT false,
     "IsBlocked" BOOLEAN NOT NULL DEFAULT false,
     "BlockedReason" VARCHAR(255) NOT NULL DEFAULT '',
     "BlockedAt" TIMESTAMPTZ,
@@ -107,6 +108,25 @@ CREATE TABLE IF NOT EXISTS "WalletTransactions" (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_authority
 ON "WalletTransactions" ("Authority")
 WHERE "Authority" IS NOT NULL AND "Authority" <> '';
+
+CREATE TABLE IF NOT EXISTS "PaymentAttempts" (
+    "Id" BIGSERIAL PRIMARY KEY,
+    "OrderId" INTEGER REFERENCES "Orders"("Id") ON DELETE SET NULL,
+    "WalletTransactionId" INTEGER REFERENCES "WalletTransactions"("Id") ON DELETE SET NULL,
+    "TelegramId" VARCHAR(64),
+    "Provider" VARCHAR(30) NOT NULL,
+    "Event" VARCHAR(40) NOT NULL,
+    "Status" VARCHAR(20) NOT NULL,
+    "Amount" INTEGER,
+    "Authority" VARCHAR(100),
+    "RefId" VARCHAR(100),
+    "Message" VARCHAR(500) NOT NULL DEFAULT '',
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
+ON "PaymentAttempts" ("Status", "CreatedAt" DESC);
+CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
+ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC);
 
 CREATE TABLE IF NOT EXISTS "SupportTickets" (
     "Id" SERIAL PRIMARY KEY,

@@ -23,10 +23,12 @@ from db import (
     get_order_payment_expected, record_order_payment_verified,
     prepare_card_order_payment, cancel_order_and_refund,
     approve_card_order_payment, reject_card_order_payment,
+    log_payment_attempt,
 )
 from payments import request_payment, verify_payment
 from admin_notify import notify_admin, is_admin
 import time
+import g2bulk
 
 ZP_TTL_SEC = 15 * 60  # مهلت درگاه زرین‌پال
 ZP_MAX_CHECKS = 10
@@ -156,6 +158,22 @@ def _order_for_user(update, ctx, order_id):
     ):
         return None, db_id
     return order, db_id
+
+
+def _delivery_preflight(order_id, force=True):
+    """پیش از دریافت پول، موجودی سرویس تحویل خودکار را بررسی می‌کند."""
+    for info in get_gem_infos_for_order(order_id):
+        (_info_id, _pkg_id, _uid, _name, auto_deliver,
+         catalogue, _g2_id, amount) = info
+        if not auto_deliver:
+            continue
+        available, cost, balance, error = g2bulk.can_fulfill(
+            amount, catalogue or str(amount), force=force
+        )
+        if not available:
+            return False, error or 'موجودی سرویس تأمین کافی نیست.', cost, balance
+        force = False
+    return True, None, None, None
 
 
 async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
@@ -315,6 +333,19 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"❌ اطلاعات مالی سفارش امن نیست: {financial_error or 'مبلغ قابل پرداخت صفر است.'}"
         )
         return
+    available, availability_error, _cost, _balance = _delivery_preflight(order_id)
+    if not available:
+        log_payment_attempt(
+            provider='g2bulk', event='preflight', status='failed',
+            amount=payable, order_id=order_id,
+            telegram_id=update.effective_user.id,
+            message=availability_error,
+        )
+        await query.edit_message_text(
+            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ "
+            "برای جلوگیری از کسر پول، پرداخت باز نشد."
+        )
+        return
 
     total = order[2]
     wallet_paid = int(order[7] or 0)
@@ -356,6 +387,11 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         callback_url,
     )
     if not authority or not pay_url:
+        log_payment_attempt(
+            provider='zarinpal', event='request', status='failed',
+            amount=payable, order_id=order_id,
+            telegram_id=update.effective_user.id, message=err,
+        )
         await query.edit_message_text(
             "❌ ساخت لینک زرین‌پال ممکن نشد.\n"
             f"علت: `{err or 'نامشخص'}`\n\n"
@@ -369,11 +405,21 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         order_id, authority, payable, user_db_id=db_id
     )
     if not bound:
+        log_payment_attempt(
+            provider='zarinpal', event='bind', status='failed',
+            amount=payable, order_id=order_id, authority=authority,
+            telegram_id=update.effective_user.id, message=bind_error,
+        )
         await query.edit_message_text(
             f"❌ لینک ساخته شد اما به سفارش متصل نشد: {bind_error or 'خطای هم‌زمانی'}\n"
             "برای امنیت پرداخت از این لینک استفاده نکن و سفارش را دوباره بررسی کن."
         )
         return
+    log_payment_attempt(
+        provider='zarinpal', event='request', status='pending',
+        amount=payable, order_id=order_id, authority=authority,
+        telegram_id=update.effective_user.id,
+    )
     pending['authority'] = authority
     pending['order_id'] = order_id
     pending['payable'] = payable
@@ -446,6 +492,13 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ok, ref_id = verify_payment(payable, authority)
     if not ok:
         expired = elapsed >= ZP_TTL_SEC or checks >= ZP_MAX_CHECKS
+        log_payment_attempt(
+            provider='zarinpal', event='verify',
+            status='failed' if expired else 'pending',
+            amount=payable, order_id=order_id, authority=authority,
+            telegram_id=update.effective_user.id,
+            message='درگاه پرداخت را تأیید نکرد.',
+        )
         kb = zarinpal_pay_keyboard(
             order_id,
             f"https://payment.zarinpal.com/pg/StartPay/{authority}",
@@ -485,6 +538,12 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "هیچ جمی ارسال نشد؛ پشتیبانی تراکنش را بررسی می‌کند."
         )
         return
+    if record_status == 'verified':
+        log_payment_attempt(
+            provider='zarinpal', event='verified', status='success',
+            amount=payable, order_id=order_id, authority=authority,
+            ref_id=ref_id, telegram_id=update.effective_user.id,
+        )
 
     success, status = fulfill_order(order_id)
     ctx.user_data.pop('pending_order', None)
@@ -520,6 +579,12 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "❌ کارت‌به‌کارت موقتاً غیرفعال است.",
             reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
+        )
+        return
+    available, _availability_error, _cost, _balance = _delivery_preflight(order_id)
+    if not available:
+        await query.edit_message_text(
+            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ کارت‌به‌کارت باز نشد."
         )
         return
 
@@ -599,6 +664,13 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+    available, _availability_error, _cost, _balance = _delivery_preflight(order_id)
+    if not available:
+        await query.edit_message_text(
+            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ "
+            "هیچ مبلغی از کیف پول کم نشد."
+        )
+        return
     ok, used, remaining, new_bal, err = apply_wallet_to_order(db_id, order_id)
     if not ok:
         await query.edit_message_text(
@@ -688,6 +760,10 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
     try:
         save_payment_receipt(
             order_id=order_id, telegram_id=user.id, file_id=file_id, text=receipt_text
+        )
+        log_payment_attempt(
+            provider='card_transfer', event='receipt_submitted', status='pending',
+            amount=expected, order_id=order_id, telegram_id=user.id,
         )
     except Exception as e:
         print(f'[CARD] receipt persistence failed: {e}')
@@ -810,6 +886,11 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             query, f"❌ تأیید امن انجام نشد: {approve_error}"
         )
         return
+    log_payment_attempt(
+        provider='card_transfer', event='card_approved', status='success',
+        amount=get_order_payment_expected(order_id), order_id=order_id,
+        telegram_id=order[6], message=f'approved by {update.effective_user.id}',
+    )
 
     success, status = fulfill_order(order_id)
     tg_id = order[6]
@@ -857,10 +938,20 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     order_id = int(query.data.split('_')[-1])
     order = get_order(order_id)
+    if not order:
+        await _edit_review_message(query, "❌ سفارش پیدا نشد.")
+        return
+    expected_amount = get_order_payment_expected(order_id)
     rejected, refunded, reject_error = reject_card_order_payment(order_id)
     if not rejected:
         await _edit_review_message(query, f"❌ رد امن انجام نشد: {reject_error}")
         return
+    log_payment_attempt(
+        provider='card_transfer', event='card_rejected', status='rejected',
+        amount=expected_amount or order[2],
+        order_id=order_id, telegram_id=order[6],
+        message=f'rejected by {update.effective_user.id}',
+    )
     await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.")
     if order and order[6]:
         extra = f"\n💰 {refunded:,} تومان به کیف پول برگشت." if refunded else ""
@@ -900,6 +991,11 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     if not order:
         return False, 'order not found'
     if not status_ok:
+        log_payment_attempt(
+            provider='zarinpal', event='callback', status='canceled',
+            order_id=order_id, authority=authority,
+            telegram_id=order[6], message='user canceled',
+        )
         return False, 'user canceled'
     if (
         order[4] != 'zarinpal'
@@ -907,6 +1003,11 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
         or not order[5]
         or order[5] != authority
     ):
+        log_payment_attempt(
+            provider='zarinpal', event='callback', status='failed',
+            order_id=order_id, authority=authority,
+            telegram_id=order[6], message='authority mismatch',
+        )
         return False, 'authority mismatch'
     if order[3] in ('paid', 'delivered', 'completed', 'processing'):
         return True, 'already processed'
@@ -916,12 +1017,23 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
         return False, 'missing expected amount'
     ok, ref_id = verify_payment(payable, auth)
     if not ok:
+        log_payment_attempt(
+            provider='zarinpal', event='verify', status='failed',
+            amount=payable, order_id=order_id, authority=auth,
+            telegram_id=order[6], message='verify failed',
+        )
         return False, 'verify failed'
     recorded, record_status = record_order_payment_verified(
         order_id, 'zarinpal', payable, authority=auth, ref_id=ref_id
     )
     if not recorded:
         return False, f'payment proof rejected: {record_status}'
+    if record_status == 'verified':
+        log_payment_attempt(
+            provider='zarinpal', event='verified', status='success',
+            amount=payable, order_id=order_id, authority=auth,
+            ref_id=ref_id, telegram_id=order[6],
+        )
     success, st = fulfill_order(order_id)
     tg_id = order[6]
     if success:
