@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu, wallet_keyboard
 from db import get_or_create_user, get_user_orders, get_wallet_balance
+from text_safety import markdown_safe
 
 
 async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -13,8 +14,11 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         ctx.user_data['db_id'] = db_id
 
-    name = f"{tg_user.first_name or ''} {tg_user.last_name or ''}".strip() or 'کاربر'
-    username = f"@{tg_user.username}" if tg_user.username else "—"
+    name = markdown_safe(
+        f"{tg_user.first_name or ''} {tg_user.last_name or ''}".strip() or 'کاربر',
+        128,
+    )
+    username = markdown_safe(f"@{tg_user.username}" if tg_user.username else "—", 64)
     balance = get_wallet_balance(db_id)
 
     text = (

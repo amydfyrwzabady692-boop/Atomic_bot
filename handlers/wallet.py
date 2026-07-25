@@ -1,4 +1,5 @@
 """کیف پول — شارژ با زرین‌پال و کارت‌به‌کارت + بررسی با مهلت."""
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -187,7 +188,8 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     callback_url = f"{callback_base}/payment/wallet-callback"
-    authority, pay_url, err = request_payment(
+    authority, pay_url, err = await asyncio.to_thread(
+        request_payment,
         amount,
         f"شارژ کیف پول Atomic Bot — {amount:,} تومان",
         callback_url,
@@ -368,7 +370,7 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    ok, ref = verify_payment(amount, authority)
+    ok, ref = await asyncio.to_thread(verify_payment, amount, authority)
     if not ok:
         expired = elapsed >= ZP_TTL_SEC or checks >= ZP_MAX_CHECKS
         log_payment_attempt(

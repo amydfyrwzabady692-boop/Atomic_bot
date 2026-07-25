@@ -11,23 +11,7 @@ from db import (
     list_sense_packages, get_sense_package, get_bool_setting,
 )
 from payment_safety import checked_amount
-
-# قیمت‌ها به تومان
-SENSE_PC_PACKS = {
-    'basic': {
-        'key': 'basic',
-        'title': 'پک سنس PC',
-        'price': 1_000_000,
-        'desc': 'پک سنس مخصوص سیستم PC',
-    },
-    'plus': {
-        'key': 'plus',
-        'title': 'پک سنس PC + خدمات',
-        'price': 2_200_000,
-        'desc': 'پک سنس PC همراه با خدمات',
-    },
-}
-
+from text_safety import markdown_safe
 
 async def sens_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -56,7 +40,7 @@ async def sens_pc_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
     packs = list_sense_packages('pc', active_only=True)
     for p in packs:
-        lines.append(f"• *{p[1]}* — {p[3]:,} تومان")
+        lines.append(f"• *{markdown_safe(p[1], 120)}* — {p[3]:,} تومان")
     if not packs:
         lines.append("فعلاً پکی برای PC فعال نیست.")
     await query.edit_message_text(
@@ -73,7 +57,7 @@ async def sens_mobile_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if packs:
         lines = ["✦ *پک سنس — موبایل*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄", "بسته را انتخاب کن:", ""]
         for p in packs:
-            lines.append(f"• *{p[1]}* — {p[3]:,} تومان")
+            lines.append(f"• *{markdown_safe(p[1], 120)}* — {p[3]:,} تومان")
         await query.edit_message_text(
             "\n".join(lines), parse_mode='Markdown',
             reply_markup=sens_pc_packs_keyboard(packs),
@@ -99,15 +83,13 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     key = query.data.replace('sens_buy_', '')
+    # Only current database rows are purchasable. Old static callback buttons
+    # must not bypass an admin deletion, deactivation, or price change.
     row = get_sense_package(key) if key.isdigit() else None
-    if row:
-        pack = {'key': row[0], 'title': row[1], 'price': row[3], 'desc': row[4]}
-    else:
-        # سازگاری با دکمه‌های قدیمی که ممکن است هنوز در چت کاربر باشند
-        pack = SENSE_PC_PACKS.get(key)
-    if not pack or (row and not row[5]):
+    if not row or not row[5]:
         await query.edit_message_text("بسته پیدا نشد.", reply_markup=main_menu())
         return
+    pack = {'key': row[0], 'title': row[1], 'price': row[3], 'desc': row[4]}
 
     try:
         pack['price'] = checked_amount(pack.get('price'), label='قیمت بسته')
@@ -144,7 +126,7 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"🎯 {pack['title']}\n"
+        f"🎯 {markdown_safe(pack['title'], 120)}\n"
         f"مبلغ: *{pack['price']:,}* تومان\n"
         f"موجودی کیف پول: *{balance:,}* ت\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"

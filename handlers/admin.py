@@ -1,4 +1,6 @@
 """پنل مدیریت ادمین — فقط برای ADMIN_CHAT_ID."""
+import time
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler,
@@ -15,7 +17,7 @@ from db import (
     set_user_blocked, list_failed_deliveries, list_open_orders, admin_adjust_wallet,
     admin_set_wallet_balance, list_wallet_txs, get_user_orders, fulfill_order, get_order,
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
-    admin_operations_snapshot, get_setting,
+    admin_operations_snapshot, get_setting, log_admin_action,
 )
 
 WAIT_FIND = 1
@@ -361,10 +363,42 @@ async def admin_wallet_empty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not await _require_admin(update):
         return
-    tg = query.data.replace('adm_wempty_', '')
+    confirm = query.data.startswith('adm_wempty_confirm_')
+    tg = query.data.replace(
+        'adm_wempty_confirm_' if confirm else 'adm_wempty_', ''
+    )
     profile = get_user_profile(telegram_id=tg)
     if not profile:
         await query.edit_message_text("کاربر پیدا نشد.")
+        return
+    if not confirm:
+        ctx.user_data['adm_wempty_confirm'] = {
+            'tg': tg, 'armed_at': time.time(),
+        }
+        await query.edit_message_text(
+            f"⚠️ موجودی فعلی کاربر `{tg}` برابر *{profile[7]:,} تومان* است.\n"
+            "خالی‌کردن کیف پول عملیات مالی حساس است. تأیید می‌کنی؟",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    'بله، موجودی صفر شود',
+                    callback_data=f'adm_wempty_confirm_{tg}',
+                ),
+                InlineKeyboardButton(
+                    'انصراف', callback_data=f'adm_user_{tg}'
+                ),
+            ]]),
+        )
+        return
+    armed = ctx.user_data.pop('adm_wempty_confirm', None) or {}
+    if (
+        str(armed.get('tg') or '') != str(tg)
+        or time.time() - float(armed.get('armed_at') or 0) > 120
+    ):
+        await query.answer(
+            'تأیید منقضی یا نامعتبر است؛ دوباره از کارت کاربر شروع کن.',
+            show_alert=True,
+        )
         return
     ok, old, new_bal, err = admin_set_wallet_balance(
         profile[0], 0, desc=f'خالی کردن توسط ادمین tg:{tg}'
@@ -372,6 +406,10 @@ async def admin_wallet_empty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ok:
         await query.answer(err or 'خطا', show_alert=True)
         return
+    log_admin_action(
+        update.effective_user.id, 'wallet_emptied', 'user', tg,
+        f'old_balance={old}',
+    )
     try:
         await ctx.bot.send_message(
             chat_id=int(tg),

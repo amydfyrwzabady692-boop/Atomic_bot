@@ -1,5 +1,6 @@
 """بخش‌های توسعه‌یافته پنل تلگرامی ادمین."""
 import asyncio
+import time
 import uuid
 from urllib.parse import urlparse
 
@@ -635,8 +636,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 await _edit(query, caption + '\n\n⚠️ فایل تصویری برای این رسید ثبت نشده.', [
-                    [InlineKeyboardButton('✅ تایید', callback_data=f'admin_ok_{oid}'),
-                     InlineKeyboardButton('❌ رد', callback_data=f'admin_no_{oid}')],
+                    [InlineKeyboardButton(
+                        '❌ بررسی برای رد',
+                        callback_data=f'admin_review_no_{oid}',
+                    )],
                     _back('admx_receipts'),
                 ])
     elif data == 'admx_gems':
@@ -705,11 +708,34 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _show_simple_list(query, data)
     elif data.startswith('admx_del_'):
         _, _, kind, rid = data.split('_', 3)
+        labels = {
+            'dept': 'دپارتمان', 'cat': 'دسته‌بندی',
+            'product': 'محصول', 'code': 'کد',
+        }
+        await _edit(
+            query,
+            f'⚠️ حذف {labels.get(kind, "رکورد")} #{rid} برگشت‌پذیر نیست. مطمئنی؟',
+            [[
+                InlineKeyboardButton(
+                    'بله، حذف شود',
+                    callback_data=f'admx_delconfirm_{kind}_{rid}',
+                ),
+                InlineKeyboardButton('انصراف', callback_data='admx_shop'),
+            ]],
+        )
+    elif data.startswith('admx_delconfirm_'):
+        _, _, kind, rid = data.split('_', 3)
         tables = {'dept': 'SupportDepartments', 'cat': 'ProductCategories',
                   'product': 'StoreProducts', 'code': 'PromoCodes'}
         backs = {'dept': 'admx_departments', 'cat': 'admx_categories',
-                 'product': 'admx_products', 'code': 'admx_shop'}
+                  'product': 'admx_products', 'code': 'admx_shop'}
+        if kind not in tables or not rid.isdigit():
+            await query.answer('درخواست حذف نامعتبر است.', show_alert=True)
+            return
         delete_simple_record(tables[kind], rid)
+        log_admin_action(
+            update.effective_user.id, 'record_deleted', kind, rid, ''
+        )
         await query.edit_message_text('✅ حذف شد.', reply_markup=_kb([_back(backs[kind])]))
     elif data.startswith('admx_adminremove_'):
         if not await _owner_guard(update):
@@ -720,6 +746,30 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         remove_bot_admin(tg)
         await query.edit_message_text('✅ دسترسی مدیر حذف شد.', reply_markup=_kb([_back('admx_admins')]))
+    elif data.startswith('admx_massconfirm_'):
+        raw_amount = data.rsplit('_', 1)[1]
+        pending = ctx.user_data.pop('admin_masscharge_confirm', None) or {}
+        if (
+            not raw_amount.isdigit()
+            or int(pending.get('amount') or 0) != int(raw_amount)
+            or time.time() - float(pending.get('armed_at') or 0) > 120
+        ):
+            await query.answer(
+                'تأیید منقضی یا نامعتبر است؛ شارژ همگانی را دوباره شروع کن.',
+                show_alert=True,
+            )
+            return
+        amount = int(raw_amount)
+        await query.edit_message_text('⏳ شارژ همگانی در حال ثبت است…')
+        count = await asyncio.to_thread(mass_charge_wallets, amount)
+        log_admin_action(
+            update.effective_user.id, 'mass_wallet_charge', 'wallets', '',
+            f'amount={amount} users={count}',
+        )
+        await query.edit_message_text(
+            f'✅ کیف پول {count} کاربر، هرکدام {amount:,} تومان شارژ شد.',
+            reply_markup=admin_home_keyboard(),
+        )
     elif data in (
         'admx_toggle_zp', 'admx_toggle_card',
         'admx_toggle_sales', 'admx_toggle_payments', 'admx_toggle_alerts',
@@ -912,8 +962,24 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await status.edit_text(f'✅ ارسال تمام شد.\nموفق: {sent}\nناموفق: {failed}')
         elif action == 'masscharge':
             amount = int(raw.replace(',', ''))
-            count = mass_charge_wallets(amount)
-            await update.message.reply_text(f'✅ کیف پول {count} کاربر، هرکدام {amount:,} تومان شارژ شد.')
+            if not 1 <= amount <= 10_000_000:
+                raise ValueError(
+                    'مبلغ شارژ همگانی باید بین ۱ تا ۱۰٬۰۰۰٬۰۰۰ تومان باشد.'
+                )
+            ctx.user_data['admin_masscharge_confirm'] = {
+                'amount': amount, 'armed_at': time.time(),
+            }
+            await update.message.reply_text(
+                f'⚠️ قرار است کیف پول تمام کاربران، هرکدام {amount:,} تومان شارژ شود.\n'
+                'این عملیات مالی قابل برگشت خودکار نیست. تأیید می‌کنی؟',
+                reply_markup=_kb([[
+                    InlineKeyboardButton(
+                        'بله، شارژ همگانی انجام شود',
+                        callback_data=f'admx_massconfirm_{amount}',
+                    ),
+                    InlineKeyboardButton('انصراف', callback_data='admx_actions'),
+                ]]),
+            )
         elif action == 'ordersearch':
             order = get_order_admin(int(raw.lstrip('#')))
             if not order:

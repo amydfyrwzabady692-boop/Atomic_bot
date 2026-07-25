@@ -1,5 +1,6 @@
 """پرداخت سفارش جم: زرین‌پال، کارت‌به‌کارت، کیف پول + تایید ادمین."""
 from html import escape
+import asyncio
 import os
 from pathlib import Path
 
@@ -391,7 +392,8 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     callback_url = f"{callback_base}/payment/callback?order={order_id}"
-    authority, pay_url, err = request_payment(
+    authority, pay_url, err = await asyncio.to_thread(
+        request_payment,
         payable,
         f"Atomic Bot — سفارش #{order_id}",
         callback_url,
@@ -499,7 +501,9 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elapsed = time.time() - started
     left = max(0, int(ZP_TTL_SEC - elapsed))
 
-    verify_status, ref_id = verify_payment_detailed(payable, authority)
+    verify_status, ref_id = await asyncio.to_thread(
+        verify_payment_detailed, payable, authority
+    )
     ok = verify_status == 'verified'
     if not ok:
         expired = is_order_payment_expired(order_id)
@@ -1138,7 +1142,7 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     payable = get_order_payment_expected(order_id)
     if payable <= 0:
         return False, 'missing expected amount'
-    ok, ref_id = verify_payment(payable, auth)
+    ok, ref_id = await asyncio.to_thread(verify_payment, payable, auth)
     if not ok:
         log_payment_attempt(
             provider='zarinpal', event='verify', status='failed',

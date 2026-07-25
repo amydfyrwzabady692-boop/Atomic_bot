@@ -13,6 +13,7 @@ from keyboards import main_menu, pay_method_keyboard
 from db import (
     get_or_create_user, get_kyc_status, is_kyc_approved,
     set_kyc_status, set_kyc_code, get_kyc_code, get_order, get_wallet_balance,
+    order_belongs_to,
 )
 
 WAIT_NAT, WAIT_BANK = range(2)
@@ -89,6 +90,21 @@ async def kyc_begin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     order_id = int(query.data.replace('kyc_begin_', ''))
     user = update.effective_user
+    db_id, _ = get_or_create_user(
+        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    )
+    ctx.user_data['db_id'] = db_id
+    order = get_order(order_id)
+    if (
+        not order or order[3] != 'pending'
+        or not order_belongs_to(
+            order_id, user_db_id=db_id, telegram_id=user.id
+        )
+    ):
+        await query.edit_message_text(
+            "سفارش پیدا نشد، متعلق به حساب شما نیست یا دیگر قابل پرداخت نیست."
+        )
+        return ConversationHandler.END
 
     if is_kyc_approved(user.id):
         await query.edit_message_text(
@@ -315,17 +331,18 @@ async def pay_back_methods(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("سفارش قابل پرداخت نیست.")
         return
     user = update.effective_user
-    db_id = ctx.user_data.get('db_id')
-    if not db_id:
-        db_id, _ = get_or_create_user(
-            user.id, user.first_name or '', user.last_name or '', user.username or ''
-        )
-        ctx.user_data['db_id'] = db_id
     from db import get_order_payable
     db_id, _ = get_or_create_user(
         user.id, user.first_name or '', user.last_name or '', user.username or ''
     )
     ctx.user_data['db_id'] = db_id
+    if not order_belongs_to(
+        order_id, user_db_id=db_id, telegram_id=user.id
+    ):
+        await query.edit_message_text(
+            "سفارش پیدا نشد یا متعلق به حساب شما نیست."
+        )
+        return
     bal = int(get_wallet_balance(db_id) or 0)
     rem = get_order_payable(order_id)
     note = f"\nکسر کیف پول: {(order[2] - rem):,} ت" if rem < order[2] else ""

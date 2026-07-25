@@ -99,7 +99,9 @@ def create_web_app(bot_app):
                 )
                 return web.Response(text=html_fail, content_type='text/html')
             if not is_paid:
-                ok, ref = verify_payment(amount, authority)
+                ok, ref = await asyncio.to_thread(
+                    verify_payment, amount, authority
+                )
                 if not ok:
                     log_payment_attempt(
                         provider='zarinpal', event='wallet_callback',

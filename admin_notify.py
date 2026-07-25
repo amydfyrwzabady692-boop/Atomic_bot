@@ -66,4 +66,18 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
         except Exception as e:
             last_error = e
             print(f'[ADMIN] notify {aid} failed: {e}')
+            # Dynamic user names/messages can contain malformed Markdown.
+            # Never lose an operational/financial alert only because rendering
+            # failed; retry the exact content as plain text.
+            if parse_mode:
+                try:
+                    await bot.send_message(
+                        chat_id=aid,
+                        text=text,
+                        reply_markup=reply_markup,
+                    )
+                    sent = True
+                except Exception as plain_error:
+                    last_error = plain_error
+                    print(f'[ADMIN] plain notify {aid} failed: {plain_error}')
     return sent

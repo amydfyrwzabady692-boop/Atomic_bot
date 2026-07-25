@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes
 
 from db import get_setting, simple_list
 from keyboards import main_menu
+from text_safety import markdown_safe
 
 
 def _categories_keyboard():
@@ -21,7 +22,7 @@ async def store_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     active = [r for r in simple_list(
         'ProductCategories', ['Id', 'Title', 'IsActive']
     ) if r[2]]
-    text = f"🛍 *{title}*\n━━━━━━━━━━━━━━━\n"
+    text = f"🛍 *{markdown_safe(title, 120)}*\n━━━━━━━━━━━━━━━\n"
     text += "دسته‌بندی را انتخاب کن:" if active else "فعلاً محصول فعالی ثبت نشده است."
     if update.callback_query:
         await update.callback_query.answer()
@@ -41,7 +42,7 @@ async def show_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     products = [
         r for r in simple_list(
             'StoreProducts', ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'IsActive']
-        ) if r[1] == category_id and r[5]
+        ) if r[1] == category_id and r[5] and int(r[4] or 0) > 0
     ]
     buttons = [[InlineKeyboardButton(
         f'{p[2]} · {p[3]:,} ت', callback_data=f'storeprod_{p[0]}'
@@ -60,11 +61,11 @@ async def show_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'StoreProducts',
         ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'Description', 'IsActive']
     ) if r[0] == product_id), None)
-    if not row or not row[6]:
+    if not row or not row[6] or int(row[4] or 0) <= 0:
         await query.edit_message_text('محصول پیدا نشد.')
         return
     text = (
-        f'📦 *{row[2]}*\n━━━━━━━━━━━━━━━\n'
+        f'📦 *{markdown_safe(row[2], 120)}*\n━━━━━━━━━━━━━━━\n'
         f'قیمت: *{row[3]:,} تومان*\nموجودی: *{row[4]}*\n\n{row[5] or "—"}\n\n'
         'برای خرید این محصول با پشتیبانی تماس بگیر.'
     )

@@ -56,6 +56,7 @@ from db import (
 )
 from payments import verify_payment_detailed
 from webapp import start_web_server
+from keyboards import main_menu
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -89,6 +90,32 @@ async def text_router(update, ctx):
         await handler(update, ctx)
     else:
         await update.message.reply_text("❓ متوجه نشدم. از منوی پایین انتخاب کن 👇")
+
+
+async def error_handler(update, ctx):
+    """Log unexpected failures and leave the user with a usable response."""
+    log = logging.getLogger(__name__)
+    log.error(
+        'Unhandled update error',
+        exc_info=(type(ctx.error), ctx.error, ctx.error.__traceback__),
+    )
+    try:
+        message = getattr(update, 'effective_message', None)
+        if message:
+            await message.reply_text(
+                "⚠️ خطای موقتی رخ داد. دوباره تلاش کن؛ اگر تکرار شد با پشتیبانی تماس بگیر.",
+                reply_markup=main_menu(),
+            )
+    except Exception:
+        log.exception('Could not send user-facing error message')
+    try:
+        await notify_admin(
+            ctx.bot,
+            '⚠️ خطای کنترل‌نشده در ربات ثبت شد. جزئیات کامل در لاگ Docker موجود است.',
+            parse_mode=None,
+        )
+    except Exception:
+        log.exception('Could not notify admins about unhandled error')
 
 
 async def post_init(app):
@@ -332,6 +359,7 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+    app.add_error_handler(error_handler)
 
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
     app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
@@ -391,7 +419,7 @@ def main():
     app.add_handler(CallbackQueryHandler(sens_menu, pattern='^sens$'))
     app.add_handler(CallbackQueryHandler(sens_pc_menu, pattern='^sens_pc$'))
     app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern='^sens_mobile$'))
-    app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_(?:\d+|basic|plus)$'))
+    app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_\d+$'))
     app.add_handler(CallbackQueryHandler(my_orders, pattern='^my_orders$'))
     app.add_handler(CallbackQueryHandler(my_account, pattern='^my_account$'))
 
@@ -401,7 +429,9 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_user_card, pattern=r'^adm_user_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_block_toggle, pattern=r'^adm_block_[01]_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_user_orders, pattern=r'^adm_ords_\d+$'))
-    app.add_handler(CallbackQueryHandler(admin_wallet_empty, pattern=r'^adm_wempty_\d+$'))
+    app.add_handler(CallbackQueryHandler(
+        admin_wallet_empty, pattern=r'^adm_wempty_(?:confirm_)?\d+$'
+    ))
     app.add_handler(CallbackQueryHandler(admin_failed, pattern='^adm_failed$'))
     app.add_handler(CallbackQueryHandler(admin_open_orders, pattern='^adm_open$'))
     app.add_handler(CallbackQueryHandler(admin_retry, pattern=r'^adm_retry_\d+$'))

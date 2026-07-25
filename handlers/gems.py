@@ -16,6 +16,7 @@ from db import (
     get_bool_setting,
 )
 from payment_safety import checked_amount
+from text_safety import markdown_safe
 
 GEM_UID, GEM_CONFIRM = range(2)
 
@@ -27,11 +28,7 @@ _MENU_BUTTONS = {
 
 def _md_escape(text):
     """جلوگیری از خراب شدن Markdown با نام اکانت."""
-    if not text:
-        return ''
-    for ch in ('_', '*', '`', '['):
-        text = str(text).replace(ch, ' ')
-    return text
+    return markdown_safe(text, 160)
 
 
 def _gem_sold_out(g):
@@ -93,7 +90,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     deliver = "⚡️ تحویل آنی (خودکار)" if g[8] else "⏳ تحویل دستی پس از تایید"
     text = (
-        f"💎 *{g[1]}*\n"
+        f"💎 *{markdown_safe(g[1], 120)}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"🔢 مقدار: *{total:,} الماس*{bonus}\n"
         f"🚚 {deliver}\n"
@@ -131,14 +128,14 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     ctx.user_data['gem_buy'] = {
         'pk': pk,
-        'title': g[1],
+        'title': str(g[1] or '')[:120],
         'amount': g[2],
         'price': g[4],
         'auto_deliver': bool(g[8]),
         'catalogue': g[9] or str(g[2]),
     }
     await query.edit_message_text(
-        f"🆔 *ثبت سفارش — {g[1]}*\n"
+        f"🆔 *ثبت سفارش — {markdown_safe(g[1], 120)}*\n"
         "━━━━━━━━━━━━━━━\n"
         "آیدی فری‌فایر (UID) را بفرست.\n"
         "_(عددی در پروفایل بازی، معمولاً حدود ۱۰ رقم)_",
@@ -194,7 +191,7 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━\n"
         f"👤 نام اکانت: *{pname}*\n"
         f"🆔 UID: `{uid}`\n"
-        f"💎 بسته: {info['title']}\n"
+        f"💎 بسته: {markdown_safe(info['title'], 120)}\n"
         f"💰 مبلغ: *{info['price']:,} تومان*\n\n"
         f"اگر درست است تایید کن تا بری سراغ پرداخت.",
         parse_mode='Markdown',
@@ -289,7 +286,7 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"💎 {info['title']}\n"
+        f"💎 {markdown_safe(info['title'], 120)}\n"
         f"آیدی `{info['game_uid']}`"
         f"{(' — ' + _md_escape(info.get('player_name') or '')) if info.get('player_name') else ''}\n"
         f"مبلغ: *{info['price']:,}* تومان\n"
