@@ -1365,11 +1365,15 @@ def ensure_admin_schema():
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''INSERT INTO "ForcedJoinChannels" ("ChatId","Title","InviteUrl")
-           SELECT '@Omid_AtomicFF','کانال امید اتمیک',
+           SELECT '@Omid_AtomicFF','کانال امید اتومیک',
                   'https://t.me/Omid_AtomicFF'
            WHERE NOT EXISTS (
                SELECT 1 FROM "BotSettings" WHERE "Key"='forced_join_initialized'
            ) AND NOT EXISTS (SELECT 1 FROM "ForcedJoinChannels")''',
+        '''UPDATE "ForcedJoinChannels"
+           SET "Title"='کانال امید اتومیک'
+           WHERE "ChatId"='@Omid_AtomicFF'
+             AND "Title"='کانال امید اتمیک' ''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('forced_join_initialized','1',now())
            ON CONFLICT ("Key") DO NOTHING''',
