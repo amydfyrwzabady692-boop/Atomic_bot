@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import admin_notify
+import bot
 from handlers import sensitivity
 from text_safety import markdown_safe
 
@@ -53,6 +54,37 @@ class SensitivityPurchaseTests(unittest.IsolatedAsyncioTestCase):
 
         create_order.assert_not_called()
         query.edit_message_text.assert_awaited_once()
+
+
+class UpdateRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_text_router_ignores_channel_posts(self):
+        channel_post = SimpleNamespace(
+            text='channel post', reply_text=AsyncMock()
+        )
+        update = SimpleNamespace(
+            message=None,
+            effective_message=channel_post,
+            effective_user=None,
+            effective_chat=SimpleNamespace(type='channel'),
+        )
+
+        await bot.text_router(update, SimpleNamespace())
+
+        channel_post.reply_text.assert_not_awaited()
+
+    async def test_error_handler_does_not_reply_to_channel(self):
+        channel_post = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            effective_message=channel_post,
+            effective_chat=SimpleNamespace(type='channel'),
+        )
+        error = RuntimeError('test error')
+        ctx = SimpleNamespace(error=error, bot=object())
+
+        with patch.object(bot, 'notify_admin', new=AsyncMock()):
+            await bot.error_handler(update, ctx)
+
+        channel_post.reply_text.assert_not_awaited()
 
 
 if __name__ == '__main__':

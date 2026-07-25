@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, TypeHandler, filters,
@@ -79,19 +80,28 @@ MENU_TEXTS = {
 
 
 async def text_router(update, ctx):
+    # MessageHandler also sees channel posts/edited messages through
+    # effective_message. The customer menu is strictly a private-chat flow.
+    message = update.message
     user = update.effective_user
+    chat = update.effective_chat
+    if (
+        message is None or user is None or chat is None
+        or chat.type != ChatType.PRIVATE or not isinstance(message.text, str)
+    ):
+        return
     if user and is_user_blocked(user.id) and not is_admin(user.id):
-        await update.message.reply_text(
+        await message.reply_text(
             "🚫 حساب شما بلاک شده است.\nبرای پیگیری از طریق پشتیبانی سایت اقدام کن."
         )
         return
 
     # اگر ادمین در حالت پاسخ/جستجو نیست، منوی عادی
-    handler = MENU_TEXTS.get(update.message.text)
+    handler = MENU_TEXTS.get(message.text)
     if handler:
         await handler(update, ctx)
     else:
-        await update.message.reply_text("❓ متوجه نشدم. از منوی پایین انتخاب کن 👇")
+        await message.reply_text("❓ متوجه نشدم. از منوی پایین انتخاب کن 👇")
 
 
 async def error_handler(update, ctx):
@@ -103,7 +113,8 @@ async def error_handler(update, ctx):
     )
     try:
         message = getattr(update, 'effective_message', None)
-        if message:
+        chat = getattr(update, 'effective_chat', None)
+        if message and chat and chat.type == ChatType.PRIVATE:
             await message.reply_text(
                 "⚠️ خطای موقتی رخ داد. دوباره تلاش کن؛ اگر تکرار شد با پشتیبانی تماس بگیر.",
                 reply_markup=main_menu(),
@@ -450,7 +461,10 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(pay_back_methods, pattern=r'^pay_back_\d+$'))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+        text_router,
+    ))
 
     logging.info("Atomic Bot started")
     app.run_polling(drop_pending_updates=True)
