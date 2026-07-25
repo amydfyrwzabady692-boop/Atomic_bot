@@ -65,6 +65,8 @@ logging.basicConfig(
 # httpx آدرس کامل Telegram Bot API را لاگ می‌کند و آن URL شامل توکن است.
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
+ADMIN_ALERT_INTERVAL_SECONDS = 8 * 60 * 60
+
 MENU_TEXTS = {
     '💎 جم فری‌فایر': gems_menu,
     '💰 کیف پول': wallet_menu,
@@ -224,7 +226,7 @@ async def _admin_alert_loop(app):
             raise
         except Exception:
             logging.getLogger(__name__).exception('Admin alert loop failed')
-        await asyncio.sleep(300)
+        await asyncio.sleep(ADMIN_ALERT_INTERVAL_SECONDS)
 
 
 async def _payment_expiry_loop(app):

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import db
+import bot
 from handlers import admin_extended
 from keyboards import admin_home_keyboard
 
@@ -43,6 +44,9 @@ class _Connection:
 
 
 class AdminOperationsTests(unittest.TestCase):
+    def test_admin_alert_interval_is_eight_hours(self):
+        self.assertEqual(bot.ADMIN_ALERT_INTERVAL_SECONDS, 8 * 60 * 60)
+
     def test_snapshot_maps_daily_metrics_and_alerts(self):
         values = (3, 8, 5, 1_250_000, 2, 1, 4, 6, 1, 2)
         conn = _Connection(one=values)
