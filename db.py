@@ -951,6 +951,10 @@ def fulfill_order(order_id):
                 if not game_uid or not g2bulk.is_supported_amount(amount):
                     update_gem_g2bulk(info_id, status='FAILED')
                     continue
+                # Capture FX immediately before the supplier purchase. This
+                # snapshot is immutable, so later exchange-rate changes never
+                # rewrite the realized profit of this sale.
+                purchase_rate = profitability.get_purchase_rate_snapshot()
                 result = g2bulk.place_game_order(
                     catalogue_name=catalogue or str(amount),
                     player_id=game_uid,
@@ -975,7 +979,7 @@ def fulfill_order(order_id):
                     if supplier_cost:
                         record_gem_profit_snapshot(
                             info_id, order_id, supplier_cost,
-                            profitability.get_usd_toman_rate(force=False),
+                            purchase_rate,
                         )
                     if api_status == 'COMPLETED':
                         delivered += 1

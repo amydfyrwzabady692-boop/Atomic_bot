@@ -43,6 +43,36 @@ def allocate_sale_amount(net_order_toman, item_subtotal_toman, order_items_toman
     )
 
 
+def calculate_live_pack_costs(packages, supplier_prices_usd, usd_toman_rate):
+    """Return current supplier cost/profit for configured gem packages."""
+    rows = []
+    prices = supplier_prices_usd or {}
+    for package_id, title, amount, sale_toman in packages:
+        try:
+            amount = int(amount)
+            sale_toman = int(sale_toman)
+            cost_usd = prices.get(amount)
+            if cost_usd is None:
+                continue
+            cost_toman, gross_profit = calculate_gross_profit(
+                sale_toman, cost_usd, usd_toman_rate
+            )
+        except (TypeError, ValueError, InvalidOperation):
+            continue
+        margin = gross_profit * 100 / sale_toman if sale_toman else 0
+        rows.append({
+            'package_id': int(package_id),
+            'title': str(title or ''),
+            'amount': amount,
+            'sale_toman': sale_toman,
+            'cost_usd': float(cost_usd),
+            'cost_toman': cost_toman,
+            'gross_profit_toman': gross_profit,
+            'margin_percent': margin,
+        })
+    return rows
+
+
 def _manual_rate():
     raw = (os.getenv('USD_TOMAN_RATE') or '').strip()
     if not raw:
@@ -118,3 +148,8 @@ def get_usd_toman_rate(force=False):
             }
     _rate_cache.update(at=now, value=result)
     return result
+
+
+def get_purchase_rate_snapshot():
+    """Fetch a fresh rate for an immutable purchase-profit snapshot."""
+    return get_usd_toman_rate(force=True)

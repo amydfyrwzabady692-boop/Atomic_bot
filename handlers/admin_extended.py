@@ -323,7 +323,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('🧾 رسیدهای تاییدنشده', callback_data='admx_receipts')],
             [InlineKeyboardButton('📒 گزارش پرداخت‌ها', callback_data='admx_payments_all')],
             [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
-            [InlineKeyboardButton('💵 موجودی G2Bulk', callback_data='admx_g2balance')],
+            [InlineKeyboardButton(
+                '💱 نرخ زنده دلار و بهای واقعی پک‌ها',
+                callback_data='admx_g2balance',
+            )],
             [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
             _back(),
         ])
@@ -406,36 +409,81 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _back('admx_finance'),
         ], markdown=True)
     elif data == 'admx_g2balance':
-        snapshot = g2bulk.get_inventory_snapshot(force=True)
-        fx = profitability.get_usd_toman_rate(force=True)
+        snapshot, fx = await asyncio.gather(
+            asyncio.to_thread(g2bulk.get_inventory_snapshot, True),
+            asyncio.to_thread(profitability.get_usd_toman_rate, True),
+        )
         if not snapshot.get('ok'):
+            rate_line = (
+                f'نرخ زنده مبنا: {int(fx["rate"]):,} تومان\n'
+                f'منبع: {str(fx.get("source") or "—").replace("_", "-")}\n\n'
+                if fx.get('ok') else
+                f'نرخ زنده مبنا دریافت نشد: {fx.get("error") or "نامشخص"}\n\n'
+            )
             text = (
+                '💱 نرخ زنده دلار و بهای واقعی پک‌ها\n'
+                '━━━━━━━━━━━━━━━\n'
+                f'{rate_line}'
                 '❌ دریافت موجودی G2Bulk ناموفق بود.\n'
                 f'{snapshot.get("error") or "خطای نامشخص"}'
             )
         else:
             balance = float(snapshot['balance'])
             lines = [
-                '💵 *موجودی زنده G2Bulk*',
+                '💱 *نرخ زنده دلار و بهای واقعی پک‌ها*',
                 '━━━━━━━━━━━━━━━',
-                f'موجودی: *${balance:,.4f} {snapshot["currency"]}*',
                 (
-                    f'نرخ مبنای هزینه: *{int(fx["rate"]):,} تومان*'
+                    f'نرخ زنده مبنا: *{int(fx["rate"]):,} تومان*'
                     if fx.get('ok') else
-                    'نرخ مبنای هزینه: دریافت نشد'
+                    'نرخ زنده مبنا: *دریافت نشد*'
                 ),
+                (
+                    f'منبع: `{str(fx.get("source") or "—").replace("_", "-")}`'
+                    if fx.get('ok') else
+                    f'خطا: {fx.get("error") or "نامشخص"}'
+                ),
+                f'موجودی: *${balance:,.4f} {snapshot["currency"]}*',
                 '',
-                'توان خرید تقریبی:',
+                'بهای تمام‌شده و سود فعلی:',
             ]
-            for amount, cost in sorted(snapshot['prices'].items()):
-                count = int(balance // cost) if cost > 0 else 0
-                lines.append(f'• {amount:,} جم · ${cost:.4f} · حدود *{count}* سفارش')
+            configured = [
+                (g[0], g[1], g[2], g[4])
+                for g in admin_list_gems() if g[12]
+            ]
+            live_rows = (
+                profitability.calculate_live_pack_costs(
+                    configured, snapshot['prices'], fx['rate']
+                )
+                if fx.get('ok') else []
+            )
+            for row in live_rows:
+                count = (
+                    int(balance // row['cost_usd'])
+                    if row['cost_usd'] > 0 else 0
+                )
+                lines.append(
+                    f'• {row["amount"]:,} جم · هزینه '
+                    f'*{row["cost_toman"]:,} ت* (${row["cost_usd"]:.4f})\n'
+                    f'  فروش {row["sale_toman"]:,} ت · سود '
+                    f'*{row["gross_profit_toman"]:,} ت* '
+                    f'({row["margin_percent"]:.1f}٪) · توان {count}'
+                )
+            if fx.get('fallback'):
+                lines.extend([
+                    '',
+                    '⚠️ نرخ زنده در دسترس نبود؛ محاسبات بالا با نرخ دستی پشتیبان است.',
+                ])
+            if not live_rows:
+                lines.append('محاسبه قیمت واقعی نیازمند نرخ معتبر و تطبیق پک فعال با کاتالوگ است.')
             text = '\n'.join(lines)
         await _edit(query, text, [
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_g2balance')],
             _back('admx_finance'),
         ], markdown=snapshot.get('ok', False))
     elif data == 'admx_profit':
+        current_fx = await asyncio.to_thread(
+            profitability.get_usd_toman_rate, True
+        )
         stats = profit_report_stats()
         margin = (
             stats['profit'] * 100 / stats['sales'] if stats['sales'] else 0
@@ -443,6 +491,13 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines = [
             '📈 *سود ناخالص فروش جم*',
             '━━━━━━━━━━━━━━━',
+            (
+                f'نرخ زنده فعلی: *{int(current_fx["rate"]):,} تومان*'
+                if current_fx.get('ok') else
+                'نرخ زنده فعلی: *دریافت نشد*'
+            ),
+            'نرخ هر فروش از snapshot همان لحظه محاسبه می‌شود و ثابت می‌ماند.',
+            '',
             f'فروش‌های دارای snapshot: *{stats["count"]:,}*',
             f'جمع فروش: *{stats["sales"]:,} تومان*',
             f'هزینه تأمین: *{stats["cost"]:,} تومان* '

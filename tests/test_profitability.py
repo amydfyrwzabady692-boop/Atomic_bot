@@ -51,6 +51,24 @@ class ProfitabilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             profitability.calculate_gross_profit(0, 1, 100_000)
 
+    def test_live_pack_costs_show_supplier_cost_and_margin(self):
+        rows = profitability.calculate_live_pack_costs(
+            [(7, '110 gems', 110, 200_000)],
+            {110: 0.75},
+            100_000,
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['cost_toman'], 75_000)
+        self.assertEqual(rows[0]['gross_profit_toman'], 125_000)
+        self.assertEqual(rows[0]['margin_percent'], 62.5)
+
+    @patch.object(profitability, 'get_usd_toman_rate')
+    def test_purchase_snapshot_always_forces_fresh_rate(self, get_rate):
+        get_rate.return_value = {'ok': True, 'rate': 100_000}
+        result = profitability.get_purchase_rate_snapshot()
+        self.assertEqual(result['rate'], 100_000)
+        get_rate.assert_called_once_with(force=True)
+
 
 if __name__ == '__main__':
     unittest.main()
