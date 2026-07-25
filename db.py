@@ -1356,6 +1356,41 @@ def ensure_admin_schema():
             "Value" TEXT NOT NULL DEFAULT '',
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''DO $migration$
+           BEGIN
+             IF NOT EXISTS (
+               SELECT 1 FROM "BotSettings"
+               WHERE "Key"='welcome_text_atomic_shop_v2_applied'
+             ) THEN
+               INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+               VALUES (
+                 'welcome_text',
+                 $welcome$✨ به اتومیک شاپ خوش اومدی! ✨
+
+اینجا جاییه که سرعت، امنیت و قیمت مناسب کنار هم جمع شدن تا خرید راحت‌تری داشته باشی 🚀
+
+💎 خرید جم و محصولات بازی
+🎯 پک‌های حرفه‌ای سنسیویتی موبایل و PC
+💳 پرداخت امن با درگاه یا کارت‌به‌کارت
+🎁 کدهای هدیه و تخفیف‌های ویژه
+🧑‍💻 پشتیبانی مستقیم و پیگیری سفارش
+
+تمام سفارش‌ها و پرداخت‌های تو از داخل ربات قابل مشاهده و پیگیری هستند.
+
+👇 برای شروع، یکی از گزینه‌های منوی پایین را انتخاب کن.
+
+⚛️ Atomic Shop$welcome$,
+                 now()
+               )
+               ON CONFLICT ("Key") DO UPDATE
+               SET "Value"=EXCLUDED."Value", "UpdatedAt"=now();
+
+               INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+               VALUES ('welcome_text_atomic_shop_v2_applied','1',now())
+               ON CONFLICT ("Key") DO NOTHING;
+             END IF;
+           END;
+           $migration$''',
         '''CREATE TABLE IF NOT EXISTS "ForcedJoinChannels" (
             "Id" SERIAL PRIMARY KEY,
             "ChatId" VARCHAR(100) UNIQUE NOT NULL,
