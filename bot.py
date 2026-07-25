@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, TypeHandler, filters,
@@ -46,12 +46,13 @@ from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
 )
 from handlers.forced_join import force_join_guard
-from admin_notify import is_admin
+from admin_notify import is_admin, notify_admin
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
     fulfill_order, get_order, list_expired_unpaid_orders,
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
+    admin_operations_snapshot, get_bool_setting, get_setting,
 )
 from payments import verify_payment_detailed
 from webapp import start_web_server
@@ -104,11 +105,16 @@ async def post_init(app):
     app.bot_data['_payment_expiry_task'] = asyncio.create_task(
         _payment_expiry_loop(app), name='payment-expiry'
     )
+    app.bot_data['_admin_alert_task'] = asyncio.create_task(
+        _admin_alert_loop(app), name='admin-alerts'
+    )
     _log_startup_checks()
 
 
 async def post_shutdown(app):
-    for key in ('_g2_reconcile_task', '_payment_expiry_task'):
+    for key in (
+        '_g2_reconcile_task', '_payment_expiry_task', '_admin_alert_task',
+    ):
         task = app.bot_data.pop(key, None)
         if not task:
             continue
@@ -144,6 +150,54 @@ async def _g2_reconcile_loop(app):
         except Exception:
             logging.getLogger(__name__).exception('G2Bulk reconciliation failed')
         await asyncio.sleep(30)
+
+
+async def _admin_alert_loop(app):
+    """هشدار دوره‌ای و ضداسپم برای مواردی که مدیر باید سریع ببیند."""
+    last_signature = None
+    await asyncio.sleep(60)
+    while True:
+        try:
+            if get_bool_setting('admin_alerts_enabled', True):
+                try:
+                    threshold = max(
+                        0, min(int(get_setting('low_stock_threshold', '5') or 5), 10_000)
+                    )
+                except (TypeError, ValueError):
+                    threshold = 5
+                ops = await asyncio.to_thread(admin_operations_snapshot, threshold)
+                signature = (
+                    ops['pending_receipts'], ops['stuck_processing'],
+                    ops['failed_payments_24h'], ops['open_tickets'],
+                    ops['low_gem_stock'], ops['low_store_stock'],
+                )
+                alert_total = sum(signature)
+                if alert_total and signature != last_signature:
+                    await notify_admin(
+                        app.bot,
+                        (
+                            '🚨 *هشدار مرکز عملیات*\n'
+                            '━━━━━━━━━━━━━━━\n'
+                            f'رسید منتظر: *{ops["pending_receipts"]:,}*\n'
+                            f'سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
+                            f'خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
+                            f'تیکت باز: *{ops["open_tickets"]:,}*\n'
+                            f'موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*'
+                        ),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                '🚨 باز کردن مرکز عملیات', callback_data='admx_ops'
+                            )
+                        ]]),
+                    )
+                last_signature = signature
+            else:
+                last_signature = None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception('Admin alert loop failed')
+        await asyncio.sleep(300)
 
 
 async def _payment_expiry_loop(app):

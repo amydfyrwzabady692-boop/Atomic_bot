@@ -229,6 +229,7 @@ def support_cancel_keyboard():
 
 def admin_home_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🚨 مرکز عملیات و هشدارها', callback_data='admx_ops')],
         [
             InlineKeyboardButton('کاربران', callback_data='adm_users'),
             InlineKeyboardButton('جستجو', callback_data='adm_find'),
@@ -244,7 +245,7 @@ def admin_home_keyboard():
         ],
         [
             InlineKeyboardButton('📨 پیام و شارژ', callback_data='admx_actions'),
-            InlineKeyboardButton('📊 آمار کامل', callback_data='admx_stats'),
+            InlineKeyboardButton('📊 گزارش و آمار', callback_data='admx_stats'),
         ],
         [
             InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_support'),

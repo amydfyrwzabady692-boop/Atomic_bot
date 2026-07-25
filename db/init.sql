@@ -65,6 +65,9 @@ WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> '';
 CREATE INDEX IF NOT EXISTS idx_orders_payment_expiry
 ON "Orders" ("PaymentExpiresAt")
 WHERE "Status"='pending' AND "PaymentVerifiedAt" IS NULL;
+CREATE INDEX IF NOT EXISTS idx_orders_processing_verified
+ON "Orders" ("PaymentVerifiedAt")
+WHERE "Status"='processing' AND "PaymentVerifiedAt" IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "OrderItems" (
     "Id" SERIAL PRIMARY KEY,
@@ -153,6 +156,9 @@ CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
 ON "PaymentAttempts" ("Status", "CreatedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
 ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC);
+CREATE INDEX IF NOT EXISTS idx_payment_receipts_pending
+ON "PaymentReceipts" ("CreatedAt")
+WHERE "Status"='pending';
 
 CREATE TABLE IF NOT EXISTS "AdminAuditLogs" (
     "Id" BIGSERIAL PRIMARY KEY,

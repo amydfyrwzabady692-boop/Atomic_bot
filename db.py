@@ -1291,6 +1291,9 @@ def ensure_admin_schema():
         '''CREATE INDEX IF NOT EXISTS idx_orders_payment_expiry
            ON "Orders" ("PaymentExpiresAt")
            WHERE "Status"='pending' AND "PaymentVerifiedAt" IS NULL''',
+        '''CREATE INDEX IF NOT EXISTS idx_orders_processing_verified
+           ON "Orders" ("PaymentVerifiedAt")
+           WHERE "Status"='processing' AND "PaymentVerifiedAt" IS NOT NULL''',
         """CREATE UNIQUE INDEX IF NOT EXISTS uq_orders_payment_authority
            ON "Orders" ("PaymentAuthority")
            WHERE "PaymentAuthority" IS NOT NULL AND "PaymentAuthority" <> ''""",
@@ -1453,6 +1456,8 @@ def ensure_admin_schema():
            ON "PaymentAttempts" ("Status", "CreatedAt" DESC)''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
            ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC)''',
+        '''CREATE INDEX IF NOT EXISTS idx_payment_receipts_pending
+           ON "PaymentReceipts" ("CreatedAt") WHERE "Status"='pending' ''',
         '''CREATE TABLE IF NOT EXISTS "AdminAuditLogs" (
             "Id" BIGSERIAL PRIMARY KEY,
             "AdminTelegramId" VARCHAR(64) NOT NULL,
@@ -1963,6 +1968,89 @@ def admin_stats_full():
         stats['sales_count'], sales_sum = cur.fetchone()
         stats['sales_sum'] = int(sales_sum or 0)
     return stats
+
+
+def admin_operations_snapshot(low_stock_threshold=5):
+    """خلاصه عملیاتی امروز و هشدارهایی که نیاز به اقدام مدیر دارند."""
+    threshold = max(0, min(int(low_stock_threshold), 10_000))
+    successful = "('paid','processing','delivered','completed')"
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT '
+            '(SELECT COUNT(*) FROM "Users" WHERE "DateJoined">=CURRENT_DATE),'
+            '(SELECT COUNT(*) FROM "Orders" WHERE "CreatedAt">=CURRENT_DATE),'
+            f'(SELECT COUNT(*) FROM "Orders" WHERE "CreatedAt">=CURRENT_DATE '
+            f' AND "Status" IN {successful}),'
+            f'(SELECT COALESCE(SUM("TotalAmount"-"DiscountAmount"),0) FROM "Orders" '
+            f' WHERE "CreatedAt">=CURRENT_DATE AND "Status" IN {successful}),'
+            '(SELECT COUNT(*) FROM "PaymentReceipts" WHERE "Status"=\'pending\'),'
+            '(SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'processing\' '
+            ' AND "PaymentVerifiedAt" IS NOT NULL '
+            ' AND "PaymentVerifiedAt"<now()-interval \'15 minutes\'),'
+            '(SELECT COUNT(*) FROM "PaymentAttempts" WHERE "Status"=\'failed\' '
+            ' AND "CreatedAt">=now()-interval \'24 hours\'),'
+            '(SELECT COUNT(*) FROM "SupportTickets" WHERE "Status"=\'open\'),'
+            '(SELECT COUNT(*) FROM "GemPackages" WHERE "IsActive"=true '
+            ' AND COALESCE("AutoDeliver",false)=false AND "Stock"<=%s),'
+            '(SELECT COUNT(*) FROM "StoreProducts" WHERE "IsActive"=true '
+            ' AND "Stock"<=%s)',
+            (threshold, threshold),
+        )
+        row = cur.fetchone()
+    keys = (
+        'new_users_today', 'orders_today', 'sales_today_count',
+        'sales_today_amount', 'pending_receipts', 'stuck_processing',
+        'failed_payments_24h', 'open_tickets', 'low_gem_stock',
+        'low_store_stock',
+    )
+    result = dict(zip(keys, row))
+    for key in keys:
+        result[key] = int(result[key] or 0)
+    result['low_stock_threshold'] = threshold
+    return result
+
+
+def list_stuck_processing_orders(limit=30, older_minutes=15):
+    """سفارش پرداخت‌شده‌ای که بیش از حد در processing مانده است."""
+    limit = max(1, min(int(limit), 100))
+    older_minutes = max(5, min(int(older_minutes), 24 * 60))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."PaymentMethod",'
+            'o."PaymentVerifiedAt",'
+            'COALESCE(string_agg(DISTINCT COALESCE(g."G2BulkStatus",\'-\'),\',\'),\'-\') '
+            'FROM "Orders" o '
+            'LEFT JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND o."PaymentVerifiedAt"<now()-(%s * interval \'1 minute\') '
+            'GROUP BY o."Id" ORDER BY o."PaymentVerifiedAt" LIMIT %s',
+            (older_minutes, limit),
+        )
+        return cur.fetchall()
+
+
+def list_low_stock_items(threshold=5, limit=50):
+    """موجودی‌های کمِ قابل اقدام؛ بسته‌های خودکار از موجودی G2 جدا هستند."""
+    threshold = max(0, min(int(threshold), 10_000))
+    limit = max(1, min(int(limit), 100))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT \'gem\',"Id","Title","Stock" FROM "GemPackages" '
+            'WHERE "IsActive"=true AND COALESCE("AutoDeliver",false)=false '
+            'AND "Stock"<=%s ORDER BY "Stock","Id" LIMIT %s',
+            (threshold, limit),
+        )
+        rows = list(cur.fetchall())
+        remaining = max(0, limit - len(rows))
+        if remaining:
+            cur.execute(
+                'SELECT \'product\',"Id","Title","Stock" FROM "StoreProducts" '
+                'WHERE "IsActive"=true AND "Stock"<=%s '
+                'ORDER BY "Stock","Id" LIMIT %s',
+                (threshold, remaining),
+            )
+            rows.extend(cur.fetchall())
+        return rows
 
 
 def list_sense_packages(platform=None, active_only=False):

@@ -28,6 +28,8 @@ from db import (
     add_forced_join_channel, list_forced_join_channels,
     remove_forced_join_channel,
     financial_health_snapshot, list_admin_actions, log_admin_action,
+    admin_operations_snapshot, list_stuck_processing_orders,
+    list_low_stock_items,
 )
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
@@ -140,6 +142,20 @@ def _mask_secret(value):
     return f'{value[:4]}…{value[-4:]}'
 
 
+def _md_safe(value, limit=80):
+    text = str(value or '—').replace('\n', ' ')[:limit]
+    for char in ('_', '*', '`', '['):
+        text = text.replace(char, ' ')
+    return text
+
+
+def _low_stock_threshold():
+    try:
+        return max(0, min(int(get_setting('low_stock_threshold', '5') or 5), 10_000))
+    except (TypeError, ValueError):
+        return 5
+
+
 async def _edit(query, text, rows, markdown=False):
     await query.edit_message_text(
         text, parse_mode='Markdown' if markdown else None, reply_markup=_kb(rows)
@@ -153,7 +169,120 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data
 
-    if data == 'admx_shop':
+    if data == 'admx_ops':
+        threshold = _low_stock_threshold()
+        ops = admin_operations_snapshot(threshold)
+        sales = get_setting('sales_enabled', '1') != '0'
+        payments = get_setting('payments_enabled', '1') != '0'
+        alerts_enabled = get_setting('admin_alerts_enabled', '1') != '0'
+        alert_total = (
+            ops['pending_receipts'] + ops['stuck_processing']
+            + ops['failed_payments_24h'] + ops['open_tickets']
+            + ops['low_gem_stock'] + ops['low_store_stock']
+        )
+        text = (
+            '🚨 *مرکز عملیات مدیر*\n'
+            '━━━━━━━━━━━━━━━\n'
+            f'فروش: {"✅ فعال" if sales else "⛔ متوقف"} · '
+            f'پرداخت: {"✅ فعال" if payments else "⛔ متوقف"}\n'
+            f'اعلان خودکار: {"🔔 روشن" if alerts_enabled else "🔕 خاموش"}\n'
+            f'هشدار قابل اقدام: *{alert_total:,}*\n\n'
+            f'🧾 رسید در انتظار: *{ops["pending_receipts"]:,}*\n'
+            f'⏳ سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
+            f'❌ خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
+            f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
+            f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n\n'
+            f'فروش امروز: *{ops["sales_today_amount"]:,} تومان* '
+            f'از {ops["sales_today_count"]:,} سفارش'
+        )
+        await _edit(query, text, [
+            [InlineKeyboardButton(
+                f'🧾 رسیدها ({ops["pending_receipts"]})', callback_data='admx_receipts'
+            ), InlineKeyboardButton(
+                f'⏳ گیرکرده‌ها ({ops["stuck_processing"]})', callback_data='admx_stuck'
+            )],
+            [InlineKeyboardButton(
+                f'📦 موجودی کم ({ops["low_gem_stock"] + ops["low_store_stock"]})',
+                callback_data='admx_lowstock',
+            ), InlineKeyboardButton(
+                f'🎧 تیکت‌ها ({ops["open_tickets"]})', callback_data='adm_tickets'
+            )],
+            [InlineKeyboardButton('📅 گزارش امروز', callback_data='admx_daily'),
+             InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health')],
+            [InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed')],
+            [InlineKeyboardButton(
+                '🔔 روشن/خاموش اعلان خودکار', callback_data='admx_toggle_alerts'
+            )],
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_ops')],
+            _back(),
+        ], markdown=True)
+    elif data == 'admx_daily':
+        ops = admin_operations_snapshot(_low_stock_threshold())
+        text = (
+            '📅 *گزارش امروز*\n'
+            '━━━━━━━━━━━━━━━\n'
+            f'کاربر جدید: *{ops["new_users_today"]:,}*\n'
+            f'کل سفارش‌های ساخته‌شده: *{ops["orders_today"]:,}*\n'
+            f'فروش موفق: *{ops["sales_today_count"]:,}*\n'
+            f'مبلغ فروش: *{ops["sales_today_amount"]:,} تومان*\n'
+            f'خطای پرداخت ۲۴ ساعت اخیر: *{ops["failed_payments_24h"]:,}*\n'
+            f'رسید منتظر بررسی: *{ops["pending_receipts"]:,}*\n'
+            f'سفارش گیرکرده: *{ops["stuck_processing"]:,}*'
+        )
+        await _edit(query, text, [
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_daily')],
+            _back('admx_ops'),
+        ], markdown=True)
+    elif data == 'admx_stuck':
+        rows = list_stuck_processing_orders(30)
+        lines = ['⏳ *سفارش‌های گیرکرده در پردازش*', '━━━━━━━━━━━━━━━']
+        buttons = []
+        for oid, tg, total, method, verified_at, g2_status in rows:
+            safe_method = str(method or '—').replace('_', '-')
+            safe_g2 = str(g2_status or '—').replace('_', '-')
+            lines.append(
+                f'• `#{oid}` · {int(total):,} ت · {safe_method}\n'
+                f'  کاربر `{tg or "—"}` · G2: {safe_g2} · {str(verified_at)[:16]}'
+            )
+            buttons.append([InlineKeyboardButton(
+                f'🔁 تلاش مجدد سفارش #{oid}', callback_data=f'adm_retry_{oid}'
+            )])
+            if len('\n'.join(lines)) > 3500:
+                lines.append('…')
+                break
+        if not rows:
+            lines.append('✅ سفارش گیرکرده‌ای وجود ندارد.')
+        buttons.extend([
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_stuck')],
+            _back('admx_ops'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+    elif data == 'admx_lowstock':
+        threshold = _low_stock_threshold()
+        rows = list_low_stock_items(threshold, 50)
+        lines = [
+            f'📦 *هشدار موجودی کم — حد {threshold}*',
+            '━━━━━━━━━━━━━━━',
+        ]
+        buttons = []
+        for kind, item_id, title, stock in rows:
+            label = 'جم دستی' if kind == 'gem' else 'محصول'
+            safe_title = _md_safe(title)
+            lines.append(f'• {label} `#{item_id}` · {safe_title} · موجودی *{stock}*')
+            if kind == 'gem':
+                buttons.append([InlineKeyboardButton(
+                    f'✏️ مدیریت {str(title)[:24]}', callback_data=f'admx_gem_{item_id}'
+                )])
+        if not rows:
+            lines.append('✅ هیچ موجودی فعالی زیر حد هشدار نیست.')
+        buttons.extend([
+            [InlineKeyboardButton('⚙️ تغییر حد هشدار', callback_data='admi_lowstock'),
+             InlineKeyboardButton('📦 محصولات', callback_data='admx_products')],
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_lowstock')],
+            _back('admx_ops'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+    elif data == 'admx_shop':
         await _edit(query, '🛍 مدیریت فروشگاه', [
             [InlineKeyboardButton('💎 بسته‌های جم', callback_data='admx_gems')],
             [InlineKeyboardButton('🎯 پک‌های سنس', callback_data='admx_sense')],
@@ -378,6 +507,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('📝 متن خوش‌آمد', callback_data='admi_welcome')],
             [InlineKeyboardButton('📝 متن پشتیبانی', callback_data='admi_supporttext')],
             [InlineKeyboardButton(
+                f'📦 حد هشدار موجودی: {_low_stock_threshold()}',
+                callback_data='admi_lowstock',
+            )],
+            [InlineKeyboardButton(
                 '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
             )],
             [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
@@ -434,7 +567,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'رسیدهای در انتظار: *{len(list_pending_receipts(100)):,}*\n'
             f'تیکت باز: *{s["open_tickets"]:,}*'
         )
-        await _edit(query, text, [_back()], markdown=True)
+        await _edit(query, text, [
+            [InlineKeyboardButton('📅 گزارش امروز', callback_data='admx_daily'),
+             InlineKeyboardButton('🚨 مرکز عملیات', callback_data='admx_ops')],
+            _back(),
+        ], markdown=True)
     elif data.startswith('admx_users_'):
         kind = data.replace('admx_users_', '')
         titles = {'balance': 'دارای موجودی', 'referral': 'دارای زیرمجموعه',
@@ -585,13 +722,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text('✅ دسترسی مدیر حذف شد.', reply_markup=_kb([_back('admx_admins')]))
     elif data in (
         'admx_toggle_zp', 'admx_toggle_card',
-        'admx_toggle_sales', 'admx_toggle_payments',
+        'admx_toggle_sales', 'admx_toggle_payments', 'admx_toggle_alerts',
     ):
         key = {
             'admx_toggle_zp': 'zarinpal_enabled',
             'admx_toggle_card': 'card_transfer_enabled',
             'admx_toggle_sales': 'sales_enabled',
             'admx_toggle_payments': 'payments_enabled',
+            'admx_toggle_alerts': 'admin_alerts_enabled',
         }[data]
         current = get_setting(key, '1') != '0'
         new_value = '0' if current else '1'
@@ -600,8 +738,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             update.effective_user.id, 'setting_toggle', 'setting', key,
             f'value={new_value}',
         )
-        await query.edit_message_text('✅ وضعیت تغییر کرد.',
-                                      reply_markup=_kb([_back('admx_finance')]))
+        back = 'admx_ops' if data == 'admx_toggle_alerts' else 'admx_finance'
+        await query.edit_message_text(
+            '✅ وضعیت تغییر کرد.', reply_markup=_kb([_back(back)])
+        )
 
 
 async def _show_simple_list(query, data):
@@ -676,6 +816,10 @@ INPUT_ACTIONS = {
     'admi_shopname': ('setting:shop_name', 'نام فروشگاه را بفرست.'),
     'admi_welcome': ('setting:welcome_text', 'متن کامل خوش‌آمد را بفرست. Markdown مجاز است.'),
     'admi_supporttext': ('setting:support_text', 'متن کامل بخش پشتیبانی را بفرست.'),
+    'admi_lowstock': (
+        'setting:low_stock_threshold',
+        'حد هشدار موجودی کم را بفرست (مثلاً 5).',
+    ),
     'admi_department': ('department', 'نام دپارتمان جدید را بفرست.'),
     'admi_category': ('category', 'نام دسته‌بندی جدید را بفرست.'),
     'admi_product': ('product', 'با این قالب بفرست:\nعنوان | قیمت | موجودی | شناسه دسته\nمثال:\nاکانت لول 70 | 500000 | 2 | 1'),
@@ -800,9 +944,18 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not 10_000 <= rate <= 10_000_000:
                     raise ValueError('نرخ دلار خارج از محدوده مجاز است.')
                 raw = str(rate)
+            if key == 'low_stock_threshold':
+                threshold = int(raw.replace(',', ''))
+                if not 0 <= threshold <= 10_000:
+                    raise ValueError('حد موجودی باید بین ۰ تا ۱۰٬۰۰۰ باشد.')
+                raw = str(threshold)
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             set_setting(key, raw)
+            log_admin_action(
+                update.effective_user.id, 'setting_updated', 'setting', key,
+                'value changed' if key != 'low_stock_threshold' else f'value={raw}',
+            )
             await update.message.reply_text('✅ ذخیره شد.', reply_markup=admin_home_keyboard())
         elif action == 'department':
             add_department(raw)

@@ -15,6 +15,7 @@ from db import (
     set_user_blocked, list_failed_deliveries, list_open_orders, admin_adjust_wallet,
     admin_set_wallet_balance, list_wallet_txs, get_user_orders, fulfill_order, get_order,
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
+    admin_operations_snapshot, get_setting,
 )
 
 WAIT_FIND = 1
@@ -84,6 +85,18 @@ async def admin_home_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _show_home(update, ctx, via_message=False):
     s = get_admin_stats()
+    try:
+        threshold = max(
+            0, min(int(get_setting('low_stock_threshold', '5') or 5), 10_000)
+        )
+    except (TypeError, ValueError):
+        threshold = 5
+    ops = admin_operations_snapshot(threshold)
+    alerts = (
+        ops['pending_receipts'] + ops['stuck_processing']
+        + ops['failed_payments_24h'] + ops['open_tickets']
+        + ops['low_gem_stock'] + ops['low_store_stock']
+    )
     text = (
         f"✦ *پنل ادمین Atomic*\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
@@ -91,7 +104,11 @@ async def _show_home(update, ctx, via_message=False):
         f"سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
         f"تحویل ناموفق: *{s['failed_g2']:,}*\n"
         f"تیکت باز: *{s['open_tickets']:,}*\n"
-        f"مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت"
+        f"مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"فروش امروز: *{ops['sales_today_amount']:,}* ت "
+        f"از {ops['sales_today_count']:,} سفارش\n"
+        f"{'🚨' if alerts else '✅'} هشدارهای قابل اقدام: *{alerts:,}*"
     )
     kb = admin_home_keyboard()
     if via_message:
