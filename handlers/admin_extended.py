@@ -27,6 +27,7 @@ from db import (
     list_profit_snapshots, profit_report_stats,
     add_forced_join_channel, list_forced_join_channels,
     remove_forced_join_channel,
+    financial_health_snapshot, list_admin_actions, log_admin_action,
 )
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
@@ -165,15 +166,23 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == 'admx_finance':
         zp = get_setting('zarinpal_enabled', '1') != '0'
         card = get_setting('card_transfer_enabled', '1') != '0'
+        payments = get_setting('payments_enabled', '1') != '0'
+        sales = get_setting('sales_enabled', '1') != '0'
         number = get_setting('card_number', '') or 'تنظیم نشده'
         merchant = get_setting('zarinpal_merchant_id', '')
         await _edit(query, (
             '💳 امور مالی\n\n'
+            f'فروش: {"✅" if sales else "⛔ متوقف"}\n'
+            f'پرداخت‌های جدید: {"✅" if payments else "⛔ متوقف"}\n'
             f'زرین‌پال: {"✅" if zp else "❌"}\n'
             f'مرچنت: {_mask_secret(merchant) if merchant else "از env سرور"}\n'
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
             f'شماره کارت: {number}'
         ), [
+            [InlineKeyboardButton('🚨 توقف/فعال‌سازی فروش', callback_data='admx_toggle_sales')],
+            [InlineKeyboardButton('🛡 توقف/فعال‌سازی پرداخت', callback_data='admx_toggle_payments')],
+            [InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health'),
+             InlineKeyboardButton('🧭 تاریخچه مدیران', callback_data='admx_audit')],
             [InlineKeyboardButton('روشن/خاموش زرین‌پال', callback_data='admx_toggle_zp')],
             [InlineKeyboardButton('✏️ مرچنت زرین‌پال', callback_data='admi_zpmerchant')],
             [InlineKeyboardButton('✏️ آدرس callback', callback_data='admi_callback')],
@@ -187,6 +196,43 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('💵 موجودی G2Bulk', callback_data='admx_g2balance')],
             [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
             _back(),
+        ])
+    elif data == 'admx_health':
+        health = financial_health_snapshot()
+        warning = health['verified_pending_orders'] + health['expired_pending_orders']
+        text = (
+            '🩺 سلامت مالی ربات\n\n'
+            f'{"⚠️ نیازمند بررسی" if warning else "✅ وضعیت عادی"}\n'
+            f'سفارش‌های در انتظار: {health["pending_orders"]:,}\n'
+            f'سفارش منقضیِ باز: {health["expired_pending_orders"]:,}\n'
+            f'پرداخت‌شده ولی هنوز pending: {health["verified_pending_orders"]:,}\n'
+            f'سفارش در حال پردازش: {health["processing_orders"]:,}\n'
+            f'رسید در انتظار بررسی: {health["pending_receipts"]:,}\n'
+            f'شارژ کیف پول پرداخت‌نشده: {health["unpaid_wallet_charges"]:,}\n'
+            f'خطای پرداخت ۲۴ ساعت اخیر: {health["failed_payments_24h"]:,}'
+        )
+        await _edit(query, text, [
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_health')],
+            _back('admx_finance'),
+        ])
+    elif data == 'admx_audit':
+        rows = list_admin_actions(30)
+        lines = ['🧭 تاریخچه عملیات حساس مدیران', '━━━━━━━━━━━━━━━']
+        for _row_id, admin_tg, action, target_type, target_id, details, created in rows:
+            target = f'{target_type} #{target_id}' if target_id else target_type
+            lines.append(
+                f'• {action} · {target or "—"}\n'
+                f'  مدیر {admin_tg} · {str(created)[:16]}'
+                + (f'\n  {details}' if details else '')
+            )
+            if len('\n'.join(lines)) > 3700:
+                lines.append('…')
+                break
+        if not rows:
+            lines.append('هنوز عملیاتی ثبت نشده است.')
+        await _edit(query, '\n'.join(lines), [
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_audit')],
+            _back('admx_finance'),
         ])
     elif data.startswith('admx_payments_'):
         selected = data.replace('admx_payments_', '')
@@ -416,8 +462,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for txid, amount, _authority, _uid, tg, name in wallet_rows:
             lines.append(f'شارژ کیف پول `#{txid}` · {amount:,} ت · `{tg}` · {name or "—"}')
             buttons.append([InlineKeyboardButton(
-                f'✅ تایید شارژ #{txid}', callback_data=f'wadmin_ok_{txid}'
-            ), InlineKeyboardButton('❌ رد', callback_data=f'wadmin_no_{txid}')])
+                f'✅ بررسی شارژ #{txid}', callback_data=f'wadmin_review_ok_{txid}'
+            ), InlineKeyboardButton('❌ بررسی رد', callback_data=f'wadmin_review_no_{txid}')])
         if not rows and not wallet_rows:
             lines.append('✅ رسید تاییدنشده‌ای وجود ندارد.')
         buttons.append(_back('admx_finance'))
@@ -537,11 +583,24 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         remove_bot_admin(tg)
         await query.edit_message_text('✅ دسترسی مدیر حذف شد.', reply_markup=_kb([_back('admx_admins')]))
-    elif data in ('admx_toggle_zp', 'admx_toggle_card'):
-        key = 'zarinpal_enabled' if data.endswith('_zp') else 'card_transfer_enabled'
+    elif data in (
+        'admx_toggle_zp', 'admx_toggle_card',
+        'admx_toggle_sales', 'admx_toggle_payments',
+    ):
+        key = {
+            'admx_toggle_zp': 'zarinpal_enabled',
+            'admx_toggle_card': 'card_transfer_enabled',
+            'admx_toggle_sales': 'sales_enabled',
+            'admx_toggle_payments': 'payments_enabled',
+        }[data]
         current = get_setting(key, '1') != '0'
-        set_setting(key, '0' if current else '1')
-        await query.edit_message_text('✅ وضعیت روش پرداخت تغییر کرد.',
+        new_value = '0' if current else '1'
+        set_setting(key, new_value)
+        log_admin_action(
+            update.effective_user.id, 'setting_toggle', 'setting', key,
+            f'value={new_value}',
+        )
+        await query.edit_message_text('✅ وضعیت تغییر کرد.',
                                       reply_markup=_kb([_back('admx_finance')]))
 
 

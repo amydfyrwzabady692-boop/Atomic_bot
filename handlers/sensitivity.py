@@ -8,7 +8,7 @@ from keyboards import (
 )
 from db import (
     get_or_create_user, create_order, add_order_item, get_wallet_balance,
-    list_sense_packages, get_sense_package,
+    list_sense_packages, get_sense_package, get_bool_setting,
 )
 from payment_safety import checked_amount
 
@@ -92,6 +92,12 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """خرید پک سنس پویا با شناسه دیتابیس."""
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('sales_enabled', True):
+        await query.edit_message_text(
+            "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",
+            reply_markup=main_menu(),
+        )
+        return
     key = query.data.replace('sens_buy_', '')
     row = get_sense_package(key) if key.isdigit() else None
     if row:

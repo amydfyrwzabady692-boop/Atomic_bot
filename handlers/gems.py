@@ -13,6 +13,7 @@ from keyboards import (
 from db import (
     get_gems_by_id, get_gem, get_or_create_user, create_order,
     add_order_item, add_gem_order_info, get_wallet_balance,
+    get_bool_setting,
 )
 from payment_safety import checked_amount
 
@@ -215,6 +216,12 @@ async def gem_reedit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('sales_enabled', True):
+        await query.edit_message_text(
+            "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",
+            reply_markup=main_menu(),
+        )
+        return ConversationHandler.END
     info = ctx.user_data.get('gem_buy')
     if not info or not info.get('game_uid'):
         await query.edit_message_text("❌ اطلاعات سفارش ناقص است.")

@@ -126,9 +126,24 @@ def wallet_card_pay_keyboard(tx_key):
 def admin_wallet_card_keyboard(tx_id):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('✅ تایید شارژ', callback_data=f'wadmin_ok_{tx_id}'),
-            InlineKeyboardButton('❌ رد', callback_data=f'wadmin_no_{tx_id}'),
+            InlineKeyboardButton(
+                '✅ بررسی برای تأیید', callback_data=f'wadmin_review_ok_{tx_id}'
+            ),
+            InlineKeyboardButton(
+                '❌ بررسی برای رد', callback_data=f'wadmin_review_no_{tx_id}'
+            ),
         ],
+    ])
+
+
+def admin_wallet_card_confirm_keyboard(tx_id, action):
+    if action == 'ok':
+        label, callback = '⚠️ تأیید نهایی و شارژ کیف پول', f'wadmin_ok_{tx_id}'
+    else:
+        label, callback = '⚠️ رد نهایی رسید', f'wadmin_no_{tx_id}'
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=callback)],
+        [InlineKeyboardButton('🔙 بازگشت', callback_data=f'wadmin_review_back_{tx_id}')],
     ])
 
 
@@ -159,9 +174,24 @@ def receipt_skip_keyboard(order_id):
 def admin_card_keyboard(order_id):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('✅ تأیید پرداخت', callback_data=f'admin_ok_{order_id}'),
-            InlineKeyboardButton('❌ رد پرداخت', callback_data=f'admin_no_{order_id}'),
+            InlineKeyboardButton(
+                '✅ بررسی برای تأیید', callback_data=f'admin_review_ok_{order_id}'
+            ),
+            InlineKeyboardButton(
+                '❌ بررسی برای رد', callback_data=f'admin_review_no_{order_id}'
+            ),
         ],
+    ])
+
+
+def admin_card_confirm_keyboard(order_id, action):
+    if action == 'ok':
+        label, callback = '⚠️ تأیید نهایی و شروع تحویل', f'admin_ok_{order_id}'
+    else:
+        label, callback = '⚠️ رد نهایی و لغو سفارش', f'admin_no_{order_id}'
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=callback)],
+        [InlineKeyboardButton('🔙 بازگشت', callback_data=f'admin_review_back_{order_id}')],
     ])
 
 
@@ -181,10 +211,14 @@ def wallet_keyboard():
 
 
 def wallet_charge_pay_keyboard(tx_key, pay_url=None):
-    return InlineKeyboardMarkup([
+    rows = []
+    if pay_url:
+        rows.append([InlineKeyboardButton('🔗 باز کردن درگاه پرداخت', url=pay_url)])
+    rows.extend([
         [InlineKeyboardButton('✅ پرداخت کردم', callback_data=f'wchk_{tx_key}')],
         [InlineKeyboardButton('بازگشت به کیف پول', callback_data='wallet')],
     ])
+    return InlineKeyboardMarkup(rows)
 
 
 def support_cancel_keyboard():

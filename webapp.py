@@ -108,7 +108,9 @@ def create_web_app(bot_app):
                         message='verify failed',
                     )
                     return web.Response(text=html_fail, content_type='text/html')
-                done, _uid, amt, new_bal = complete_wallet_charge_by_authority(authority)
+                done, _uid, amt, new_bal = complete_wallet_charge_by_authority(
+                    authority, verified_amount=amount, ref_id=ref
+                )
                 if not done:
                     logger.warning(
                         'wallet callback verified but completion failed authority=%s',

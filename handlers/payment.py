@@ -12,7 +12,8 @@ from telegram.ext import (
 
 from keyboards import (
     zarinpal_pay_keyboard, card_payment_keyboard, receipt_skip_keyboard,
-    admin_card_keyboard, main_menu, pay_method_keyboard, admin_failed_order_keyboard,
+    admin_card_keyboard, admin_card_confirm_keyboard, main_menu,
+    pay_method_keyboard, admin_failed_order_keyboard,
 )
 from db import (
     get_order, update_order_status, fulfill_order, get_or_create_user,
@@ -25,7 +26,7 @@ from db import (
     prepare_card_order_payment, cancel_order_and_refund,
     expire_order_and_refund,
     approve_card_order_payment, reject_card_order_payment,
-    log_payment_attempt,
+    log_payment_attempt, log_admin_action,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
@@ -311,6 +312,9 @@ async def _notify_user(bot, tg_id, text):
 async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('payments_enabled', True):
+        await query.edit_message_text("⛔ پرداخت جدید موقتاً توسط مدیریت متوقف شده است.")
+        return
     order_id = int(query.data.split('_')[-1])
     pending = _pending(ctx, order_id) or {
         'order_id': order_id,
@@ -589,6 +593,9 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('payments_enabled', True):
+        await query.edit_message_text("⛔ پرداخت جدید موقتاً توسط مدیریت متوقف شده است.")
+        return
     order_id = int(query.data.split('_')[-1])
     order, db_id = _order_for_user(update, ctx, order_id)
     if not order or order[3] != 'pending':
@@ -651,6 +658,9 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not get_bool_setting('payments_enabled', True):
+        await query.answer("پرداخت جدید موقتاً متوقف شده است.", show_alert=True)
+        return
     order_id = int(query.data.split('_')[-1])
     order = get_order(order_id)
     if not order or order[3] != 'pending':
@@ -911,11 +921,21 @@ async def cancel_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
+    review = ctx.user_data.pop('admin_order_review', None) or {}
+    if (
+        review.get('action') != 'ok' or review.get('order_id') != order_id
+        or time.time() - float(review.get('armed_at') or 0) > 120
+    ):
+        await query.answer(
+            "ابتدا دکمه «بررسی برای تأیید» را بزن؛ تأیید نهایی ۲ دقیقه اعتبار دارد.",
+            show_alert=True,
+        )
+        return
+    await query.answer()
     order = get_order(order_id)
     if not order:
         await _edit_review_message(query, "❌ سفارش پیدا نشد.")
@@ -934,6 +954,10 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         provider='card_transfer', event='card_approved', status='success',
         amount=get_order_payment_expected(order_id), order_id=order_id,
         telegram_id=order[6], message=f'approved by {update.effective_user.id}',
+    )
+    log_admin_action(
+        update.effective_user.id, 'card_order_approved', 'order', order_id,
+        f'amount={get_order_payment_expected(order_id)}',
     )
 
     success, status = fulfill_order(order_id)
@@ -974,13 +998,64 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def admin_review_order_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """مرحله اول بررسی رسید؛ عملیات مالی فقط با کلیک دوم انجام می‌شود."""
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("دسترسی نداری", show_alert=True)
+        return
+    parts = query.data.split('_')
+    action = parts[2]
+    order_id = int(parts[3])
+    order = get_order(order_id)
+    if not order or order[3] != 'pending' or order[4] != 'card_transfer':
+        await query.answer("سفارش دیگر قابل بررسی نیست.", show_alert=True)
+        return
+    expected = get_order_payment_expected(order_id)
+    label = (
+        f"تأیید نهایی پرداخت {expected:,} تومان و شروع تحویل؟"
+        if action == 'ok'
+        else f"رد نهایی رسید سفارش #{order_id} و لغو سفارش؟"
+    )
+    ctx.user_data['admin_order_review'] = {
+        'action': action, 'order_id': order_id, 'armed_at': time.time(),
+    }
+    await query.answer(label, show_alert=True)
+    await query.edit_message_reply_markup(
+        reply_markup=admin_card_confirm_keyboard(order_id, action)
+    )
+
+
+async def admin_review_order_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("دسترسی نداری", show_alert=True)
+        return
+    order_id = int(query.data.rsplit('_', 1)[1])
+    ctx.user_data.pop('admin_order_review', None)
+    await query.answer("بازگشت")
+    await query.edit_message_reply_markup(
+        reply_markup=admin_card_keyboard(order_id)
+    )
+
+
 async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     order_id = int(query.data.split('_')[-1])
+    review = ctx.user_data.pop('admin_order_review', None) or {}
+    if (
+        review.get('action') != 'no' or review.get('order_id') != order_id
+        or time.time() - float(review.get('armed_at') or 0) > 120
+    ):
+        await query.answer(
+            "ابتدا دکمه «بررسی برای رد» را بزن؛ تأیید نهایی ۲ دقیقه اعتبار دارد.",
+            show_alert=True,
+        )
+        return
+    await query.answer()
     order = get_order(order_id)
     if not order:
         await _edit_review_message(query, "❌ سفارش پیدا نشد.")
@@ -995,6 +1070,10 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         amount=expected_amount or order[2],
         order_id=order_id, telegram_id=order[6],
         message=f'rejected by {update.effective_user.id}',
+    )
+    log_admin_action(
+        update.effective_user.id, 'card_order_rejected', 'order', order_id,
+        f'amount={expected_amount or order[2]} refunded={refunded}',
     )
     await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.")
     if order and order[6]:

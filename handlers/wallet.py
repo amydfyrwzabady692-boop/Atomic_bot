@@ -12,7 +12,8 @@ from telegram.ext import (
 
 from keyboards import (
     wallet_keyboard, wallet_charge_pay_keyboard, wallet_charge_method_keyboard,
-    wallet_card_pay_keyboard, admin_wallet_card_keyboard, main_menu,
+    wallet_card_pay_keyboard, admin_wallet_card_keyboard,
+    admin_wallet_card_confirm_keyboard, main_menu,
 )
 from db import (
     get_or_create_user, get_wallet_balance, create_wallet_charge_tx,
@@ -20,7 +21,7 @@ from db import (
     get_conn, get_wallet_tx, approve_wallet_card_charge,
     reject_wallet_card_charge,
     get_setting, get_bool_setting,
-    save_payment_receipt, log_payment_attempt,
+    save_payment_receipt, log_payment_attempt, log_admin_action,
 )
 from payments import request_payment, verify_payment
 from payment_safety import MIN_WALLET_CHARGE, checked_amount
@@ -157,6 +158,9 @@ async def wallet_charge_custom_amount(update: Update, ctx: ContextTypes.DEFAULT_
 async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('payments_enabled', True):
+        await query.edit_message_text("⛔ پرداخت جدید موقتاً توسط مدیریت متوقف شده است.")
+        return
     try:
         amount = checked_amount(
             query.data.replace('wpay_zp_', ''),
@@ -200,7 +204,8 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     tx_id = create_wallet_charge_tx(db_id, amount, authority)
-    tx_key = authority[-12:]
+    # شناسه دیتابیس پایدار است و بعد از restart نیز قابل بازیابی می‌ماند.
+    tx_key = str(tx_id)
     ctx.user_data['wallet_charge'] = {
         'authority': authority,
         'amount': amount,
@@ -241,6 +246,9 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not get_bool_setting('payments_enabled', True):
+        await query.edit_message_text("⛔ پرداخت جدید موقتاً توسط مدیریت متوقف شده است.")
+        return
     try:
         amount = checked_amount(
             query.data.replace('wpay_card_', ''),
@@ -307,13 +315,11 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("در حال بررسی…")
     tx_key = query.data.replace('wchk_', '')
-    authority = (ctx.application.bot_data.get('wallet_auth') or {}).get(tx_key)
-    charge = ctx.user_data.get('wallet_charge') or {}
-    if not authority:
-        authority = charge.get('authority')
-    if not authority:
-        await query.edit_message_text("❌ اطلاعات شارژ پیدا نشد. دوباره از کیف پول شروع کن.")
+    if not tx_key.isdigit():
+        await query.edit_message_text("❌ شناسه تراکنش شارژ نامعتبر است.")
         return
+    tx_id_from_button = int(tx_key)
+    charge = ctx.user_data.get('wallet_charge') or {}
 
     meta = (ctx.application.bot_data.get('wallet_zp_meta') or {}).get(tx_key) or {}
     if not meta and charge:
@@ -336,18 +342,20 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['db_id'] = db_id
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
+            'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId",'
+            't."Authority" '
             'FROM "WalletTransactions" t '
             'JOIN "Wallets" w ON w."Id"=t."WalletId" '
             'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
-            'WHERE t."Authority"=%s AND t."Kind"=\'charge\'',
-            (authority,),
+            'WHERE t."Id"=%s AND t."Kind"=\'charge\' '
+            'AND t."Authority" NOT LIKE \'wcard_%%\'',
+            (tx_id_from_button,),
         )
         row = cur.fetchone()
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
         return
-    tx_id, amount, is_paid, owner_db_id, owner_tg_id = row
+    tx_id, amount, is_paid, owner_db_id, owner_tg_id, authority = row
     if int(owner_db_id) != int(db_id) or str(owner_tg_id or '') != str(user.id):
         await query.edit_message_text("❌ این تراکنش شارژ متعلق به شما نیست.")
         return
@@ -394,7 +402,9 @@ async def wallet_check(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    done, _user_id, amt, new_bal = complete_wallet_charge_by_authority(authority)
+    done, _user_id, amt, new_bal = complete_wallet_charge_by_authority(
+        authority, verified_amount=amount, ref_id=ref
+    )
     if done:
         log_payment_attempt(
             provider='zarinpal', event='wallet_verified', status='success',
@@ -419,15 +429,20 @@ async def wallet_card_done_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     tx_key = query.data.replace('wcard_done_', '')
+    if not tx_key.isdigit():
+        await query.edit_message_text("❌ شناسه تراکنش نامعتبر است.")
+        return ConversationHandler.END
     info = (ctx.application.bot_data.get('wallet_card_tx') or {}).get(tx_key)
     if not info:
         info = ctx.user_data.get('wallet_card')
-    if not info:
-        await query.edit_message_text("❌ اطلاعات شارژ پیدا نشد. دوباره از کیف پول شروع کن.")
-        return ConversationHandler.END
-    row = get_wallet_tx(info.get('tx_id'))
+    row = get_wallet_tx(int(tx_key))
+    if row and not info:
+        info = {
+            'tx_id': row[0], 'authority': row[2], 'amount': row[1],
+            'db_id': row[4], 'tg_id': row[5],
+        }
     if (
-        not row or row[3]
+        not info or not row or row[3]
         or int(row[4]) != int(info.get('db_id') or 0)
         or str(row[5] or '') != str(update.effective_user.id)
         or int(row[1]) != int(info.get('amount') or 0)
@@ -484,8 +499,20 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status='pending', amount=amount, wallet_tx_id=tx_id,
             telegram_id=user.id,
         )
+    except ValueError as e:
+        ctx.user_data.pop('wallet_card', None)
+        await update.message.reply_text(
+            f"❌ رسید ثبت نشد: {e}", reply_markup=wallet_keyboard()
+        )
+        return ConversationHandler.END
     except Exception as e:
         print(f'[WALLET] receipt persistence failed: {e}')
+        ctx.user_data.pop('wallet_card', None)
+        await update.message.reply_text(
+            "❌ ذخیره رسید انجام نشد؛ دوباره تلاش کن.",
+            reply_markup=wallet_keyboard(),
+        )
+        return ConversationHandler.END
     try:
         from admin_notify import admin_ids
         recipients = admin_ids()
@@ -539,11 +566,21 @@ async def wallet_receipt_photo_required(update: Update, ctx: ContextTypes.DEFAUL
 
 async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_ok_', ''))
+    review = ctx.user_data.pop('admin_wallet_review', None) or {}
+    if (
+        review.get('action') != 'ok' or review.get('tx_id') != tx_id
+        or time.time() - float(review.get('armed_at') or 0) > 120
+    ):
+        await query.answer(
+            "ابتدا «بررسی برای تأیید» را بزن؛ تأیید نهایی ۲ دقیقه اعتبار دارد.",
+            show_alert=True,
+        )
+        return
+    await query.answer()
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
@@ -563,6 +600,10 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status='success', amount=amt, wallet_tx_id=tx_id,
             telegram_id=tg_id,
             message=f'approved by {update.effective_user.id}',
+        )
+        log_admin_action(
+            update.effective_user.id, 'wallet_card_approved',
+            'wallet_transaction', tx_id, f'amount={amt}',
         )
     try:
         await query.edit_message_caption(
@@ -589,13 +630,63 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+async def admin_wallet_review_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """مرحله اول تأیید/رد شارژ کارت؛ کلیک بعدی عملیات مالی را انجام می‌دهد."""
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("دسترسی نداری", show_alert=True)
+        return
+    parts = query.data.split('_')
+    action = parts[2]
+    tx_id = int(parts[3])
+    row = get_wallet_tx(tx_id)
+    if not row or row[3] or not str(row[2] or '').startswith('wcard_'):
+        await query.answer("تراکنش دیگر قابل بررسی نیست.", show_alert=True)
+        return
+    label = (
+        f"شارژ نهایی کیف پول به مبلغ {row[1]:,} تومان؟"
+        if action == 'ok'
+        else f"رد نهایی رسید شارژ #{tx_id}؟"
+    )
+    ctx.user_data['admin_wallet_review'] = {
+        'action': action, 'tx_id': tx_id, 'armed_at': time.time(),
+    }
+    await query.answer(label, show_alert=True)
+    await query.edit_message_reply_markup(
+        reply_markup=admin_wallet_card_confirm_keyboard(tx_id, action)
+    )
+
+
+async def admin_wallet_review_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer("دسترسی نداری", show_alert=True)
+        return
+    tx_id = int(query.data.rsplit('_', 1)[1])
+    ctx.user_data.pop('admin_wallet_review', None)
+    await query.answer("بازگشت")
+    await query.edit_message_reply_markup(
+        reply_markup=admin_wallet_card_keyboard(tx_id)
+    )
+
+
 async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
     tx_id = int(query.data.replace('wadmin_no_', ''))
+    review = ctx.user_data.pop('admin_wallet_review', None) or {}
+    if (
+        review.get('action') != 'no' or review.get('tx_id') != tx_id
+        or time.time() - float(review.get('armed_at') or 0) > 120
+    ):
+        await query.answer(
+            "ابتدا «بررسی برای رد» را بزن؛ تأیید نهایی ۲ دقیقه اعتبار دارد.",
+            show_alert=True,
+        )
+        return
+    await query.answer()
     row = get_wallet_tx(tx_id)
     if not row:
         await query.edit_message_text("❌ تراکنش پیدا نشد.")
@@ -613,6 +704,10 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status='rejected', amount=amount, wallet_tx_id=tx_id,
         telegram_id=tg_id,
         message=f'rejected by {update.effective_user.id}',
+    )
+    log_admin_action(
+        update.effective_user.id, 'wallet_card_rejected',
+        'wallet_transaction', tx_id, f'amount={amount}',
     )
     try:
         await query.edit_message_caption(caption=f"❌ شارژ کیف پول #{tx_id} رد شد.")

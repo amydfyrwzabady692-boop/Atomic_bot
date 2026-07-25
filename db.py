@@ -324,6 +324,8 @@ def record_order_payment_verified(order_id, method, expected_amount,
                 not authority or row[8] != authority
             ):
                 return False, 'authority mismatch'
+            if method == 'zarinpal' and not str(ref_id or '').strip():
+                return False, 'missing gateway reference'
             cur.execute(
                 'UPDATE "Orders" SET "PaymentVerifiedAt"=now(),"PaymentRefId"=%s,'
                 '"Status"=\'processing\' WHERE "Id"=%s AND "Status"=\'pending\' '
@@ -1087,30 +1089,47 @@ def create_wallet_charge_tx(user_db_id, amount, authority):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "WalletTransactions" '
-            '("WalletId", "Amount", "Kind", "Description", "Authority", "IsPaid", "CreatedAt") '
-            'VALUES (%s, %s, %s, %s, %s, false, now()) RETURNING "Id"',
-            (wallet_id, amount, 'charge', f'شارژ کیف پول {amount:,} تومان', authority),
+            '("WalletId", "Amount", "Kind", "Description", "Authority", "IsPaid", '
+            '"PaymentExpectedAmount", "CreatedAt") '
+            'VALUES (%s, %s, %s, %s, %s, false, %s, now()) RETURNING "Id"',
+            (
+                wallet_id, amount, 'charge',
+                f'شارژ کیف پول {amount:,} تومان', authority, amount,
+            ),
         )
         tx_id = cur.fetchone()[0]
         conn.commit()
         return tx_id
 
 
-def complete_wallet_charge_by_authority(authority):
-    """پس از verify زرین‌پال، موجودی را شارژ کن. خروجی: (ok, user_id, amount, new_balance)"""
+def complete_wallet_charge_by_authority(authority, verified_amount=None, ref_id=None):
+    """شارژ اتمیک کیف پول فقط با مبلغ و کد پیگیری تأییدشده زرین‌پال."""
+    authority = str(authority or '').strip()
+    ref_id = str(ref_id or '').strip()
+    if not authority or authority.startswith('wcard_') or not ref_id:
+        return False, None, 0, 0
+    try:
+        verified_amount = checked_amount(
+            verified_amount, label='مبلغ تأییدشده شارژ کیف پول'
+        )
+    except ValueError:
+        return False, None, 0, 0
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT "Id","WalletId","Amount","IsPaid" FROM "WalletTransactions" '
+            'SELECT "Id","WalletId","Amount","IsPaid","PaymentExpectedAmount",'
+            '"PaymentVerifiedAt","PaymentRefId" FROM "WalletTransactions" '
             'WHERE "Authority"=%s AND "Kind"=\'charge\' FOR UPDATE',
             (authority,),
         )
         row = cur.fetchone()
         if not row:
             return False, None, 0, 0
-        tx_id, wallet_id, amount, is_paid = row
+        tx_id, wallet_id, amount, is_paid, expected, verified_at, stored_ref = row
         try:
             amount = checked_amount(amount, label='مبلغ شارژ کیف پول')
         except ValueError:
+            return False, None, 0, 0
+        if int(expected or 0) != amount or verified_amount != amount:
             return False, None, 0, 0
         cur.execute(
             'SELECT "UserId","Balance" FROM "Wallets" WHERE "Id"=%s FOR UPDATE',
@@ -1121,16 +1140,22 @@ def complete_wallet_charge_by_authority(authority):
             return False, None, 0, 0
         user_id, balance = wallet
         if is_paid:
-            return True, user_id, amount, balance
+            if verified_at and str(stored_ref or '') == ref_id:
+                return True, user_id, amount, balance
+            return False, None, 0, 0
         new_bal = balance + amount
         cur.execute(
             'UPDATE "Wallets" SET "Balance"=%s, "UpdatedAt"=now() WHERE "Id"=%s',
             (new_bal, wallet_id),
         )
         cur.execute(
-            'UPDATE "WalletTransactions" SET "IsPaid"=true WHERE "Id"=%s',
-            (tx_id,),
+            'UPDATE "WalletTransactions" SET "IsPaid"=true,'
+            '"PaymentVerifiedAt"=now(),"PaymentRefId"=%s '
+            'WHERE "Id"=%s AND "IsPaid"=false',
+            (ref_id[:100], tx_id),
         )
+        if cur.rowcount != 1:
+            return False, None, 0, 0
         conn.commit()
         return True, user_id, amount, new_bal
 
@@ -1254,6 +1279,11 @@ def ensure_admin_schema():
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
+        'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
+        'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
+        'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
+        '''UPDATE "WalletTransactions" SET "PaymentExpectedAmount"="Amount"
+           WHERE "PaymentExpectedAmount" IS NULL AND "Kind"='charge' ''',
         '''ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpiresAt"
            TIMESTAMPTZ NOT NULL DEFAULT (now()+interval '15 minutes')''',
         '''UPDATE "Orders" SET "PaymentExpiresAt"="CreatedAt"+interval '15 minutes'
@@ -1267,6 +1297,9 @@ def ensure_admin_schema():
         """CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_authority
            ON "WalletTransactions" ("Authority")
            WHERE "Authority" IS NOT NULL AND "Authority" <> ''""",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_payment_ref
+           ON "WalletTransactions" ("PaymentRefId")
+           WHERE "PaymentRefId" IS NOT NULL AND "PaymentRefId" <> ''""",
         '''DO $$ BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='ck_orders_financials') THEN
                 ALTER TABLE "Orders" ADD CONSTRAINT ck_orders_financials
@@ -1420,6 +1453,17 @@ def ensure_admin_schema():
            ON "PaymentAttempts" ("Status", "CreatedAt" DESC)''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
            ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC)''',
+        '''CREATE TABLE IF NOT EXISTS "AdminAuditLogs" (
+            "Id" BIGSERIAL PRIMARY KEY,
+            "AdminTelegramId" VARCHAR(64) NOT NULL,
+            "Action" VARCHAR(80) NOT NULL,
+            "TargetType" VARCHAR(40) NOT NULL DEFAULT '',
+            "TargetId" VARCHAR(100) NOT NULL DEFAULT '',
+            "Details" VARCHAR(500) NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_admin_audit_created
+           ON "AdminAuditLogs" ("CreatedAt" DESC)''',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "Role" VARCHAR(20) NOT NULL DEFAULT \'admin\'',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "AddedBy" VARCHAR(64)',
     ]
@@ -1659,10 +1703,16 @@ def list_pending_receipts(limit=30):
 
 
 def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_id='', text=''):
+    if (order_id is None) == (wallet_tx_id is None):
+        raise ValueError('رسید باید دقیقاً به یک سفارش یا تراکنش متصل باشد.')
+    telegram_id = str(telegram_id or '').strip()
+    file_id = str(file_id or '').strip()
+    if not telegram_id or not file_id:
+        raise ValueError('شناسه کاربر و عکس رسید الزامی است.')
     with get_conn() as conn, conn.cursor() as cur:
         if order_id is not None:
             cur.execute(
-                'SELECT "Status","PaymentVerifiedAt",'
+                'SELECT "Status","PaymentVerifiedAt","PaymentMethod","TelegramId",'
                 'COALESCE("PaymentExpiresAt"<=now(),false) '
                 'FROM "Orders" WHERE "Id"=%s FOR UPDATE',
                 (int(order_id),),
@@ -1672,14 +1722,50 @@ def save_payment_receipt(order_id=None, wallet_tx_id=None, telegram_id='', file_
                 raise ValueError('سفارش پیدا نشد.')
             if order[0] != 'pending' or order[1]:
                 raise ValueError('سفارش دیگر در انتظار پرداخت نیست.')
-            if order[2]:
+            if order[2] != 'card_transfer':
+                raise ValueError('روش پرداخت سفارش کارت‌به‌کارت نیست.')
+            if str(order[3] or '') != telegram_id:
+                raise ValueError('سفارش متعلق به این کاربر نیست.')
+            if order[4]:
                 raise ValueError('مهلت پرداخت سفارش تمام شده است.')
+            cur.execute(
+                'SELECT 1 FROM "PaymentReceipts" WHERE "OrderId"=%s '
+                'AND "Status"=\'pending\' LIMIT 1',
+                (int(order_id),),
+            )
+            if cur.fetchone():
+                raise ValueError('برای این سفارش قبلاً رسید در انتظار بررسی ثبت شده است.')
+        else:
+            cur.execute(
+                'SELECT t."IsPaid",t."Authority",u."TelegramId" '
+                'FROM "WalletTransactions" t '
+                'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+                'JOIN "Users" u ON u."Id"=w."UserId" '
+                'WHERE t."Id"=%s AND t."Kind"=\'charge\' FOR UPDATE OF t',
+                (int(wallet_tx_id),),
+            )
+            tx = cur.fetchone()
+            if not tx:
+                raise ValueError('تراکنش شارژ پیدا نشد.')
+            if tx[0]:
+                raise ValueError('این تراکنش قبلاً پرداخت شده است.')
+            if not str(tx[1] or '').startswith('wcard_'):
+                raise ValueError('تراکنش مربوط به کارت‌به‌کارت نیست.')
+            if str(tx[2] or '') != telegram_id:
+                raise ValueError('تراکنش متعلق به این کاربر نیست.')
+            cur.execute(
+                'SELECT 1 FROM "PaymentReceipts" WHERE "WalletTransactionId"=%s '
+                'AND "Status"=\'pending\' LIMIT 1',
+                (int(wallet_tx_id),),
+            )
+            if cur.fetchone():
+                raise ValueError('برای این تراکنش قبلاً رسید در انتظار بررسی ثبت شده است.')
         cur.execute(
             'INSERT INTO "PaymentReceipts" '
             '("OrderId","WalletTransactionId","TelegramId","ReceiptType","FileId","Text") '
             'VALUES (%s,%s,%s,%s,%s,%s) RETURNING "Id"',
-            (order_id, wallet_tx_id, str(telegram_id or ''),
-             'wallet' if wallet_tx_id else 'order', file_id or '', text or ''),
+            (order_id, wallet_tx_id, telegram_id,
+             'wallet' if wallet_tx_id else 'order', file_id, text or ''),
         )
         rid = cur.fetchone()[0]
         conn.commit()
@@ -1760,6 +1846,78 @@ def payment_attempt_stats():
             'AND "CreatedAt">=now()-interval \'30 days\''
         )
         return counts, int(cur.fetchone()[0] or 0)
+
+
+def log_admin_action(admin_telegram_id, action, target_type='', target_id='', details=''):
+    """Best-effort audit trail; logging failure must never change the admin action."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'INSERT INTO "AdminAuditLogs" '
+                '("AdminTelegramId","Action","TargetType","TargetId","Details","CreatedAt") '
+                'VALUES (%s,%s,%s,%s,%s,now()) RETURNING "Id"',
+                (
+                    str(admin_telegram_id or '')[:64],
+                    str(action or 'unknown')[:80],
+                    str(target_type or '')[:40],
+                    str(target_id or '')[:100],
+                    str(details or '')[:500],
+                ),
+            )
+            audit_id = cur.fetchone()[0]
+            conn.commit()
+            return audit_id
+    except Exception:
+        return None
+
+
+def list_admin_actions(limit=30):
+    limit = max(1, min(int(limit), 100))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","AdminTelegramId","Action","TargetType","TargetId",'
+            '"Details","CreatedAt" FROM "AdminAuditLogs" '
+            'ORDER BY "Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def financial_health_snapshot():
+    """Small operational snapshot for spotting stuck or inconsistent money flows."""
+    queries = {
+        'pending_orders': (
+            'SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'pending\''
+        ),
+        'expired_pending_orders': (
+            'SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'pending\' '
+            'AND "PaymentExpiresAt" IS NOT NULL AND "PaymentExpiresAt"<now()'
+        ),
+        'processing_orders': (
+            'SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'processing\''
+        ),
+        'verified_pending_orders': (
+            'SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'pending\' '
+            'AND "PaymentVerifiedAt" IS NOT NULL'
+        ),
+        'pending_receipts': (
+            'SELECT COUNT(*) FROM "PaymentReceipts" WHERE "Status"=\'pending\''
+        ),
+        'unpaid_wallet_charges': (
+            'SELECT COUNT(*) FROM "WalletTransactions" '
+            'WHERE "Kind"=\'charge\' AND COALESCE("IsPaid",FALSE)=FALSE'
+        ),
+        'failed_payments_24h': (
+            'SELECT COUNT(*) FROM "PaymentAttempts" WHERE "Status"=\'failed\' '
+            'AND "CreatedAt">=now()-interval \'24 hours\''
+        ),
+    }
+    result = {}
+    with get_conn() as conn, conn.cursor() as cur:
+        for key, sql in queries.items():
+            cur.execute(sql)
+            result[key] = int(cur.fetchone()[0] or 0)
+    return result
 
 
 def get_payment_receipt(order_id=None, wallet_tx_id=None):

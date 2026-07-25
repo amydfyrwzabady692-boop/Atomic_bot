@@ -21,10 +21,12 @@ from handlers.cart import show_cart
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
     start_card, pay_wallet, cancel_order, admin_approve, admin_reject,
+    admin_review_order_prompt, admin_review_order_back,
 )
 from handlers.wallet import (
     wallet_menu, wallet_charge_preset, wallet_check, wallet_conversation_handler,
     wallet_pay_zarinpal, wallet_pay_card, admin_wallet_card_ok, admin_wallet_card_no,
+    admin_wallet_review_prompt, admin_wallet_review_back,
 )
 from handlers.account import my_account, my_orders
 from handlers.support import support_conversation_handler
@@ -308,6 +310,12 @@ def main():
     app.add_handler(CallbackQueryHandler(cancel_order, pattern=r'^cancel_order_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_approve, pattern=r'^admin_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_reject, pattern=r'^admin_no_\d+$'))
+    app.add_handler(CallbackQueryHandler(
+        admin_review_order_prompt, pattern=r'^admin_review_(?:ok|no)_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        admin_review_order_back, pattern=r'^admin_review_back_\d+$'
+    ))
 
     app.add_handler(CallbackQueryHandler(wallet_menu, pattern='^wallet$'))
     app.add_handler(CallbackQueryHandler(wallet_charge_preset, pattern=r'^wchg_\d+$'))
@@ -316,6 +324,12 @@ def main():
     app.add_handler(CallbackQueryHandler(wallet_check, pattern=r'^wchk_'))
     app.add_handler(CallbackQueryHandler(admin_wallet_card_ok, pattern=r'^wadmin_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_wallet_card_no, pattern=r'^wadmin_no_\d+$'))
+    app.add_handler(CallbackQueryHandler(
+        admin_wallet_review_prompt, pattern=r'^wadmin_review_(?:ok|no)_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        admin_wallet_review_back, pattern=r'^wadmin_review_back_\d+$'
+    ))
 
     app.add_handler(CallbackQueryHandler(store_menu, pattern='^store$'))
     app.add_handler(CallbackQueryHandler(show_category, pattern=r'^storecat_\d+$'))

@@ -123,11 +123,17 @@ CREATE TABLE IF NOT EXISTS "WalletTransactions" (
     "Description" VARCHAR(255) NOT NULL DEFAULT '',
     "Authority" VARCHAR(100),
     "IsPaid" BOOLEAN NOT NULL DEFAULT false,
+    "PaymentExpectedAmount" INTEGER,
+    "PaymentVerifiedAt" TIMESTAMPTZ,
+    "PaymentRefId" VARCHAR(100),
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_authority
 ON "WalletTransactions" ("Authority")
 WHERE "Authority" IS NOT NULL AND "Authority" <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_transactions_payment_ref
+ON "WalletTransactions" ("PaymentRefId")
+WHERE "PaymentRefId" IS NOT NULL AND "PaymentRefId" <> '';
 
 CREATE TABLE IF NOT EXISTS "PaymentAttempts" (
     "Id" BIGSERIAL PRIMARY KEY,
@@ -147,6 +153,18 @@ CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
 ON "PaymentAttempts" ("Status", "CreatedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
 ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC);
+
+CREATE TABLE IF NOT EXISTS "AdminAuditLogs" (
+    "Id" BIGSERIAL PRIMARY KEY,
+    "AdminTelegramId" VARCHAR(64) NOT NULL,
+    "Action" VARCHAR(80) NOT NULL,
+    "TargetType" VARCHAR(40) NOT NULL DEFAULT '',
+    "TargetId" VARCHAR(100) NOT NULL DEFAULT '',
+    "Details" VARCHAR(500) NOT NULL DEFAULT '',
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_audit_created
+ON "AdminAuditLogs" ("CreatedAt" DESC);
 
 CREATE TABLE IF NOT EXISTS "SupportTickets" (
     "Id" SERIAL PRIMARY KEY,
