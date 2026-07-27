@@ -211,18 +211,18 @@ INSERT INTO "GemPackages"
 ("Title", "Amount", "BonusAmount", "Price", "OldPrice", "PlanType", "PurchaseType",
  "AutoDeliver", "G2BulkCatalogueName", "Stock", "IsAvailable", "IsActive")
 VALUES
-('Level Up Package - Level 6', 6, 0, 65000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 6', 9999, true, true),
-('Level Up Package - Level 10', 10, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 10', 9999, true, true),
-('Level Up Package - Level 15', 15, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 15', 9999, true, true),
-('Level Up Package - Level 20', 20, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 20', 9999, true, true),
-('Level Up Package - Level 25', 25, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 25', 9999, true, true),
-('Level Up Package - Level 30', 30, 0, 172000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 30', 9999, true, true),
-('110', 110, 0, 191000, NULL, 'once', 'by_id', true, '110', 9999, true, true),
-('231', 231, 0, 382000, NULL, 'once', 'by_id', true, '231', 9999, true, true),
-('Weekly Membership', 90001, 0, 430000, NULL, 'once', 'by_id', true, 'Weekly Membership', 9999, true, true),
-('Booyah Pass', 90002, 0, 640000, NULL, 'once', 'by_id', true, 'Booyah Pass', 9999, true, true),
-('583', 583, 0, 956000, NULL, 'once', 'by_id', true, '583', 9999, true, true),
-('1188', 1188, 0, 1913000, NULL, 'once', 'by_id', true, '1188', 9999, true, true),
-('Monthly Membership', 90003, 0, 2106000, NULL, 'once', 'by_id', true, 'Monthly Membership', 9999, true, true),
-('2420', 2420, 0, 3824000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
+('🎯 لول‌آپ سطح 6', 6, 0, 65000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 6', 9999, true, true),
+('🎯 لول‌آپ سطح 10', 10, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 10', 9999, true, true),
+('🎯 لول‌آپ سطح 15', 15, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 15', 9999, true, true),
+('🎯 لول‌آپ سطح 20', 20, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 20', 9999, true, true),
+('🎯 لول‌آپ سطح 25', 25, 0, 110000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 25', 9999, true, true),
+('🎯 لول‌آپ سطح 30', 30, 0, 172000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 30', 9999, true, true),
+('💎 110 جم', 110, 0, 191000, NULL, 'once', 'by_id', true, '110', 9999, true, true),
+('💎 231 جم', 231, 0, 382000, NULL, 'once', 'by_id', true, '231', 9999, true, true),
+('📅 عضویت هفتگی', 90001, 0, 430000, NULL, 'once', 'by_id', true, 'Weekly Membership', 9999, true, true),
+('🏆 بویاه پس', 90002, 0, 640000, NULL, 'once', 'by_id', true, 'Booyah Pass', 9999, true, true),
+('💎 583 جم', 583, 0, 956000, NULL, 'once', 'by_id', true, '583', 9999, true, true),
+('💎 1188 جم', 1188, 0, 1913000, NULL, 'once', 'by_id', true, '1188', 9999, true, true),
+('📆 عضویت ماهانه', 90003, 0, 2106000, NULL, 'once', 'by_id', true, 'Monthly Membership', 9999, true, true),
+('💎 2420 جم', 2420, 0, 3824000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
 ON CONFLICT DO NOTHING;

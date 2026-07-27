@@ -2276,20 +2276,20 @@ def delete_simple_record(table, record_id):
 def sync_gem_prices():
     """کاتالوگ تاییدشده را یک‌بار همگام کن و سپس قیمت‌های ادمین را حفظ کن."""
     catalogue = (
-        ('Level Up Package - Level 6', 6, 65_000, 'Level Up Package - Level 6'),
-        ('Level Up Package - Level 10', 10, 110_000, 'Level Up Package - Level 10'),
-        ('Level Up Package - Level 15', 15, 110_000, 'Level Up Package - Level 15'),
-        ('Level Up Package - Level 20', 20, 110_000, 'Level Up Package - Level 20'),
-        ('Level Up Package - Level 25', 25, 110_000, 'Level Up Package - Level 25'),
-        ('Level Up Package - Level 30', 30, 172_000, 'Level Up Package - Level 30'),
-        ('110', 110, 191_000, '110'),
-        ('231', 231, 382_000, '231'),
-        ('Weekly Membership', 90_001, 430_000, 'Weekly Membership'),
-        ('Booyah Pass', 90_002, 640_000, 'Booyah Pass'),
-        ('583', 583, 956_000, '583'),
-        ('1188', 1188, 1_913_000, '1188'),
-        ('Monthly Membership', 90_003, 2_106_000, 'Monthly Membership'),
-        ('2420', 2420, 3_824_000, '2420'),
+        ('🎯 لول‌آپ سطح 6', 6, 65_000, 'Level Up Package - Level 6'),
+        ('🎯 لول‌آپ سطح 10', 10, 110_000, 'Level Up Package - Level 10'),
+        ('🎯 لول‌آپ سطح 15', 15, 110_000, 'Level Up Package - Level 15'),
+        ('🎯 لول‌آپ سطح 20', 20, 110_000, 'Level Up Package - Level 20'),
+        ('🎯 لول‌آپ سطح 25', 25, 110_000, 'Level Up Package - Level 25'),
+        ('🎯 لول‌آپ سطح 30', 30, 172_000, 'Level Up Package - Level 30'),
+        ('💎 110 جم', 110, 191_000, '110'),
+        ('💎 231 جم', 231, 382_000, '231'),
+        ('📅 عضویت هفتگی', 90_001, 430_000, 'Weekly Membership'),
+        ('🏆 بویاه پس', 90_002, 640_000, 'Booyah Pass'),
+        ('💎 583 جم', 583, 956_000, '583'),
+        ('💎 1188 جم', 1188, 1_913_000, '1188'),
+        ('📆 عضویت ماهانه', 90_003, 2_106_000, 'Monthly Membership'),
+        ('💎 2420 جم', 2420, 3_824_000, '2420'),
     )
     marker = 'g2bulk_catalogue_14_20260727'
     with get_conn() as conn, conn.cursor() as cur:
@@ -2317,6 +2317,22 @@ def sync_gem_prices():
                 'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
                 'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
                 (marker,),
+            )
+        title_marker = 'g2bulk_catalogue_titles_fa_v2_20260727'
+        cur.execute(
+            'SELECT 1 FROM "BotSettings" WHERE "Key"=%s', (title_marker,)
+        )
+        if not cur.fetchone():
+            for title, _amount, _price, supplier_name in catalogue:
+                cur.execute(
+                    'UPDATE "GemPackages" SET "Title"=%s '
+                    'WHERE "G2BulkCatalogueName"=%s',
+                    (title, supplier_name),
+                )
+            cur.execute(
+                'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
+                'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
+                (title_marker,),
             )
         cur.execute('SELECT COUNT(*) FROM "SensePackages"')
         if cur.fetchone()[0] == 0:

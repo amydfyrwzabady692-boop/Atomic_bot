@@ -21,7 +21,8 @@ from text_safety import markdown_safe
 GEM_UID, GEM_CONFIRM = range(2)
 
 _MENU_BUTTONS = {
-    '💎 جم فری‌فایر', '💰 کیف پول', '📦 سفارش‌های من', '👤 حساب من',
+    '💎 جم فری‌فایر', '🎮 محصولات فری‌فایر', '💰 کیف پول',
+    '📦 سفارش‌های من', '👤 حساب من',
     '🛍 فروشگاه اکانت', '🎯 پک سنس', '🛒 سبد خرید', '🎧 پشتیبانی',
 }
 
@@ -52,10 +53,10 @@ def _gem_api_availability(g, force=False):
 async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gems = get_gems_by_id()
     text = (
-        "💎 *جم فری‌فایر — خرید با آیدی*\n"
+        "🎮 *محصولات فری‌فایر — خرید با آیدی*\n"
         "━━━━━━━━━━━━━━━\n"
-        "شارژ مستقیم الماس فری‌فایر (Middle East)\n"
-        "_بعد از پرداخت موفق، جم به‌صورت خودکار واریز می‌شود_\n\n"
+        "جم، لول‌آپ، عضویت و بویاه پس فری‌فایر (Middle East)\n"
+        "_پس از پرداخت موفق، سفارش به‌صورت امن و خودکار ثبت می‌شود_\n\n"
     )
     if not gems:
         text += "❌ فعلاً بسته‌ای فعال نیست. کمی بعد دوباره سر بزن."
@@ -86,8 +87,16 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     catalogue_name = str(g[9] or g[2]).strip()
     if catalogue_name.isdigit():
         product_line = f"🔢 مقدار: *{total:,} الماس*{bonus}"
+    elif catalogue_name.startswith('Level Up Package'):
+        product_line = "🎯 نوع بسته: *ارتقای سطح*"
+    elif catalogue_name == 'Weekly Membership':
+        product_line = "📅 اعتبار: *عضویت هفتگی*"
+    elif catalogue_name == 'Monthly Membership':
+        product_line = "📆 اعتبار: *عضویت ماهانه*"
+    elif catalogue_name == 'Booyah Pass':
+        product_line = "🏆 نوع محصول: *بویاه پس*"
     else:
-        product_line = f"📦 محصول: *{markdown_safe(g[1], 120)}*"
+        product_line = "📦 محصول ویژه فری‌فایر"
     price_line = f"💰 *{g[4]:,} تومان*"
     if g[5] and g[5] > g[4]:
         off = round((g[5] - g[4]) / g[5] * 100)
@@ -95,7 +104,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     deliver = "⚡️ تحویل آنی (خودکار)" if g[8] else "⏳ تحویل دستی پس از تایید"
     text = (
-        f"💎 *{markdown_safe(g[1], 120)}*\n"
+        f"🎮 *{markdown_safe(g[1], 120)}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{product_line}\n"
         f"🚚 {deliver}\n"

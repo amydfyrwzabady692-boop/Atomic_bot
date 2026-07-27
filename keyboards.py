@@ -8,7 +8,7 @@ def _fmt(n):
 def main_menu():
     return ReplyKeyboardMarkup(
         [
-            ['💎 جم فری‌فایر', '💰 کیف پول'],
+            ['🎮 محصولات فری‌فایر', '💰 کیف پول'],
             ['📦 سفارش‌های من', '👤 حساب من'],
             ['🛍 فروشگاه اکانت', '🎯 پک سنس'],
             ['🎧 پشتیبانی'],
@@ -56,7 +56,7 @@ def gems_list_keyboard(gems):
         # Id, Title, Amount, BonusAmount, Price, ...
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
-        label = f"{auto}🎮 {g[1]} • {_fmt(g[4])} ت"
+        label = f"{auto} {g[1]}  •  {_fmt(g[4])} تومان"
         if sold_out and not g[8]:
             label = f"❌ ناموجود — {g[1]}"
             buttons.append([InlineKeyboardButton(label, callback_data='noop')])

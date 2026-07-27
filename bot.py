@@ -70,6 +70,7 @@ ADMIN_ALERT_INTERVAL_SECONDS = 8 * 60 * 60
 
 MENU_TEXTS = {
     '💎 جم فری‌فایر': gems_menu,
+    '🎮 محصولات فری‌فایر': gems_menu,
     '💰 کیف پول': wallet_menu,
     '📦 سفارش‌های من': my_orders,
     '👤 حساب من': my_account,
