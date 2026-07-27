@@ -102,7 +102,7 @@ def get_gems_by_id():
         'WHERE "IsActive"=true '
         'AND "PurchaseType"=\'by_id\' '
         'AND "PlanType"=\'once\' '
-        'ORDER BY "Price"'
+        'ORDER BY "Price", "Id"'
     )
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -948,7 +948,9 @@ def fulfill_order(order_id):
                         elif live_status in ('PENDING', 'PROCESSING'):
                             processing_auto += 1
                     continue
-                if not game_uid or not g2bulk.is_supported_amount(amount):
+                if not game_uid or not g2bulk.is_supported_catalogue(
+                    amount, catalogue or str(amount)
+                ):
                     update_gem_g2bulk(info_id, status='FAILED')
                     continue
                 # Capture FX immediately before the supplier purchase. This
@@ -2272,25 +2274,50 @@ def delete_simple_record(table, record_id):
 
 
 def sync_gem_prices():
-    """فقط بسته‌های اولیه را ایجاد کن؛ قیمت تنظیم‌شده ادمین هرگز بازنویسی نمی‌شود."""
-    prices = {
-        110: 200_000,
-        231: 400_000,
-        583: 1_000_000,
-        1188: 2_000_000,
-        2420: 4_000_000,
-    }
+    """کاتالوگ تاییدشده را یک‌بار همگام کن و سپس قیمت‌های ادمین را حفظ کن."""
+    catalogue = (
+        ('Level Up Package - Level 6', 6, 65_000, 'Level Up Package - Level 6'),
+        ('Level Up Package - Level 10', 10, 110_000, 'Level Up Package - Level 10'),
+        ('Level Up Package - Level 15', 15, 110_000, 'Level Up Package - Level 15'),
+        ('Level Up Package - Level 20', 20, 110_000, 'Level Up Package - Level 20'),
+        ('Level Up Package - Level 25', 25, 110_000, 'Level Up Package - Level 25'),
+        ('Level Up Package - Level 30', 30, 172_000, 'Level Up Package - Level 30'),
+        ('110', 110, 191_000, '110'),
+        ('231', 231, 382_000, '231'),
+        ('Weekly Membership', 90_001, 430_000, 'Weekly Membership'),
+        ('Booyah Pass', 90_002, 640_000, 'Booyah Pass'),
+        ('583', 583, 956_000, '583'),
+        ('1188', 1188, 1_913_000, '1188'),
+        ('Monthly Membership', 90_003, 2_106_000, 'Monthly Membership'),
+        ('2420', 2420, 3_824_000, '2420'),
+    )
+    marker = 'g2bulk_catalogue_14_20260727'
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute('SELECT COUNT(*) FROM "GemPackages"')
-        if cur.fetchone()[0] == 0:
-            for amount, price in prices.items():
+        cur.execute('SELECT 1 FROM "BotSettings" WHERE "Key"=%s', (marker,))
+        if not cur.fetchone():
+            for title, amount, price, supplier_name in catalogue:
+                cur.execute(
+                    'UPDATE "GemPackages" SET '
+                    '"Title"=%s,"Amount"=%s,"Price"=%s,"PlanType"=\'once\','
+                    '"PurchaseType"=\'by_id\',"AutoDeliver"=true,'
+                    '"Stock"=9999,"IsAvailable"=true,"IsActive"=true '
+                    'WHERE "G2BulkCatalogueName"=%s',
+                    (title, amount, price, supplier_name),
+                )
+                if cur.rowcount:
+                    continue
                 cur.execute(
                     'INSERT INTO "GemPackages" '
                     '("Title","Amount","BonusAmount","Price","PlanType","PurchaseType",'
                     '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive") '
                     'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,9999,true,true)',
-                    (f'بسته {amount} جمی', amount, price, str(amount)),
+                    (title, amount, price, supplier_name),
                 )
+            cur.execute(
+                'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
+                'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
+                (marker,),
+            )
         cur.execute('SELECT COUNT(*) FROM "SensePackages"')
         if cur.fetchone()[0] == 0:
             cur.executemany(

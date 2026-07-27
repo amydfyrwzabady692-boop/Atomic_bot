@@ -9,6 +9,22 @@ import urllib.request
 
 BASE_URL = 'https://api.g2bulk.com/v1'
 G2BULK_ME_AMOUNTS = (110, 231, 583, 1188, 2420)
+G2BULK_ME_CATALOGUE_NAMES = (
+    'Level Up Package - Level 6',
+    'Level Up Package - Level 10',
+    'Level Up Package - Level 15',
+    'Level Up Package - Level 20',
+    'Level Up Package - Level 25',
+    'Level Up Package - Level 30',
+    '110',
+    '231',
+    'Weekly Membership',
+    'Booyah Pass',
+    '583',
+    '1188',
+    'Monthly Membership',
+    '2420',
+)
 _inventory_cache = {'at': 0.0, 'value': None}
 
 
@@ -26,6 +42,24 @@ def is_configured():
 
 def is_supported_amount(amount):
     return int(amount) in G2BULK_ME_AMOUNTS
+
+
+def _normalise_catalogue_name(name):
+    return ' '.join(str(name or '').strip().casefold().split())
+
+
+def is_supported_catalogue(amount, catalogue_name=''):
+    """Only allow products explicitly approved for the Free Fire ME catalogue."""
+    normalised = _normalise_catalogue_name(catalogue_name)
+    if normalised:
+        return normalised in {
+            _normalise_catalogue_name(name)
+            for name in G2BULK_ME_CATALOGUE_NAMES
+        }
+    try:
+        return is_supported_amount(amount)
+    except (TypeError, ValueError):
+        return False
 
 
 def _request(method, path, body=None, idempotency_key=None):
@@ -114,15 +148,19 @@ def get_inventory_snapshot(force=False):
 
     prices = {}
     names = {}
+    prices_by_name = {}
     for item in catalogue.get('catalogues') or []:
-        name = str(item.get('name') or '')
+        name = str(item.get('name') or '').strip()
         match = re.search(r'\d+', name)
         try:
             package_amount = int(match.group()) if match else None
             cost = float(item.get('amount'))
         except (TypeError, ValueError):
             continue
-        if package_amount and cost > 0:
+        if not name or cost <= 0:
+            continue
+        prices_by_name[_normalise_catalogue_name(name)] = cost
+        if package_amount:
             prices[package_amount] = cost
             names[package_amount] = name
     result = {
@@ -130,6 +168,7 @@ def get_inventory_snapshot(force=False):
         'balance': balance,
         'currency': str(me.get('currency') or 'USD'),
         'prices': prices,
+        'prices_by_name': prices_by_name,
         'names': names,
         'username': me.get('username') or '',
     }
@@ -146,11 +185,17 @@ def can_fulfill(amount, catalogue_name='', force=False):
     snapshot = get_inventory_snapshot(force=force)
     if not snapshot.get('ok'):
         return False, None, None, snapshot.get('error')
-    cost = snapshot['prices'].get(amount)
+    cost = None
+    if catalogue_name:
+        cost = snapshot.get('prices_by_name', {}).get(
+            _normalise_catalogue_name(catalogue_name)
+        )
+    if cost is None:
+        cost = snapshot.get('prices', {}).get(amount)
     if cost is None and catalogue_name:
         match = re.search(r'\d+', str(catalogue_name))
         if match:
-            cost = snapshot['prices'].get(int(match.group()))
+            cost = snapshot.get('prices', {}).get(int(match.group()))
     if cost is None:
         return False, None, snapshot['balance'], 'بسته در کاتالوگ زنده API پیدا نشد.'
     available = snapshot['balance'] + 1e-9 >= cost

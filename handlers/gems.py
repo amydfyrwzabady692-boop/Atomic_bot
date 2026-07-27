@@ -83,6 +83,11 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     total = g[2] + (g[3] or 0)
     bonus = f"  (+{g[3]:,} هدیه 🎁)" if g[3] else ""
+    catalogue_name = str(g[9] or g[2]).strip()
+    if catalogue_name.isdigit():
+        product_line = f"🔢 مقدار: *{total:,} الماس*{bonus}"
+    else:
+        product_line = f"📦 محصول: *{markdown_safe(g[1], 120)}*"
     price_line = f"💰 *{g[4]:,} تومان*"
     if g[5] and g[5] > g[4]:
         off = round((g[5] - g[4]) / g[5] * 100)
@@ -92,7 +97,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         f"💎 *{markdown_safe(g[1], 120)}*\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"🔢 مقدار: *{total:,} الماس*{bonus}\n"
+        f"{product_line}\n"
         f"🚚 {deliver}\n"
         f"{price_line}\n\n"
         f"برای ادامه فقط *آیدی بازی (UID)* لازم است."

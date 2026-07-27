@@ -16,8 +16,10 @@ class G2BulkInventoryTests(unittest.TestCase):
             {
                 'success': True,
                 'catalogues': [
-                    {'name': '110 Diamonds', 'amount': 0.75},
-                    {'name': '231 Diamonds', 'amount': '1.50'},
+                    {'name': '110', 'amount': 0.75},
+                    {'name': '231', 'amount': '1.50'},
+                    {'name': 'Weekly Membership', 'amount': '2.081'},
+                    {'name': 'Level Up Package - Level 6', 'amount': '0.296'},
                 ],
             },
         ]
@@ -26,6 +28,39 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertEqual(snapshot['balance'], 5.0)
         self.assertEqual(snapshot['prices'][110], 0.75)
         self.assertEqual(snapshot['prices'][231], 1.5)
+        self.assertEqual(snapshot['prices_by_name']['weekly membership'], 2.081)
+        self.assertEqual(
+            snapshot['prices_by_name']['level up package - level 6'], 0.296
+        )
+
+    @patch.object(g2bulk, 'get_inventory_snapshot')
+    def test_uses_exact_catalogue_name_for_non_diamond_products(self, snapshot):
+        snapshot.return_value = {
+            'ok': True,
+            'balance': 10,
+            'prices': {6: 0.296},
+            'prices_by_name': {
+                'weekly membership': 2.081,
+                'level up package - level 6': 0.296,
+            },
+        }
+        available, cost, _balance, error = g2bulk.can_fulfill(
+            90_001, 'Weekly Membership'
+        )
+        self.assertTrue(available)
+        self.assertEqual(cost, 2.081)
+        self.assertIsNone(error)
+
+    def test_only_approved_catalogue_names_can_be_ordered(self):
+        self.assertTrue(
+            g2bulk.is_supported_catalogue(90_002, 'Booyah Pass')
+        )
+        self.assertTrue(
+            g2bulk.is_supported_catalogue(6, 'Level Up Package - Level 6')
+        )
+        self.assertFalse(
+            g2bulk.is_supported_catalogue(999, 'Unknown Package')
+        )
 
     @patch.object(g2bulk, 'get_inventory_snapshot')
     def test_blocks_package_when_api_balance_is_insufficient(self, snapshot):

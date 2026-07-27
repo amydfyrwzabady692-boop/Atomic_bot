@@ -54,10 +54,9 @@ def gems_list_keyboard(gems):
     buttons = []
     for g in gems:
         # Id, Title, Amount, BonusAmount, Price, ...
-        total = g[2] + (g[3] or 0)
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
-        label = f"{auto}💎 {g[1]} • {_fmt(total)} • {_fmt(g[4])} ت"
+        label = f"{auto}🎮 {g[1]} • {_fmt(g[4])} ت"
         if sold_out and not g[8]:
             label = f"❌ ناموجود — {g[1]}"
             buttons.append([InlineKeyboardButton(label, callback_data='noop')])
