@@ -333,6 +333,36 @@ def get_game_order_status(order_id):
     }
 
 
+def get_game_order_details(order_id):
+    """Read one provider order for safe manual reconciliation; never submits."""
+    provider_id = str(order_id or '').strip()
+    if not is_configured() or not provider_id:
+        return {'ok': False, 'error': 'شناسه سفارش یا API key موجود نیست.'}
+    data = _request(
+        'GET', f'/games/orders?page=1&limit=100&search={provider_id}'
+    )
+    nested = data.get('data') if isinstance(data.get('data'), dict) else {}
+    for item in data.get('orders') or nested.get('orders') or []:
+        item_id = str(item.get('order_id') or item.get('id') or '').strip()
+        if item_id != provider_id:
+            continue
+        status = str(item.get('status') or '').strip().upper()
+        if status == 'CANCELED':
+            status = 'FAILED'
+        return {
+            'ok': True,
+            'order_id': provider_id,
+            'status': status,
+            'player_id': str(item.get('player_id') or '').strip(),
+            'player_name': item.get('player_name') or '',
+            'cost_usd': item.get('price') or item.get('total_price'),
+        }
+    return {
+        'ok': False,
+        'error': data.get('message') or 'سفارش در سابقه G2Bulk پیدا نشد.',
+    }
+
+
 def idempotency_key(order_pk, gem_info_pk):
     return str(uuid.uuid5(
         uuid.NAMESPACE_DNS,

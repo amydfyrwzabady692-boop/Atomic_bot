@@ -135,6 +135,30 @@ class G2BulkInventoryTests(unittest.TestCase):
         g2bulk, '_request',
         return_value={
             'success': True,
+            'orders': [
+                {
+                    'order_id': 1259571,
+                    'player_id': '3207908075',
+                    'player_name': 'S21 DARKSIDE',
+                    'status': 'completed',
+                }
+            ],
+        },
+    )
+    def test_completed_order_details_include_player_for_safe_reconciliation(
+        self, request, _api_key
+    ):
+        result = g2bulk.get_game_order_details(1259571)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(result['player_id'], '3207908075')
+        self.assertEqual(request.call_args.args[0], 'GET')
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={
+            'success': True,
             'order': {
                 'order_id': 42,
                 'status': 'PENDING',

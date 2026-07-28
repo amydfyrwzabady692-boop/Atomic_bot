@@ -1982,6 +1982,65 @@ def claim_gem_submission(info_id):
         return claimed
 
 
+def reconcile_completed_g2_order(provider_order_id, expected_player_id):
+    """Safely attach a confirmed provider order to exactly one paid local order."""
+    provider_order_id = str(provider_order_id or '').strip()
+    expected_player_id = str(expected_player_id or '').strip()
+    if not provider_order_id or not expected_player_id:
+        return False, 'شناسه سفارش و Player ID الزامی است.'
+    details = g2bulk.get_game_order_details(provider_order_id)
+    if not details.get('ok'):
+        return False, details.get('error') or 'استعلام G2Bulk ناموفق بود.'
+    if details.get('status') != 'COMPLETED':
+        return False, f'وضعیت G2Bulk هنوز {details.get("status") or "نامشخص"} است.'
+    provider_player_id = str(details.get('player_id') or '').strip()
+    if provider_player_id != expected_player_id:
+        return False, 'Player ID سفارش G2Bulk با مقدار مورد انتظار تطابق ندارد.'
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT g."Id",g."OrderId",g."G2BulkOrderId",o."Status" '
+            'FROM "GemOrderInfo" g '
+            'JOIN "Orders" o ON o."Id"=g."OrderId" '
+            'WHERE (g."G2BulkOrderId"=%s OR (g."G2BulkOrderId" IS NULL '
+            'AND g."GameUID"=%s AND COALESCE(g."G2BulkStatus",\'\') '
+            'IN (\'FAILED\',\'SUBMITTING\',\'SUBMIT_UNKNOWN\',\'PENDING\','
+            '\'PROCESSING\',\'\'))) '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND COALESCE(o."PaymentRefId",\'\')<>\'\' '
+            'ORDER BY (g."G2BulkOrderId"=%s) DESC,g."Id" DESC FOR UPDATE',
+            (provider_order_id, expected_player_id, provider_order_id),
+        )
+        candidates = cur.fetchall()
+        exact = [row for row in candidates if str(row[2] or '') == provider_order_id]
+        selected = exact or candidates
+        if len(selected) != 1:
+            conn.rollback()
+            return False, (
+                f'تعداد رکوردهای محلی منطبق {len(selected)} است؛ '
+                'برای جلوگیری از اتصال اشتباه هیچ تغییری انجام نشد.'
+            )
+        info_id, order_id, _old_provider_id, order_status = selected[0]
+        if order_status in ('delivered', 'completed'):
+            conn.rollback()
+            return True, f'سفارش داخلی #{order_id} قبلاً تحویل‌شده ثبت شده است.'
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET "G2BulkOrderId"=%s,'
+            '"G2BulkStatus"=\'COMPLETED\',"PlayerName"=COALESCE(NULLIF(%s,\'\'),'
+            '"PlayerName") WHERE "Id"=%s',
+            (provider_order_id, details.get('player_name') or '', info_id),
+        )
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
+            (order_id,),
+        )
+        conn.commit()
+        return True, (
+            f'سفارش داخلی #{order_id} به G2Bulk #{provider_order_id} '
+            'متصل و تحویل‌شده ثبت شد.'
+        )
+
+
 def financial_health_snapshot():
     """Small operational snapshot for spotting stuck or inconsistent money flows."""
     queries = {

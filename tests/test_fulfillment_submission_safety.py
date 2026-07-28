@@ -35,3 +35,12 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
         self.assertIn("if status == 'processing':", alert_source)
         self.assertIn("elif success and status == 'processing':", approve_source)
         self.assertIn('_g2_status', preflight_source)
+
+    def test_manual_reconciliation_is_read_only_before_exact_paid_row_update(self):
+        source = inspect.getsource(db.reconcile_completed_g2_order)
+        self.assertIn('get_game_order_details', source)
+        self.assertIn("details.get('status') != 'COMPLETED'", source)
+        self.assertIn('provider_player_id != expected_player_id', source)
+        self.assertIn('"PaymentVerifiedAt" IS NOT NULL', source)
+        self.assertIn('len(selected) != 1', source)
+        self.assertNotIn('place_game_order', source)
