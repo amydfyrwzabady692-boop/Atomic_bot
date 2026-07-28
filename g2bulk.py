@@ -294,15 +294,25 @@ def get_game_order_status(order_id):
     data = _request(
         'POST', '/games/order/status', {'order_id': provider_value}
     )
+    nested = data.get('data') if isinstance(data.get('data'), dict) else {}
     order = data.get('order') if isinstance(data.get('order'), dict) else {}
+    if not order and isinstance(nested.get('order'), dict):
+        order = nested.get('order')
+    if not order and nested.get('status'):
+        order = nested
     status = str(
-        order.get('status') or data.get('status') or ''
+        order.get('status') or nested.get('status') or data.get('status') or ''
     ).strip().upper()
     if status in {'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED'}:
         return {
             'ok': True,
             'status': 'FAILED' if status == 'CANCELED' else status,
-            'player_name': order.get('player_name') or data.get('player_name') or '',
+            'player_name': (
+                order.get('player_name')
+                or nested.get('player_name')
+                or data.get('player_name')
+                or ''
+            ),
         }
     # Some deployments have returned a non-standard body from the dedicated
     # status endpoint. Reconcile against order history before leaving a paid

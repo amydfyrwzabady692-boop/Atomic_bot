@@ -175,6 +175,7 @@ async def _g2_reconcile_loop(app):
                 success, status = await asyncio.to_thread(fulfill_order, order_id)
                 if success and status == 'delivered':
                     order = await asyncio.to_thread(get_order, order_id)
+                    user_notified = False
                     if order and order[6]:
                         try:
                             await app.bot.send_message(
@@ -184,8 +185,27 @@ async def _g2_reconcile_loop(app):
                                     "و جم واریز شد."
                                 ),
                             )
+                            user_notified = True
                         except Exception:
-                            pass
+                            logging.getLogger(__name__).exception(
+                                'Could not notify user for completed G2Bulk order %s',
+                                order_id,
+                            )
+                    try:
+                        await notify_admin(
+                            app.bot,
+                            (
+                                f"✅ سفارش #{order_id} در G2Bulk تکمیل و در ربات "
+                                "تحویل‌شده ثبت شد.\n"
+                                f"اعلان کاربر: {'ارسال شد' if user_notified else 'ارسال نشد'}"
+                            ),
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            'Could not notify admin for completed G2Bulk order %s',
+                            order_id,
+                        )
         except asyncio.CancelledError:
             raise
         except Exception:

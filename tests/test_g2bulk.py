@@ -109,6 +109,28 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'PENDING')
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={
+            'success': True,
+            'data': {
+                'order': {
+                    'order_id': 1259759,
+                    'status': 'completed',
+                    'player_name': 'Player',
+                },
+            },
+        },
+    )
+    def test_completed_status_is_read_from_nested_data_order(
+        self, _request, _api_key
+    ):
+        result = g2bulk.get_game_order_status(1259759)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(result['player_name'], 'Player')
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(g2bulk, '_request')
     def test_status_falls_back_to_read_only_order_history(
         self, request, _api_key

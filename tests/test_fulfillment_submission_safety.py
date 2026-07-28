@@ -2,6 +2,7 @@ import inspect
 import unittest
 
 import db
+import bot
 from handlers import payment
 
 
@@ -35,6 +36,12 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
         self.assertIn("if status == 'processing':", alert_source)
         self.assertIn("elif success and status == 'processing':", approve_source)
         self.assertIn('_g2_status', preflight_source)
+
+    def test_successful_background_reconciliation_notifies_user_and_admin(self):
+        source = inspect.getsource(bot._g2_reconcile_loop)
+        self.assertIn('app.bot.send_message', source)
+        self.assertIn('notify_admin', source)
+        self.assertIn("success and status == 'delivered'", source)
 
     def test_manual_reconciliation_is_read_only_before_exact_paid_row_update(self):
         source = inspect.getsource(db.reconcile_completed_g2_order)
