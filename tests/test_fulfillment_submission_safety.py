@@ -38,6 +38,8 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
 
     def test_manual_reconciliation_is_read_only_before_exact_paid_row_update(self):
         source = inspect.getsource(db.reconcile_completed_g2_order)
+        self.assertIn('get_game_order_status', source)
+        self.assertIn('"G2BulkOrderId"=%s AND g."GameUID"=%s', source)
         self.assertIn('get_game_order_details', source)
         self.assertIn("details.get('status') != 'COMPLETED'", source)
         self.assertIn('provider_player_id != expected_player_id', source)

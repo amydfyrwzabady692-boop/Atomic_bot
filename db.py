@@ -1988,9 +1988,60 @@ def reconcile_completed_g2_order(provider_order_id, expected_player_id):
     expected_player_id = str(expected_player_id or '').strip()
     if not provider_order_id or not expected_player_id:
         return False, 'شناسه سفارش و Player ID الزامی است.'
+    # If the provider id was persisted from the original create response, that
+    # exact link is stronger than a paginated history lookup. Verify its live
+    # status, then update only the one paid row carrying both ids.
+    live = g2bulk.get_game_order_status(provider_order_id)
+    if live.get('ok') and live.get('status') == 'COMPLETED':
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT g."Id",g."OrderId",o."Status" '
+                'FROM "GemOrderInfo" g '
+                'JOIN "Orders" o ON o."Id"=g."OrderId" '
+                'WHERE g."G2BulkOrderId"=%s AND g."GameUID"=%s '
+                'AND o."PaymentVerifiedAt" IS NOT NULL '
+                'AND COALESCE(o."PaymentRefId",\'\')<>\'\' FOR UPDATE',
+                (provider_order_id, expected_player_id),
+            )
+            linked = cur.fetchall()
+            if len(linked) != 1:
+                conn.rollback()
+                return False, (
+                    f'تعداد اتصال‌های دقیق محلی {len(linked)} است؛ '
+                    'هیچ تغییری انجام نشد.'
+                )
+            info_id, order_id, order_status = linked[0]
+            if order_status in ('delivered', 'completed'):
+                conn.rollback()
+                return True, (
+                    f'سفارش داخلی #{order_id} قبلاً تحویل‌شده ثبت شده است.'
+                )
+            cur.execute(
+                'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'COMPLETED\','
+                '"PlayerName"=COALESCE(NULLIF(%s,\'\'),"PlayerName") '
+                'WHERE "Id"=%s',
+                (live.get('player_name') or '', info_id),
+            )
+            cur.execute(
+                'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
+                (order_id,),
+            )
+            conn.commit()
+            return True, (
+                f'سفارش داخلی #{order_id} به G2Bulk #{provider_order_id} '
+                'متصل و تحویل‌شده ثبت شد.'
+            )
+    if live.get('ok'):
+        return False, f'وضعیت G2Bulk هنوز {live.get("status") or "نامشخص"} است.'
+
+    # Legacy rows without a persisted provider id need the stricter history +
+    # player-id match before they may be linked.
     details = g2bulk.get_game_order_details(provider_order_id)
     if not details.get('ok'):
-        return False, details.get('error') or 'استعلام G2Bulk ناموفق بود.'
+        return False, (
+            live.get('error') or details.get('error') or
+            'استعلام G2Bulk ناموفق بود.'
+        )
     if details.get('status') != 'COMPLETED':
         return False, f'وضعیت G2Bulk هنوز {details.get("status") or "نامشخص"} است.'
     provider_player_id = str(details.get('player_id') or '').strip()

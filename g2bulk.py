@@ -289,8 +289,10 @@ def get_game_order_status(order_id):
     """وضعیت زنده یک سفارش شارژ مستقیم را دریافت می‌کند."""
     if not is_configured() or not str(order_id or '').strip():
         return {'ok': False, 'error': 'شناسه سفارش یا API key موجود نیست.'}
+    provider_id = str(order_id).strip()
+    provider_value = int(provider_id) if provider_id.isdigit() else provider_id
     data = _request(
-        'POST', '/games/order/status', {'order_id': str(order_id).strip()}
+        'POST', '/games/order/status', {'order_id': provider_value}
     )
     order = data.get('order') if isinstance(data.get('order'), dict) else {}
     status = str(
@@ -306,7 +308,7 @@ def get_game_order_status(order_id):
     # status endpoint. Reconcile against order history before leaving a paid
     # order stuck in PROCESSING. This is read-only and can never create an order.
     history = _request(
-        'GET', f'/games/orders?page=1&limit=100&search={str(order_id).strip()}'
+        'GET', f'/games/orders?page=1&limit=100&search={provider_id}'
     )
     history_nested = (
         history.get('data') if isinstance(history.get('data'), dict) else {}

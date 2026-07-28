@@ -96,6 +96,7 @@ class G2BulkInventoryTests(unittest.TestCase):
         result = g2bulk.get_game_order_status(42)
         self.assertTrue(result['ok'])
         self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(_request.call_args.args[2], {'order_id': 42})
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(
