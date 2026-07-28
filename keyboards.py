@@ -66,14 +66,13 @@ def gems_list_keyboard(gems, page=1, per_page=7):
         else:
             buttons.append([InlineKeyboardButton(label, callback_data=f'gem_{g[0]}')])
     if total_pages > 1:
-        nav = []
-        if page > 1:
-            nav.append(InlineKeyboardButton('◀️ قبلی', callback_data=f'gems_page_{page - 1}'))
-        nav.append(InlineKeyboardButton(
-            f'{page} / {total_pages}', callback_data='noop'
-        ))
-        if page < total_pages:
-            nav.append(InlineKeyboardButton('بعدی ▶️', callback_data=f'gems_page_{page + 1}'))
+        nav = [
+            InlineKeyboardButton(
+                f'• {number} •' if number == page else str(number),
+                callback_data='noop' if number == page else f'gems_page_{number}',
+            )
+            for number in range(1, total_pages + 1)
+        ]
         buttons.append(nav)
     buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
     return InlineKeyboardMarkup(buttons)
