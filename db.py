@@ -2652,7 +2652,8 @@ def list_failed_deliveries(limit=20):
             'o."PaymentMethod", g."GameUID", g."G2BulkStatus" '
             'FROM "Orders" o '
             'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
-            'WHERE g."G2BulkStatus"=\'FAILED\' OR o."Status"=\'processing\' '
+            'WHERE COALESCE(g."G2BulkStatus",\'\') '
+            'IN (\'FAILED\',\'REJECTED\',\'SUBMIT_UNKNOWN\') '
             'ORDER BY o."Id" DESC LIMIT %s',
             (limit,),
         )
@@ -2666,7 +2667,9 @@ def list_processing_auto_orders(limit=50):
             'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
             'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
             'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
-            'AND p."AutoDeliver"=true AND g."G2BulkOrderId" IS NOT NULL '
+            'AND p."AutoDeliver"=true AND (g."G2BulkOrderId" IS NOT NULL '
+            'OR COALESCE(g."G2BulkStatus",\'\') '
+            'IN (\'SUBMITTING\',\'SUBMIT_UNKNOWN\',\'FAILED\')) '
             'ORDER BY o."Id" LIMIT %s',
             (max(1, min(int(limit), 100)),),
         )

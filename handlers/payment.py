@@ -172,7 +172,7 @@ def _delivery_preflight(order_id, force=True):
     """پیش از دریافت پول، موجودی سرویس تحویل خودکار را بررسی می‌کند."""
     for info in get_gem_infos_for_order(order_id):
         (_info_id, _pkg_id, _uid, _name, auto_deliver,
-         catalogue, _g2_id, amount) = info
+         catalogue, _g2_id, amount, _g2_status) = info
         if not auto_deliver:
             continue
         available, cost, balance, error = g2bulk.can_fulfill(
@@ -185,6 +185,8 @@ def _delivery_preflight(order_id, force=True):
 
 
 async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
+    if status == 'processing':
+        return
     order = get_order(order_id)
     if not order:
         return
@@ -578,7 +580,7 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if success:
         if status == 'sense_manual':
             await _notify_sense_sale(ctx.bot, order_id)
-        elif status not in ('delivered', 'paid', 'sense_manual'):
+        elif status not in ('delivered', 'paid', 'sense_manual', 'processing'):
             await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
         await query.edit_message_text(
             _success_user_text(order_id, status, ref_id),
@@ -717,7 +719,9 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.pop('pending_order', None)
         if success and status == 'sense_manual':
             await _notify_sense_sale(ctx.bot, order_id)
-        elif success and status not in ('delivered', 'paid', 'sense_manual'):
+        elif success and status not in (
+            'delivered', 'paid', 'sense_manual', 'processing'
+        ):
             await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
         msg = _success_user_text(order_id, status if success else 'paid')
         msg += f"\nکسر از کیف پول: *{used:,}* ت\nموجودی: *{new_bal:,}* ت"
@@ -986,6 +990,18 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             tg_id,
             f"✅ سفارش #{order_id} تایید شد.\n"
             + ("💎 جم به اکانتت واریز شد." if status == 'delivered' else "سفارش ثبت شد."),
+        )
+    elif success and status == 'processing':
+        await _edit_review_message(
+            query,
+            f"⏳ سفارش #{order_id} به G2Bulk ارسال شد و در حال انجام است.\n"
+            "نتیجه نهایی به‌صورت خودکار بررسی و برای کاربر ارسال می‌شود.",
+        )
+        await _notify_user(
+            ctx.bot,
+            tg_id,
+            f"⏳ سفارش #{order_id} در حال انجام است.\n"
+            "پس از تکمیل، نتیجه خودکار برایت ارسال می‌شود.",
         )
     else:
         await _alert_fulfill_issue(ctx.bot, order_id, status, 'card_transfer')

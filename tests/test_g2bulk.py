@@ -108,6 +108,29 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'PENDING')
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(g2bulk, '_request')
+    def test_status_falls_back_to_read_only_order_history(
+        self, request, _api_key
+    ):
+        request.side_effect = [
+            {'success': False, 'message': 'temporary status shape'},
+            {
+                'success': True,
+                'orders': [
+                    {
+                        'order_id': 1259571,
+                        'status': 'completed',
+                        'player_name': 'S21 DARKSIDE',
+                    }
+                ],
+            },
+        ]
+        result = g2bulk.get_game_order_status(1259571)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(request.call_args_list[1].args[0], 'GET')
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(
         g2bulk, '_request',
         return_value={

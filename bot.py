@@ -190,7 +190,7 @@ async def _g2_reconcile_loop(app):
             raise
         except Exception:
             logging.getLogger(__name__).exception('G2Bulk reconciliation failed')
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
 
 
 async def _admin_alert_loop(app):

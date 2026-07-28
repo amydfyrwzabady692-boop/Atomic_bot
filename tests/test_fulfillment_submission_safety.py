@@ -2,6 +2,7 @@ import inspect
 import unittest
 
 import db
+from handlers import payment
 
 
 class FulfillmentSubmissionSafetyTests(unittest.TestCase):
@@ -20,3 +21,17 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
             source.index('g2bulk.place_game_order'),
         )
 
+    def test_processing_orders_are_polled_but_not_listed_as_failed(self):
+        processing_source = inspect.getsource(db.list_processing_auto_orders)
+        failed_source = inspect.getsource(db.list_failed_deliveries)
+        self.assertIn("processing", processing_source)
+        self.assertIn("SUBMIT_UNKNOWN", processing_source)
+        self.assertNotIn('"Status"=\\\'processing\\\'', failed_source)
+
+    def test_processing_is_not_reported_as_a_fulfillment_failure(self):
+        alert_source = inspect.getsource(payment._alert_fulfill_issue)
+        approve_source = inspect.getsource(payment.admin_approve)
+        preflight_source = inspect.getsource(payment._delivery_preflight)
+        self.assertIn("if status == 'processing':", alert_source)
+        self.assertIn("elif success and status == 'processing':", approve_source)
+        self.assertIn('_g2_status', preflight_source)

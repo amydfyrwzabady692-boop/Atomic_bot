@@ -263,7 +263,8 @@ def find_game_order_by_remark(remark):
             'found': False,
             'error': data.get('message') or 'دریافت سفارش‌های G2Bulk ناموفق بود.',
         }
-    orders = data.get('orders') or (data.get('data') or {}).get('orders') or []
+    nested = data.get('data') if isinstance(data.get('data'), dict) else {}
+    orders = data.get('orders') or nested.get('orders') or []
     for order in orders:
         if str(order.get('remark') or '').strip() != remark:
             continue
@@ -301,6 +302,31 @@ def get_game_order_status(order_id):
             'status': 'FAILED' if status == 'CANCELED' else status,
             'player_name': order.get('player_name') or data.get('player_name') or '',
         }
+    # Some deployments have returned a non-standard body from the dedicated
+    # status endpoint. Reconcile against order history before leaving a paid
+    # order stuck in PROCESSING. This is read-only and can never create an order.
+    history = _request(
+        'GET', f'/games/orders?page=1&limit=100&search={str(order_id).strip()}'
+    )
+    history_nested = (
+        history.get('data') if isinstance(history.get('data'), dict) else {}
+    )
+    history_orders = history.get('orders') or history_nested.get('orders') or []
+    for item in history_orders:
+        provider_id = str(item.get('order_id') or item.get('id') or '').strip()
+        if provider_id != str(order_id).strip():
+            continue
+        history_status = str(item.get('status') or '').strip().upper()
+        if history_status in {
+            'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED'
+        }:
+            return {
+                'ok': True,
+                'status': (
+                    'FAILED' if history_status == 'CANCELED' else history_status
+                ),
+                'player_name': item.get('player_name') or '',
+            }
     return {
         'ok': False,
         'error': data.get('message') or 'وضعیت سفارش G2Bulk قابل تشخیص نیست.',
