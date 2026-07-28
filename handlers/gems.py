@@ -52,18 +52,21 @@ def _gem_api_availability(g, force=False):
 
 async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gems = get_gems_by_id()
+    page = 1
+    if update.callback_query and update.callback_query.data.startswith('gems_page_'):
+        page = int(update.callback_query.data.rsplit('_', 1)[-1])
+    ctx.user_data['gems_page'] = page
+    total_pages = max(1, (len(gems) + 6) // 7)
+    page = max(1, min(page, total_pages))
     text = (
-        "🎮 *محصولات فری‌فایر — خرید با آیدی*\n"
-        "━━━━━━━━━━━━━━━\n"
-        "جم، لول‌آپ، عضویت و بویاه پس فری‌فایر (Middle East)\n"
-        "_پس از پرداخت موفق، سفارش به‌صورت امن و خودکار ثبت می‌شود_\n\n"
+        "🎮 *محصولات فری‌فایر*\n"
+        f"بسته موردنظرت را انتخاب کن — صفحه {page} از {total_pages} 👇"
     )
     if not gems:
         text += "❌ فعلاً بسته‌ای فعال نیست. کمی بعد دوباره سر بزن."
         kb = gem_cancel_keyboard()
     else:
-        text += "بسته مورد نظرت رو انتخاب کن 👇"
-        kb = gems_list_keyboard(gems)
+        kb = gems_list_keyboard(gems, page=page)
 
     if update.callback_query:
         await update.callback_query.answer()
@@ -90,9 +93,9 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif catalogue_name.startswith('Level Up Package'):
         product_line = "🎯 نوع بسته: *ارتقای سطح*"
     elif catalogue_name == 'Weekly Membership':
-        product_line = "📅 اعتبار: *عضویت هفتگی*"
+        product_line = "📅 نوع بسته: *هفتگی*"
     elif catalogue_name == 'Monthly Membership':
-        product_line = "📆 اعتبار: *عضویت ماهانه*"
+        product_line = "📆 نوع بسته: *ماهانه*"
     elif catalogue_name == 'Booyah Pass':
         product_line = "🏆 نوع محصول: *بویاه پس*"
     else:
@@ -123,10 +126,17 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if api_error:
             text += "\nموجودی سرویس تأمین برای این بسته کافی یا قابل بررسی نیست."
         await query.edit_message_text(text, parse_mode='Markdown',
-                                      reply_markup=gems_list_keyboard(get_gems_by_id()))
+                                      reply_markup=gems_list_keyboard(
+                                          get_gems_by_id(),
+                                          page=ctx.user_data.get('gems_page', 1),
+                                      ))
         return
     await query.edit_message_text(
-        text, parse_mode='Markdown', reply_markup=gem_detail_keyboard(pk)
+        text,
+        parse_mode='Markdown',
+        reply_markup=gem_detail_keyboard(
+            pk, page=ctx.user_data.get('gems_page', 1)
+        ),
     )
 
 

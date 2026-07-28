@@ -395,7 +395,7 @@ def main():
     app.add_handler(premium_admin_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
-    app.add_handler(CallbackQueryHandler(gems_menu, pattern='^gems$'))
+    app.add_handler(CallbackQueryHandler(gems_menu, pattern=r'^gems(?:_page_\d+)?$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
 

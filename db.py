@@ -675,11 +675,12 @@ def get_user_orders(user_db_id, limit=10):
 
 
 def get_gem_infos_for_order(order_id):
-    """(InfoId, GemPackageId, GameUID, PlayerName, AutoDeliver, CatalogueName, G2BulkOrderId)"""
+    """Delivery rows including the persisted provider submission state."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT g."Id", g."GemPackageId", g."GameUID", g."PlayerName", '
-            'p."AutoDeliver", p."G2BulkCatalogueName", g."G2BulkOrderId", p."Amount" '
+            'p."AutoDeliver", p."G2BulkCatalogueName", g."G2BulkOrderId", '
+            'p."Amount", COALESCE(g."G2BulkStatus",\'\') '
             'FROM "GemOrderInfo" g '
             'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
             'WHERE g."OrderId"=%s',
@@ -929,7 +930,7 @@ def fulfill_order(order_id):
             manual_ok = True
             for info in infos:
                 (info_id, pkg_id, game_uid, player_name, auto_deliver,
-                 catalogue, g2_id, amount) = info
+                 catalogue, g2_id, amount, g2_status) = info
                 if not auto_deliver:
                     total_manual += 1
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
@@ -948,10 +949,37 @@ def fulfill_order(order_id):
                         elif live_status in ('PENDING', 'PROCESSING'):
                             processing_auto += 1
                     continue
+                if g2_status in ('SUBMITTING', 'SUBMIT_UNKNOWN', 'FAILED'):
+                    recovered = g2bulk.find_game_order_by_remark(
+                        f'Atomic Bot order #{order_id}'
+                    )
+                    if recovered.get('found'):
+                        recovered_status = str(
+                            recovered.get('status') or 'PENDING'
+                        ).upper()
+                        update_gem_g2bulk(
+                            info_id,
+                            order_id_g2=recovered['order_id'],
+                            status=recovered_status,
+                            player_name=(
+                                recovered.get('player_name') or player_name
+                            ),
+                        )
+                        if recovered_status == 'COMPLETED':
+                            delivered += 1
+                        elif recovered_status in ('PENDING', 'PROCESSING'):
+                            processing_auto += 1
+                    else:
+                        update_gem_g2bulk(info_id, status='SUBMIT_UNKNOWN')
+                        processing_auto += 1
+                    continue
                 if not game_uid or not g2bulk.is_supported_catalogue(
                     amount, catalogue or str(amount)
                 ):
                     update_gem_g2bulk(info_id, status='FAILED')
+                    continue
+                if not claim_gem_submission(info_id):
+                    processing_auto += 1
                     continue
                 # Capture FX immediately before the supplier purchase. This
                 # snapshot is immutable, so later exchange-rate changes never
@@ -988,7 +1016,11 @@ def fulfill_order(order_id):
                     else:
                         processing_auto += 1
                 else:
-                    update_gem_g2bulk(info_id, status='FAILED')
+                    if result.get('uncertain'):
+                        update_gem_g2bulk(info_id, status='SUBMIT_UNKNOWN')
+                        processing_auto += 1
+                    else:
+                        update_gem_g2bulk(info_id, status='REJECTED')
 
             if total_auto and delivered == total_auto and manual_ok:
                 if total_manual:
@@ -1345,6 +1377,7 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "ReferredById" INTEGER REFERENCES "Users"("Id") ON DELETE SET NULL',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardNumber" VARCHAR(32) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardVerified" BOOLEAN NOT NULL DEFAULT false',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "G2BulkSubmittedAt" TIMESTAMPTZ',
         '''CREATE TABLE IF NOT EXISTS "BotAdmins" (
             "TelegramId" VARCHAR(64) PRIMARY KEY,
             "Title" VARCHAR(150) NOT NULL DEFAULT '',
@@ -1933,6 +1966,22 @@ def list_admin_actions(limit=30):
         return cur.fetchall()
 
 
+def claim_gem_submission(info_id):
+    """Persist the attempt before network I/O so only one caller can submit it."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET '
+            '"G2BulkStatus"=\'SUBMITTING\',"G2BulkSubmittedAt"=now() '
+            'WHERE "Id"=%s AND "G2BulkOrderId" IS NULL '
+            'AND COALESCE("G2BulkStatus",\'\')=\'\' '
+            'RETURNING "Id"',
+            (int(info_id),),
+        )
+        claimed = bool(cur.fetchone())
+        conn.commit()
+        return claimed
+
+
 def financial_health_snapshot():
     """Small operational snapshot for spotting stuck or inconsistent money flows."""
     queries = {
@@ -2284,11 +2333,11 @@ def sync_gem_prices():
         ('🎯 لول‌آپ سطح 30', 30, 172_000, 'Level Up Package - Level 30'),
         ('💎 110 جم', 110, 191_000, '110'),
         ('💎 231 جم', 231, 382_000, '231'),
-        ('📅 عضویت هفتگی', 90_001, 430_000, 'Weekly Membership'),
+        ('📅 بسته هفتگی', 90_001, 430_000, 'Weekly Membership'),
         ('🏆 بویاه پس', 90_002, 640_000, 'Booyah Pass'),
         ('💎 583 جم', 583, 956_000, '583'),
         ('💎 1188 جم', 1188, 1_913_000, '1188'),
-        ('📆 عضویت ماهانه', 90_003, 2_106_000, 'Monthly Membership'),
+        ('📆 بسته ماهانه', 90_003, 2_106_000, 'Monthly Membership'),
         ('💎 2420 جم', 2420, 3_824_000, '2420'),
     )
     marker = 'g2bulk_catalogue_14_20260727'
@@ -2333,6 +2382,27 @@ def sync_gem_prices():
                 'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
                 'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
                 (title_marker,),
+            )
+        package_title_marker = 'g2bulk_package_titles_fa_v3_20260728'
+        cur.execute(
+            'SELECT 1 FROM "BotSettings" WHERE "Key"=%s',
+            (package_title_marker,),
+        )
+        if not cur.fetchone():
+            cur.execute(
+                'UPDATE "GemPackages" SET "Title"=%s '
+                'WHERE "G2BulkCatalogueName"=%s',
+                ('📅 بسته هفتگی', 'Weekly Membership'),
+            )
+            cur.execute(
+                'UPDATE "GemPackages" SET "Title"=%s '
+                'WHERE "G2BulkCatalogueName"=%s',
+                ('📆 بسته ماهانه', 'Monthly Membership'),
+            )
+            cur.execute(
+                'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
+                'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
+                (package_title_marker,),
             )
         cur.execute('SELECT COUNT(*) FROM "SensePackages"')
         if cur.fetchone()[0] == 0:

@@ -86,6 +86,8 @@ def _request(method, path, body=None, idempotency_key=None):
             result = json.loads(raw)
             if isinstance(result, dict):
                 result.setdefault('_http_status', e.code)
+                if method.upper() != 'GET' and (e.code in (408, 429) or e.code >= 500):
+                    result['_transport_uncertain'] = True
                 return result
             return {'success': False, 'message': str(result), '_http_status': e.code}
         except ValueError:
@@ -94,7 +96,11 @@ def _request(method, path, body=None, idempotency_key=None):
                 '_http_status': e.code,
             }
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        return {'success': False, 'message': str(e)}
+        return {
+            'success': False,
+            'message': str(e),
+            '_transport_uncertain': method.upper() != 'GET',
+        }
 
 
 def check_player_id(user_id):
@@ -224,17 +230,58 @@ def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None)
     )
     if data.get('success') and data.get('order'):
         order = data['order']
+        provider_order_id = order.get('order_id')
+        if not provider_order_id:
+            return {
+                'ok': False,
+                'uncertain': True,
+                'error': 'سفارش پذیرفته شد اما شناسه تأمین‌کننده برنگشت.',
+            }
         return {
             'ok': True,
-            'order_id': order.get('order_id'),
+            'order_id': provider_order_id,
             'status': order.get('status', 'PENDING'),
             'player_name': order.get('player_name', ''),
             'cost_usd': order.get('price'),
         }
     return {
         'ok': False,
+        'uncertain': bool(data.get('_transport_uncertain')),
         'error': data.get('message') or 'ثبت سفارش در G2Bulk ناموفق بود.',
     }
+
+
+def find_game_order_by_remark(remark):
+    """Recover an ambiguously submitted order without creating a second order."""
+    remark = str(remark or '').strip()
+    if not is_configured() or not remark:
+        return {'ok': False, 'found': False}
+    data = _request('GET', '/games/orders?page=1&limit=100')
+    if not data.get('success'):
+        return {
+            'ok': False,
+            'found': False,
+            'error': data.get('message') or 'دریافت سفارش‌های G2Bulk ناموفق بود.',
+        }
+    orders = data.get('orders') or (data.get('data') or {}).get('orders') or []
+    for order in orders:
+        if str(order.get('remark') or '').strip() != remark:
+            continue
+        provider_order_id = order.get('order_id') or order.get('id')
+        if not provider_order_id:
+            continue
+        status = str(order.get('status') or 'PENDING').strip().upper()
+        if status == 'CANCELED':
+            status = 'FAILED'
+        return {
+            'ok': True,
+            'found': True,
+            'order_id': provider_order_id,
+            'status': status,
+            'player_name': order.get('player_name') or '',
+            'cost_usd': order.get('price') or order.get('total_price'),
+        }
+    return {'ok': True, 'found': False}
 
 
 def get_game_order_status(order_id):

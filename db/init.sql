@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS "GemOrderInfo" (
     "LoginPassword" VARCHAR(255),
     "BackupCode" TEXT,
     "G2BulkOrderId" VARCHAR(50),
-    "G2BulkStatus" VARCHAR(30)
+    "G2BulkStatus" VARCHAR(30),
+    "G2BulkSubmittedAt" TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS "OrderProfitSnapshots" (
@@ -219,10 +220,10 @@ VALUES
 ('🎯 لول‌آپ سطح 30', 30, 0, 172000, NULL, 'once', 'by_id', true, 'Level Up Package - Level 30', 9999, true, true),
 ('💎 110 جم', 110, 0, 191000, NULL, 'once', 'by_id', true, '110', 9999, true, true),
 ('💎 231 جم', 231, 0, 382000, NULL, 'once', 'by_id', true, '231', 9999, true, true),
-('📅 عضویت هفتگی', 90001, 0, 430000, NULL, 'once', 'by_id', true, 'Weekly Membership', 9999, true, true),
+('📅 بسته هفتگی', 90001, 0, 430000, NULL, 'once', 'by_id', true, 'Weekly Membership', 9999, true, true),
 ('🏆 بویاه پس', 90002, 0, 640000, NULL, 'once', 'by_id', true, 'Booyah Pass', 9999, true, true),
 ('💎 583 جم', 583, 0, 956000, NULL, 'once', 'by_id', true, '583', 9999, true, true),
 ('💎 1188 جم', 1188, 0, 1913000, NULL, 'once', 'by_id', true, '1188', 9999, true, true),
-('📆 عضویت ماهانه', 90003, 0, 2106000, NULL, 'once', 'by_id', true, 'Monthly Membership', 9999, true, true),
+('📆 بسته ماهانه', 90003, 0, 2106000, NULL, 'once', 'by_id', true, 'Monthly Membership', 9999, true, true),
 ('💎 2420 جم', 2420, 0, 3824000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
 ON CONFLICT DO NOTHING;

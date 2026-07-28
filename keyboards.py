@@ -50,9 +50,12 @@ def sens_pc_packs_keyboard(packs):
     return InlineKeyboardMarkup(rows)
 
 
-def gems_list_keyboard(gems):
+def gems_list_keyboard(gems, page=1, per_page=7):
+    total_pages = max(1, (len(gems) + per_page - 1) // per_page)
+    page = max(1, min(int(page), total_pages))
+    start = (page - 1) * per_page
     buttons = []
-    for g in gems:
+    for g in gems[start:start + per_page]:
         # Id, Title, Amount, BonusAmount, Price, ...
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
@@ -62,14 +65,26 @@ def gems_list_keyboard(gems):
             buttons.append([InlineKeyboardButton(label, callback_data='noop')])
         else:
             buttons.append([InlineKeyboardButton(label, callback_data=f'gem_{g[0]}')])
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton('◀️ قبلی', callback_data=f'gems_page_{page - 1}'))
+        nav.append(InlineKeyboardButton(
+            f'{page} / {total_pages}', callback_data='noop'
+        ))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton('بعدی ▶️', callback_data=f'gems_page_{page + 1}'))
+        buttons.append(nav)
     buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
     return InlineKeyboardMarkup(buttons)
 
 
-def gem_detail_keyboard(gem_id):
+def gem_detail_keyboard(gem_id, page=1):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('✅ خرید این بسته', callback_data=f'gbuy_{gem_id}')],
-        [InlineKeyboardButton('🔙 بازگشت به لیست', callback_data='gems')],
+        [InlineKeyboardButton(
+            '🔙 بازگشت به لیست', callback_data=f'gems_page_{max(1, int(page))}'
+        )],
     ])
 
 

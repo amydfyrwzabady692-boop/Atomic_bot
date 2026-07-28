@@ -124,6 +124,55 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['cost_usd'], '0.875')
 
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={
+            'success': False,
+            'message': 'timeout after submit',
+            '_transport_uncertain': True,
+        },
+    )
+    def test_ambiguous_submission_is_never_reported_as_safe_failure(
+        self, _request, _api_key
+    ):
+        result = g2bulk.place_game_order(
+            '110', '12345', idempotency_key='atomic-gem-1'
+        )
+        self.assertFalse(result['ok'])
+        self.assertTrue(result['uncertain'])
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={'success': False, 'message': 'Insufficient balance'},
+    )
+    def test_business_rejection_is_definitive(self, _request, _api_key):
+        result = g2bulk.place_game_order('110', '12345')
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['uncertain'])
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(
+        g2bulk, '_request',
+        return_value={
+            'success': True,
+            'orders': [
+                {
+                    'order_id': 1255767,
+                    'remark': 'Atomic Bot order #91',
+                    'status': 'COMPLETED',
+                    'player_name': 'Player',
+                }
+            ],
+        },
+    )
+    def test_recovers_ambiguous_order_by_exact_remark(self, _request, _api_key):
+        result = g2bulk.find_game_order_by_remark('Atomic Bot order #91')
+        self.assertTrue(result['found'])
+        self.assertEqual(result['order_id'], 1255767)
+        self.assertEqual(result['status'], 'COMPLETED')
+
 
 if __name__ == '__main__':
     unittest.main()
