@@ -9,6 +9,7 @@ import g2bulk
 from keyboards import (
     gems_list_keyboard, gem_detail_keyboard, gem_cancel_keyboard,
     gem_confirm_keyboard, pay_method_keyboard, main_menu,
+    GEM_PRODUCTS_PER_PAGE,
 )
 from db import (
     get_gems_by_id, get_gem, get_or_create_user, create_order,
@@ -56,7 +57,10 @@ async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.callback_query and update.callback_query.data.startswith('gems_page_'):
         page = int(update.callback_query.data.rsplit('_', 1)[-1])
     ctx.user_data['gems_page'] = page
-    total_pages = max(1, (len(gems) + 6) // 7)
+    total_pages = max(
+        1,
+        (len(gems) + GEM_PRODUCTS_PER_PAGE - 1) // GEM_PRODUCTS_PER_PAGE,
+    )
     page = max(1, min(page, total_pages))
     text = (
         "🎮 *محصولات فری‌فایر*\n"
@@ -318,11 +322,11 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if info.get('amount') in (1188, 2420):
         text += (
-            f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-            f"🔐 زرین‌پال برای این بسته نیاز به احراز یک‌باره دارد.\n"
-            f"کارت‌به‌کارت بدون احراز است.\n"
+            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+            "🔐 زرین‌پال برای این بسته نیاز به احراز یک‌باره دارد.\n"
+            "کارت‌به‌کارت بدون احراز است.\n"
         )
-    text += f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\nروش را انتخاب کن:"
+    text += "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\nروش را انتخاب کن:"
     await query.edit_message_text(
         text,
         parse_mode='Markdown',

@@ -17,7 +17,7 @@ from keyboards import (
     pay_method_keyboard, admin_failed_order_keyboard,
 )
 from db import (
-    get_order, update_order_status, fulfill_order, get_or_create_user,
+    get_order, fulfill_order, get_or_create_user,
     order_requires_kyc, is_kyc_approved, get_order_items, get_gem_infos_for_order,
     get_order_payable, apply_wallet_to_order, get_wallet_balance,
     get_setting, get_bool_setting, save_payment_receipt,

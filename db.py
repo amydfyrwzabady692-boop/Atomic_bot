@@ -2318,7 +2318,7 @@ def admin_operations_snapshot(low_stock_threshold=5):
         'failed_payments_24h', 'open_tickets', 'low_gem_stock',
         'low_store_stock',
     )
-    result = dict(zip(keys, row))
+    result = dict(zip(keys, row, strict=True))
     for key in keys:
         result[key] = int(result[key] or 0)
     result['low_stock_threshold'] = threshold
@@ -2517,7 +2517,7 @@ def add_promo_code(code, code_type, value, max_uses=1):
     code_type = str(code_type or '').strip().lower()
     max_uses = checked_amount(max_uses, maximum=1_000_000, label='تعداد استفاده')
     if code_type == 'discount':
-        value = checked_amount(value, maximum=100, label='درصد تخفیف')
+        value = checked_amount(value, maximum=99, label='درصد تخفیف')
     elif code_type == 'gift':
         value = checked_amount(value, label='مبلغ هدیه')
     else:

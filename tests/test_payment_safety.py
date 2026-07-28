@@ -1,6 +1,6 @@
-import os
 import unittest
 
+import db
 from payment_safety import checked_amount, order_amounts, valid_owner
 
 
@@ -57,6 +57,12 @@ class OwnershipTests(unittest.TestCase):
         self.assertTrue(valid_owner(1, '100', user_db_id=1, telegram_id=100))
         self.assertFalse(valid_owner(1, '100', user_db_id=2, telegram_id=100))
         self.assertFalse(valid_owner(1, '100', user_db_id=1, telegram_id=200))
+
+
+class PromoSafetyTests(unittest.TestCase):
+    def test_full_discount_cannot_create_an_unpayable_order(self):
+        with self.assertRaises(ValueError):
+            db.add_promo_code('FREE100', 'discount', 100, 1)
 
 
 if __name__ == '__main__':

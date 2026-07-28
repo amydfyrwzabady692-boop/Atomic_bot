@@ -1,5 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
+GEM_PRODUCTS_PER_PAGE = 8
+
 
 def _fmt(n):
     return f"{n:,}"
@@ -50,7 +52,18 @@ def sens_pc_packs_keyboard(packs):
     return InlineKeyboardMarkup(rows)
 
 
-def gems_list_keyboard(gems, page=1, per_page=7):
+def _gem_catalogue_order(gem):
+    """Keep diamonds/memberships on page one and Level Up packs on page two."""
+    catalogue_name = str(gem[9] or '').strip().casefold()
+    return catalogue_name.startswith('level up package')
+
+
+def ordered_gem_catalogue(gems):
+    return sorted(gems, key=_gem_catalogue_order)
+
+
+def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
+    gems = ordered_gem_catalogue(gems)
     total_pages = max(1, (len(gems) + per_page - 1) // per_page)
     page = max(1, min(int(page), total_pages))
     start = (page - 1) * per_page

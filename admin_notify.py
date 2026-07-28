@@ -53,7 +53,6 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
         print('[ADMIN] ADMIN_CHAT_ID empty — notify skipped')
         return False
     sent = False
-    last_error = None
     for aid in recipients:
         try:
             await bot.send_message(
@@ -64,7 +63,6 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
             )
             sent = True
         except Exception as e:
-            last_error = e
             print(f'[ADMIN] notify {aid} failed: {e}')
             # Dynamic user names/messages can contain malformed Markdown.
             # Never lose an operational/financial alert only because rendering
@@ -78,6 +76,5 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
                     )
                     sent = True
                 except Exception as plain_error:
-                    last_error = plain_error
                     print(f'[ADMIN] plain notify {aid} failed: {plain_error}')
     return sent

@@ -50,7 +50,7 @@ COMPOUND_FIELDS = {
     ),
     'promo:discount': (
         ('کد تخفیف', 'مثال: OFF20'),
-        ('درصد تخفیف', 'عددی بین 1 تا 100'),
+        ('درصد تخفیف', 'عددی بین 1 تا 99'),
         ('تعداد استفاده', 'مثال: 100'),
     ),
     'gemadd': (
@@ -647,7 +647,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         wallet_rows = list_pending_wallet_card_charges(30)
         lines = ['🧾 *رسیدهای تاییدنشده*', '━━━━━━━━━━━━━━━']
         buttons = []
-        for oid, tg, total, created in rows:
+        for oid, tg, total, _created in rows:
             lines.append(f'سفارش `#{oid}` · {total:,} ت · `{tg}`')
             buttons.append([InlineKeyboardButton(
                 f'بررسی سفارش #{oid}', callback_data=f'admx_receipt_{oid}'
@@ -874,7 +874,7 @@ async def _show_simple_list(query, data):
             buttons.append([InlineKeyboardButton(
                 f'👑 مدیر اصلی · {admin_id()}', callback_data='admx_noop'
             )])
-        for tg, title, active, _, role in rows:
+        for tg, title, _active, _, role in rows:
             role_label = '⭐ پریمیوم' if role == 'premium' else '🛡 مدیر'
             buttons.append([InlineKeyboardButton(
                 f'❌ {role_label} · {title or "بدون نام"} · {tg}',
@@ -1089,8 +1089,8 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             add_store_product(p[0], int(p[1].replace(',', '')), int(p[2]), category_id)
             await update.message.reply_text('✅ محصول اضافه شد.', reply_markup=admin_home_keyboard())
         elif action.startswith('promo:'):
-            if action == 'promo:discount' and not 1 <= int(p[1]) <= 100:
-                raise ValueError('درصد تخفیف باید بین ۱ تا ۱۰۰ باشد.')
+            if action == 'promo:discount' and not 1 <= int(p[1]) <= 99:
+                raise ValueError('درصد تخفیف باید بین ۱ تا ۹۹ باشد.')
             add_promo_code(p[0], action.split(':')[1], p[1], p[2])
             await update.message.reply_text('✅ کد ساخته شد.', reply_markup=admin_home_keyboard())
         elif action == 'gemadd':
