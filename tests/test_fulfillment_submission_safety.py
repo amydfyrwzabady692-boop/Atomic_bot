@@ -51,6 +51,14 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
         marker_source = inspect.getsource(db.mark_delivery_notified)
         self.assertIn("Status", marker_source)
 
+    def test_authenticated_webhook_never_submits_and_requires_exact_paid_link(self):
+        source = inspect.getsource(db.apply_g2bulk_webhook)
+        self.assertNotIn('place_game_order', source)
+        self.assertIn('provider order id mismatch', source)
+        self.assertIn('player id mismatch', source)
+        self.assertIn('payment is not verified', source)
+        self.assertIn("existing_g2_status", source)
+
     def test_manual_reconciliation_is_read_only_before_exact_paid_row_update(self):
         source = inspect.getsource(db.reconcile_completed_g2_order)
         self.assertIn('get_game_order_status', source)

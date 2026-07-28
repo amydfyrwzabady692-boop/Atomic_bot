@@ -710,6 +710,97 @@ def update_gem_g2bulk(info_id, order_id_g2=None, status=None, player_name=None):
         conn.commit()
 
 
+def apply_g2bulk_webhook(
+    local_order_id, info_id, provider_order_id, player_id, status,
+    player_name='',
+):
+    """Apply one authenticated terminal callback without submitting an order."""
+    local_order_id = int(local_order_id)
+    info_id = int(info_id)
+    provider_order_id = str(provider_order_id or '').strip()
+    player_id = str(player_id or '').strip()
+    status = str(status or '').strip().upper()
+    if status == 'CANCELED':
+        status = 'FAILED'
+    if status not in ('COMPLETED', 'FAILED'):
+        return False, 'non-terminal status'
+    if not provider_order_id or not player_id:
+        return False, 'provider order id and player id are required'
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT g."GameUID",g."G2BulkOrderId",g."G2BulkStatus",'
+            'o."PaymentVerifiedAt",o."PaymentRefId",o."Status" '
+            'FROM "GemOrderInfo" g JOIN "Orders" o ON o."Id"=g."OrderId" '
+            'WHERE g."Id"=%s AND g."OrderId"=%s FOR UPDATE OF g,o',
+            (info_id, local_order_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, 'local item not found'
+        (
+            game_uid, stored_provider_id, existing_g2_status,
+            verified_at, payment_ref, order_status,
+        ) = row
+        if str(stored_provider_id or '').strip() != provider_order_id:
+            return False, 'provider order id mismatch'
+        if str(game_uid or '').strip() != player_id:
+            return False, 'player id mismatch'
+        if not verified_at or not str(payment_ref or '').strip():
+            return False, 'payment is not verified'
+        # Terminal success is monotonic: a delayed/reordered FAILED webhook
+        # must never downgrade a delivery that was already confirmed.
+        if (
+            str(existing_g2_status or '').upper() == 'COMPLETED'
+            or order_status in ('delivered', 'completed')
+        ):
+            return True, 'delivered'
+
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=%s,'
+            '"PlayerName"=COALESCE(NULLIF(%s,\'\'),"PlayerName") '
+            'WHERE "Id"=%s',
+            (status, str(player_name or ''), info_id),
+        )
+        if status == 'FAILED':
+            conn.commit()
+            return True, 'failed'
+
+        cur.execute(
+            'SELECT '
+            'COUNT(*) FILTER (WHERE p."AutoDeliver"=true),'
+            'COUNT(*) FILTER (WHERE p."AutoDeliver"=true '
+            'AND g."G2BulkStatus"=\'COMPLETED\'),'
+            'COUNT(*) FILTER (WHERE p."AutoDeliver"=false) '
+            'FROM "GemOrderInfo" g '
+            'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
+            'WHERE g."OrderId"=%s',
+            (local_order_id,),
+        )
+        total_auto, completed_auto, total_manual = cur.fetchone()
+        if total_auto and completed_auto == total_auto and not total_manual:
+            cur.execute(
+                'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
+                (local_order_id,),
+            )
+            result = 'delivered'
+        elif total_auto and completed_auto == total_auto:
+            cur.execute(
+                'UPDATE "Orders" SET "Status"=\'paid\' WHERE "Id"=%s',
+                (local_order_id,),
+            )
+            result = 'paid'
+        else:
+            cur.execute(
+                'UPDATE "Orders" SET "Status"=\'processing\' WHERE "Id"=%s '
+                'AND "Status" NOT IN (\'delivered\',\'completed\')',
+                (local_order_id,),
+            )
+            result = order_status
+        conn.commit()
+        return True, result
+
+
 def record_gem_profit_snapshot(info_id, order_id, supplier_cost_usd, rate_info):
     """هزینه و نرخ همان لحظه را یک‌بار و بدون امکان بازنویسی ذخیره می‌کند."""
     try:
@@ -990,6 +1081,7 @@ def fulfill_order(order_id):
                     player_id=game_uid,
                     remark=f'Atomic Bot order #{order_id}',
                     idempotency_key=g2bulk.idempotency_key(order_id, info_id),
+                    callback_url=g2bulk.build_callback_url(order_id, info_id),
                 )
                 if result.get('ok') and result.get('order_id'):
                     api_status = str(result.get('status') or 'PENDING').upper()

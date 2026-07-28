@@ -142,6 +142,52 @@ def create_web_app(bot_app):
             logger.exception('wallet callback failed')
             return web.Response(text=html_fail, content_type='text/html')
 
+    async def g2bulk_callback(request):
+        order_id = request.rel_url.query.get('order')
+        info_id = request.rel_url.query.get('item')
+        token = request.rel_url.query.get('token')
+        try:
+            import g2bulk
+            if not g2bulk.verify_callback_token(order_id, info_id, token):
+                return web.json_response(
+                    {'success': False, 'message': 'invalid token'}, status=403
+                )
+            payload = await request.json()
+            provider_order_id = payload.get('order_id')
+            status = str(payload.get('status') or '').strip().upper()
+            player_id = payload.get('player_id')
+            player_name = payload.get('player_name') or ''
+            if status not in ('COMPLETED', 'FAILED', 'CANCELED'):
+                return web.json_response({'success': True, 'ignored': True})
+            from db import apply_g2bulk_webhook
+            ok, result = await asyncio.to_thread(
+                apply_g2bulk_webhook,
+                int(order_id), int(info_id), provider_order_id,
+                player_id, status, player_name,
+            )
+            if not ok:
+                logger.warning(
+                    'G2Bulk callback rejected order=%s item=%s reason=%s',
+                    order_id, info_id, result,
+                )
+                return web.json_response(
+                    {'success': False, 'message': result}, status=409
+                )
+            logger.info(
+                'G2Bulk callback applied order=%s item=%s status=%s result=%s',
+                order_id, info_id, status, result,
+            )
+            return web.json_response({'success': True, 'result': result})
+        except (TypeError, ValueError):
+            return web.json_response(
+                {'success': False, 'message': 'invalid payload'}, status=400
+            )
+        except Exception:
+            logger.exception('G2Bulk callback failed')
+            return web.json_response(
+                {'success': False, 'message': 'callback failed'}, status=500
+            )
+
     app.router.add_get('/health', health)
     app.router.add_get('/ready', ready)
     app.router.add_get('/payment/callback', payment_callback)
@@ -149,6 +195,7 @@ def create_web_app(bot_app):
     # بعضی کلاینت‌ها POST هم می‌زنند
     app.router.add_post('/payment/callback', payment_callback)
     app.router.add_post('/payment/wallet-callback', wallet_callback)
+    app.router.add_post('/g2bulk/callback', g2bulk_callback)
     return app
 
 

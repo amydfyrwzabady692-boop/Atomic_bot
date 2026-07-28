@@ -1,4 +1,5 @@
 import unittest
+import os
 from unittest.mock import patch
 
 import g2bulk
@@ -108,6 +109,20 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['status'], 'PENDING')
 
+    @patch.dict(
+        os.environ,
+        {
+            'G2BULK_API_KEY': 'test-key',
+            'PAYMENT_CALLBACK_BASE': 'https://bot.example.com',
+        },
+    )
+    def test_signed_callback_url_is_https_and_tamper_evident(self):
+        url = g2bulk.build_callback_url(36, 19)
+        self.assertTrue(url.startswith('https://bot.example.com/g2bulk/callback?'))
+        token = url.split('token=', 1)[1]
+        self.assertTrue(g2bulk.verify_callback_token(36, 19, token))
+        self.assertFalse(g2bulk.verify_callback_token(37, 19, token))
+
     @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(
         g2bulk, '_request',
@@ -132,10 +147,27 @@ class G2BulkInventoryTests(unittest.TestCase):
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(g2bulk, '_request')
+    def test_status_retries_with_string_id_before_history(
+        self, request, _api_key
+    ):
+        request.side_effect = [
+            {'success': False, 'message': 'not found'},
+            {'success': True, 'order': {'status': 'COMPLETED'}},
+        ]
+        result = g2bulk.get_game_order_status(1259759)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'COMPLETED')
+        self.assertEqual(
+            request.call_args_list[1].args[2], {'order_id': '1259759'}
+        )
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(g2bulk, '_request')
     def test_status_falls_back_to_read_only_order_history(
         self, request, _api_key
     ):
         request.side_effect = [
+            {'success': False, 'message': 'temporary status shape'},
             {'success': False, 'message': 'temporary status shape'},
             {
                 'success': True,
@@ -151,7 +183,8 @@ class G2BulkInventoryTests(unittest.TestCase):
         result = g2bulk.get_game_order_status(1259571)
         self.assertTrue(result['ok'])
         self.assertEqual(result['status'], 'COMPLETED')
-        self.assertEqual(request.call_args_list[1].args[0], 'GET')
+        self.assertEqual(request.call_args_list[2].args[0], 'GET')
+        self.assertNotIn('search=', request.call_args_list[2].args[1])
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(

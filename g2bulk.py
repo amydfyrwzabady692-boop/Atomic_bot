@@ -1,10 +1,13 @@
 """کلاینت G2Bulk — تایید آیدی و تحویل خودکار جم فری‌فایر (Middle East)."""
 import json
+import hashlib
+import hmac
 import os
 import re
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE_URL = 'https://api.g2bulk.com/v1'
@@ -210,7 +213,41 @@ def can_fulfill(amount, catalogue_name='', force=False):
     )
 
 
-def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None):
+def build_callback_url(order_pk, gem_info_pk):
+    """Build an unguessable HTTPS callback URL bound to one local item."""
+    base = (os.getenv('PAYMENT_CALLBACK_BASE') or '').strip().rstrip('/')
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme != 'https' or not parsed.hostname or not _api_key():
+        return ''
+    message = f'{int(order_pk)}:{int(gem_info_pk)}'.encode('utf-8')
+    token = hmac.new(
+        _api_key().encode('utf-8'), message, hashlib.sha256
+    ).hexdigest()
+    query = urllib.parse.urlencode({
+        'order': int(order_pk),
+        'item': int(gem_info_pk),
+        'token': token,
+    })
+    return f'{base}/g2bulk/callback?{query}'
+
+
+def verify_callback_token(order_pk, gem_info_pk, token):
+    if not _api_key() or not str(token or '').strip():
+        return False
+    try:
+        message = f'{int(order_pk)}:{int(gem_info_pk)}'.encode('utf-8')
+    except (TypeError, ValueError):
+        return False
+    expected = hmac.new(
+        _api_key().encode('utf-8'), message, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, str(token).strip())
+
+
+def place_game_order(
+    catalogue_name, player_id, remark='', idempotency_key=None,
+    callback_url='',
+):
     """ثبت سفارش شارژ. خروجی: {ok, order_id, status, player_name, error}"""
     if not is_configured():
         return {'ok': False, 'error': 'API key not configured'}
@@ -221,6 +258,11 @@ def place_game_order(catalogue_name, player_id, remark='', idempotency_key=None)
     }
     if remark:
         body['remark'] = remark
+    if callback_url:
+        parsed_callback = urllib.parse.urlparse(str(callback_url))
+        if parsed_callback.scheme != 'https' or not parsed_callback.hostname:
+            return {'ok': False, 'error': 'G2Bulk callback URL is invalid.'}
+        body['callback_url'] = str(callback_url)
 
     data = _request(
         'POST',
@@ -294,19 +336,59 @@ def get_game_order_status(order_id):
     data = _request(
         'POST', '/games/order/status', {'order_id': provider_value}
     )
-    nested = data.get('data') if isinstance(data.get('data'), dict) else {}
-    order = data.get('order') if isinstance(data.get('order'), dict) else {}
-    if not order and isinstance(nested.get('order'), dict):
-        order = nested.get('order')
-    if not order and nested.get('status'):
-        order = nested
-    status = str(
-        order.get('status') or nested.get('status') or data.get('status') or ''
-    ).strip().upper()
-    if status in {'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELED'}:
+    def extract_status(response):
+        nested = (
+            response.get('data')
+            if isinstance(response.get('data'), dict) else {}
+        )
+        order = (
+            response.get('order')
+            if isinstance(response.get('order'), dict) else {}
+        )
+        if not order and isinstance(nested.get('order'), dict):
+            order = nested.get('order')
+        if not order and nested.get('status'):
+            order = nested
+        status = str(
+            order.get('status')
+            or nested.get('status')
+            or response.get('status')
+            or ''
+        ).strip().upper()
+        return status, order, nested
+
+    status, order, nested = extract_status(data)
+    if (
+        status not in {
+            'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED',
+            'CANCELED', 'CANCELLED', 'REFUNDED',
+        }
+        and provider_id.isdigit()
+    ):
+        # Older deployments have disagreed on whether order_id is a JSON
+        # number or string. Retrying this read-only endpoint cannot charge.
+        alternate = _request(
+            'POST', '/games/order/status', {'order_id': provider_id}
+        )
+        alternate_status, alternate_order, alternate_nested = extract_status(
+            alternate
+        )
+        if alternate_status:
+            data = alternate
+            status = alternate_status
+            order = alternate_order
+            nested = alternate_nested
+    if status in {
+        'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED',
+        'CANCELED', 'CANCELLED', 'REFUNDED',
+    }:
         return {
             'ok': True,
-            'status': 'FAILED' if status == 'CANCELED' else status,
+            'status': (
+                'FAILED'
+                if status in {'CANCELED', 'CANCELLED', 'REFUNDED'}
+                else status
+            ),
             'player_name': (
                 order.get('player_name')
                 or nested.get('player_name')
@@ -317,13 +399,18 @@ def get_game_order_status(order_id):
     # Some deployments have returned a non-standard body from the dedicated
     # status endpoint. Reconcile against order history before leaving a paid
     # order stuck in PROCESSING. This is read-only and can never create an order.
-    history = _request(
-        'GET', f'/games/orders?page=1&limit=100&search={provider_id}'
-    )
+    # The documented game-order history endpoint has no `search` parameter.
+    # Read its newest page and match the persisted provider id locally.
+    history = _request('GET', '/games/orders?page=1&limit=100')
     history_nested = (
         history.get('data') if isinstance(history.get('data'), dict) else {}
     )
-    history_orders = history.get('orders') or history_nested.get('orders') or []
+    history_orders = (
+        history.get('orders')
+        or history_nested.get('orders')
+        or (history.get('data') if isinstance(history.get('data'), list) else [])
+        or []
+    )
     for item in history_orders:
         provider_id = str(item.get('order_id') or item.get('id') or '').strip()
         if provider_id != str(order_id).strip():
@@ -350,11 +437,15 @@ def get_game_order_details(order_id):
     provider_id = str(order_id or '').strip()
     if not is_configured() or not provider_id:
         return {'ok': False, 'error': 'شناسه سفارش یا API key موجود نیست.'}
-    data = _request(
-        'GET', f'/games/orders?page=1&limit=100&search={provider_id}'
-    )
+    data = _request('GET', '/games/orders?page=1&limit=100')
     nested = data.get('data') if isinstance(data.get('data'), dict) else {}
-    for item in data.get('orders') or nested.get('orders') or []:
+    orders = (
+        data.get('orders')
+        or nested.get('orders')
+        or (data.get('data') if isinstance(data.get('data'), list) else [])
+        or []
+    )
+    for item in orders:
         item_id = str(item.get('order_id') or item.get('id') or '').strip()
         if item_id != provider_id:
             continue
