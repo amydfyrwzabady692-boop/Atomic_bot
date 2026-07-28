@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS "Orders" (
     "PaymentExpectedAmount" INTEGER CHECK ("PaymentExpectedAmount" IS NULL OR "PaymentExpectedAmount" > 0),
     "PaymentVerifiedAt" TIMESTAMPTZ,
     "PaymentRefId" VARCHAR(100),
+    "DeliveryUserNotifiedAt" TIMESTAMPTZ,
+    "DeliveryAdminNotifiedAt" TIMESTAMPTZ,
     "PaymentExpiresAt" TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '15 minutes'),
     "WalletPaid" INTEGER NOT NULL DEFAULT 0 CHECK ("WalletPaid" >= 0),
     "Status" VARCHAR(30) NOT NULL DEFAULT 'pending',

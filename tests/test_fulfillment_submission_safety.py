@@ -41,7 +41,15 @@ class FulfillmentSubmissionSafetyTests(unittest.TestCase):
         source = inspect.getsource(bot._g2_reconcile_loop)
         self.assertIn('app.bot.send_message', source)
         self.assertIn('notify_admin', source)
-        self.assertIn("success and status == 'delivered'", source)
+        self.assertIn('list_unnotified_auto_deliveries', source)
+        self.assertIn('mark_delivery_notified', source)
+
+    def test_delivery_notification_outbox_is_scoped_to_completed_supplier_orders(self):
+        source = inspect.getsource(db.list_unnotified_auto_deliveries)
+        self.assertIn('"G2BulkStatus"=\\\'COMPLETED\\\'', source)
+        self.assertIn('"PaymentVerifiedAt" IS NOT NULL', source)
+        marker_source = inspect.getsource(db.mark_delivery_notified)
+        self.assertIn("Status", marker_source)
 
     def test_manual_reconciliation_is_read_only_before_exact_paid_row_update(self):
         source = inspect.getsource(db.reconcile_completed_g2_order)

@@ -50,7 +50,8 @@ from handlers.forced_join import force_join_guard
 from admin_notify import is_admin, notify_admin
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
-    fulfill_order, get_order, list_expired_unpaid_orders,
+    fulfill_order, list_unnotified_auto_deliveries, mark_delivery_notified,
+    list_expired_unpaid_orders,
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
     admin_operations_snapshot, get_bool_setting, get_setting,
@@ -172,35 +173,48 @@ async def _g2_reconcile_loop(app):
         try:
             order_ids = await asyncio.to_thread(list_processing_auto_orders, 50)
             for order_id in order_ids:
-                success, status = await asyncio.to_thread(fulfill_order, order_id)
-                if success and status == 'delivered':
-                    order = await asyncio.to_thread(get_order, order_id)
-                    user_notified = False
-                    if order and order[6]:
+                await asyncio.to_thread(fulfill_order, order_id)
+
+            pending_notifications = await asyncio.to_thread(
+                list_unnotified_auto_deliveries, 50
+            )
+            for order_id, telegram_id, user_done, admin_done in pending_notifications:
+                if not user_done:
+                    if telegram_id:
                         try:
                             await app.bot.send_message(
-                                chat_id=int(order[6]),
+                                chat_id=int(telegram_id),
                                 text=(
                                     f"✅ سفارش #{order_id} توسط سرویس تأمین تکمیل "
                                     "و جم واریز شد."
                                 ),
                             )
-                            user_notified = True
+                            await asyncio.to_thread(
+                                mark_delivery_notified, order_id, 'user'
+                            )
                         except Exception:
                             logging.getLogger(__name__).exception(
                                 'Could not notify user for completed G2Bulk order %s',
                                 order_id,
                             )
+                    else:
+                        await asyncio.to_thread(
+                            mark_delivery_notified, order_id, 'user'
+                        )
+                if not admin_done:
                     try:
-                        await notify_admin(
+                        admin_sent = await notify_admin(
                             app.bot,
                             (
                                 f"✅ سفارش #{order_id} در G2Bulk تکمیل و در ربات "
-                                "تحویل‌شده ثبت شد.\n"
-                                f"اعلان کاربر: {'ارسال شد' if user_notified else 'ارسال نشد'}"
+                                "تحویل‌شده ثبت شد."
                             ),
                             parse_mode=None,
                         )
+                        if admin_sent:
+                            await asyncio.to_thread(
+                                mark_delivery_notified, order_id, 'admin'
+                            )
                     except Exception:
                         logging.getLogger(__name__).exception(
                             'Could not notify admin for completed G2Bulk order %s',

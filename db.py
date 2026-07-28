@@ -1317,6 +1317,8 @@ def ensure_admin_schema():
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "DeliveryUserNotifiedAt" TIMESTAMPTZ',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "DeliveryAdminNotifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentExpectedAmount" INTEGER',
         'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentVerifiedAt" TIMESTAMPTZ',
         'ALTER TABLE "WalletTransactions" ADD COLUMN IF NOT EXISTS "PaymentRefId" VARCHAR(100)',
@@ -1391,6 +1393,23 @@ def ensure_admin_schema():
             "Value" TEXT NOT NULL DEFAULT '',
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''DO $migration$
+           BEGIN
+             IF NOT EXISTS (
+               SELECT 1 FROM "BotSettings"
+               WHERE "Key"='delivery_notification_outbox_v1'
+             ) THEN
+               UPDATE "Orders"
+               SET "DeliveryUserNotifiedAt"=COALESCE("DeliveryUserNotifiedAt",now()),
+                   "DeliveryAdminNotifiedAt"=COALESCE("DeliveryAdminNotifiedAt",now())
+               WHERE "Status" IN ('delivered','completed');
+
+               INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+               VALUES ('delivery_notification_outbox_v1','1',now())
+               ON CONFLICT ("Key") DO NOTHING;
+             END IF;
+           END;
+           $migration$''',
         '''DO $migration$
            BEGIN
              IF NOT EXISTS (
@@ -2784,6 +2803,47 @@ def list_processing_auto_orders(limit=50):
             (max(1, min(int(limit), 100)),),
         )
         return [int(row[0]) for row in cur.fetchall()]
+
+
+def list_unnotified_auto_deliveries(limit=50):
+    """Return completed supplier orders whose durable notification is pending."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT DISTINCT o."Id",o."TelegramId",'
+            '(o."DeliveryUserNotifiedAt" IS NOT NULL),'
+            '(o."DeliveryAdminNotifiedAt" IS NOT NULL) '
+            'FROM "Orders" o '
+            'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'delivered\',\'completed\') '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND g."G2BulkOrderId" IS NOT NULL '
+            'AND g."G2BulkStatus"=\'COMPLETED\' '
+            'AND (o."DeliveryUserNotifiedAt" IS NULL '
+            'OR o."DeliveryAdminNotifiedAt" IS NULL) '
+            'ORDER BY o."Id" LIMIT %s',
+            (max(1, min(int(limit), 100)),),
+        )
+        return cur.fetchall()
+
+
+def mark_delivery_notified(order_id, target):
+    """Atomically persist one successful notification delivery."""
+    column = {
+        'user': '"DeliveryUserNotifiedAt"',
+        'admin': '"DeliveryAdminNotifiedAt"',
+    }.get(str(target or '').strip().lower())
+    if not column:
+        raise ValueError('notification target is invalid')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "Orders" SET {column}=COALESCE({column},now()) '
+            'WHERE "Id"=%s AND "Status" IN (\'delivered\',\'completed\') '
+            f'RETURNING {column}',
+            (int(order_id),),
+        )
+        updated = bool(cur.fetchone())
+        conn.commit()
+        return updated
 
 
 def list_open_orders(limit=20):
