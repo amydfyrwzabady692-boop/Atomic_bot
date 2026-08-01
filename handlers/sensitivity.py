@@ -9,7 +9,7 @@ from keyboards import (
     pay_method_keyboard, updating_keyboard,
 )
 from db import (
-    get_or_create_user, create_order, add_order_item, get_wallet_balance,
+    get_or_create_user, create_sense_order_atomic, get_wallet_balance,
     list_sense_packages, get_sense_package, get_bool_setting,
 )
 from payment_safety import checked_amount
@@ -109,14 +109,18 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db_id, _ = get_or_create_user(
             user.id, user.first_name or '', user.last_name or '', user.username or ''
         )
-        order_id = create_order(
-            db_id, pack['price'], telegram_id=user.id,
-            full_name=full_name, payment_method='pending',
+        order_id, title, price = create_sense_order_atomic(
+            db_id, pack['key'], pack['price'], telegram_id=user.id,
+            full_name=full_name,
         )
-        add_order_item(order_id, pack['title'], pack['price'], 1)
-        return db_id, order_id, int(get_wallet_balance(db_id) or 0)
+        return db_id, order_id, title, price, int(get_wallet_balance(db_id) or 0)
 
-    db_id, order_id, balance = await asyncio.to_thread(persist_order)
+    try:
+        db_id, order_id, title, price, balance = await asyncio.to_thread(persist_order)
+    except ValueError as exc:
+        await query.edit_message_text(f"❌ {exc}", reply_markup=main_menu())
+        return
+    pack['title'], pack['price'] = title, price
     ctx.user_data['db_id'] = db_id
 
     ctx.user_data['pending_order'] = {

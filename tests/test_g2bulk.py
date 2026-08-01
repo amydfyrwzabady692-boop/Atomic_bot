@@ -1,5 +1,6 @@
 import unittest
 import os
+from decimal import Decimal
 from unittest.mock import patch
 
 import g2bulk
@@ -29,9 +30,11 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertEqual(snapshot['balance'], 5.0)
         self.assertEqual(snapshot['prices'][110], 0.75)
         self.assertEqual(snapshot['prices'][231], 1.5)
-        self.assertEqual(snapshot['prices_by_name']['weekly membership'], 2.081)
         self.assertEqual(
-            snapshot['prices_by_name']['level up package - level 6'], 0.296
+            snapshot['prices_by_name']['weekly membership'], Decimal('2.081')
+        )
+        self.assertEqual(
+            snapshot['prices_by_name']['level up package - level 6'], Decimal('0.296')
         )
 
     @patch.object(g2bulk, 'get_inventory_snapshot')

@@ -65,7 +65,7 @@ def calculate_live_pack_costs(packages, supplier_prices_usd, usd_toman_rate):
             'title': str(title or ''),
             'amount': amount,
             'sale_toman': sale_toman,
-            'cost_usd': float(cost_usd),
+            'cost_usd': Decimal(str(cost_usd)),
             'cost_toman': cost_toman,
             'gross_profit_toman': gross_profit,
             'margin_percent': margin,

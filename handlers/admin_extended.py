@@ -24,6 +24,7 @@ from db import (
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
+    move_catalogue_item,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
     list_profit_snapshots, profit_report_stats,
     add_forced_join_channel, list_forced_join_channels,
@@ -333,7 +334,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     elif data == 'admx_health':
         health = financial_health_snapshot()
-        warning = health['verified_pending_orders'] + health['expired_pending_orders']
+        warning = (
+            health['verified_pending_orders']
+            + health['expired_pending_orders']
+            + health['wallet_mismatches']
+        )
         text = (
             '🩺 سلامت مالی ربات\n\n'
             f'{"⚠️ نیازمند بررسی" if warning else "✅ وضعیت عادی"}\n'
@@ -343,6 +348,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'سفارش در حال پردازش: {health["processing_orders"]:,}\n'
             f'رسید در انتظار بررسی: {health["pending_receipts"]:,}\n'
             f'شارژ کیف پول پرداخت‌نشده: {health["unpaid_wallet_charges"]:,}\n'
+            f'مغایرت موجودی با دفتر کیف پول: {health["wallet_mismatches"]:,}\n'
             f'خطای پرداخت ۲۴ ساعت اخیر: {health["failed_payments_24h"]:,}'
         )
         await _edit(query, text, [
@@ -429,7 +435,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'{snapshot.get("error") or "خطای نامشخص"}'
             )
         else:
-            balance = float(snapshot['balance'])
+            balance = snapshot['balance']
             lines = [
                 '💱 *نرخ زنده دلار و بهای واقعی پک‌ها*',
                 '━━━━━━━━━━━━━━━',
@@ -528,7 +534,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             source_label = str(source or '').replace('_', '-')
             lines.append(
                 f'• #{oid} · {gems} جم · فروش {int(sale):,} ت · '
-                f'هزینه ${float(cost_usd):.4f} × '
+                f'هزینه ${cost_usd:.4f} × '
                 f'{int(rate or 0):,} · سود {profit_text}\n'
                 f'  {source_label} · {g2_status} · {str(created)[:16]}'
             )
@@ -726,8 +732,17 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_gemtitle_{gid}')],
                 [InlineKeyboardButton('✏️ موجودی', callback_data=f'admi_gemstock_{gid}'),
                  InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_gemtoggle_{gid}')],
+                [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_gemmove_up_{gid}'),
+                 InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_gemmove_down_{gid}')],
                 _back('admx_gems'),
             ])
+    elif data.startswith('admx_gemmove_'):
+        _, _, direction, gid = data.split('_', 3)
+        move_catalogue_item('gem', int(gid), direction)
+        await query.edit_message_text(
+            '✅ ترتیب بسته جم تغییر کرد.',
+            reply_markup=_kb([_back('admx_gems')]),
+        )
     elif data.startswith('admx_gemtoggle_'):
         gid = int(data.rsplit('_', 1)[1])
         g = get_gem(gid)
@@ -754,8 +769,17 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_senseprice_{sid}'),
              InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_sensetitle_{sid}')],
             [InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_sensetoggle_{sid}')],
+            [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_sensemove_up_{sid}'),
+             InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_sensemove_down_{sid}')],
             _back('admx_sense'),
         ])
+    elif data.startswith('admx_sensemove_'):
+        _, _, direction, sid = data.split('_', 3)
+        move_catalogue_item('sense', int(sid), direction)
+        await query.edit_message_text(
+            '✅ ترتیب پک سنس تغییر کرد.',
+            reply_markup=_kb([_back('admx_sense')]),
+        )
     elif data.startswith('admx_sensetoggle_'):
         sid = int(data.rsplit('_', 1)[1])
         p = get_sense_package(sid)

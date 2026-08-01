@@ -9,6 +9,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation
 
 BASE_URL = 'https://api.g2bulk.com/v1'
 G2BULK_ME_AMOUNTS = (110, 231, 583, 1188, 2420)
@@ -151,8 +152,8 @@ def get_inventory_snapshot(force=False):
         _inventory_cache.update(at=now, value=result)
         return result
     try:
-        balance = float(me['balance'])
-    except (TypeError, ValueError):
+        balance = Decimal(str(me['balance']))
+    except (InvalidOperation, TypeError, ValueError):
         return {'ok': False, 'error': 'موجودی برگشتی G2Bulk معتبر نیست.'}
 
     prices = {}
@@ -163,8 +164,8 @@ def get_inventory_snapshot(force=False):
         match = re.search(r'\d+', name)
         try:
             package_amount = int(match.group()) if match else None
-            cost = float(item.get('amount'))
-        except (TypeError, ValueError):
+            cost = Decimal(str(item.get('amount')))
+        except (InvalidOperation, TypeError, ValueError):
             continue
         if not name or cost <= 0:
             continue

@@ -3,6 +3,7 @@
 جدول‌ها و ستون‌ها PascalCase هستند و داخل گیومه قرار می‌گیرند.
 """
 import os
+import logging
 import threading
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -25,6 +26,7 @@ _CONN = {
 }
 _POOL = None
 _POOL_LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
 
 
 def _payment_ttl_minutes():
@@ -140,7 +142,7 @@ def get_gems_by_id():
         'WHERE "IsActive"=true '
         'AND "PurchaseType"=\'by_id\' '
         'AND "PlanType"=\'once\' '
-        'ORDER BY "Price", "Id"'
+        'ORDER BY "SortOrder", "Id"'
     )
     try:
         with get_conn() as conn, conn.cursor() as cur:
@@ -201,6 +203,136 @@ def create_order(user_db_id, total, telegram_id='', full_name='', phone='',
         order_id = cur.fetchone()[0]
         conn.commit()
         return order_id
+
+
+def _insert_pending_order(cur, user_db_id, total, telegram_id='', full_name='',
+                          phone='', payment_method='pending'):
+    """Insert an order using the caller's transaction and return its id."""
+    total = checked_amount(total, label='مبلغ سفارش')
+    cur.execute(
+        'INSERT INTO "Orders" '
+        '("UserId", "FullName", "Email", "Phone", "TelegramId", "TotalAmount", '
+        '"DiscountAmount", "PaymentMethod", "Status","PaymentExpiresAt","CreatedAt") '
+        'VALUES (%s, %s, %s, %s, %s, %s, 0, %s, \'pending\','
+        'now()+(%s*interval \'1 minute\'),now()) RETURNING "Id"',
+        (
+            user_db_id,
+            full_name or 'کاربر تلگرام',
+            f"tg_{telegram_id or user_db_id}@telegram.bot",
+            phone or '',
+            str(telegram_id),
+            total,
+            payment_method,
+            _payment_ttl_minutes(),
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def create_gem_order_atomic(user_db_id, gem_package_id, expected_price, *,
+                            telegram_id='', full_name='', game_uid='',
+                            player_name=None):
+    """Create the gem order, item snapshot and delivery row atomically.
+
+    The current package is locked and its price is compared with the price the
+    buyer confirmed.  An admin price/availability change therefore cannot
+    silently produce a partial or differently-priced order.
+    """
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    game_uid = str(game_uid or '').strip()
+    if not game_uid or len(game_uid) > 128:
+        raise ValueError('شناسه بازی نامعتبر است.')
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT "Title","Price","Stock",COALESCE("AutoDeliver",false) '
+                'FROM "GemPackages" WHERE "Id"=%s AND "IsActive"=true '
+                'AND "IsAvailable"=true AND "PurchaseType"=\'by_id\' '
+                'AND "PlanType"=\'once\' FOR UPDATE',
+                (int(gem_package_id),),
+            )
+            package = cur.fetchone()
+            if not package:
+                raise ValueError('این بسته دیگر فعال یا قابل خرید نیست.')
+            title, price, stock, auto_deliver = package
+            price = checked_amount(price, label='قیمت بسته')
+            if price != expected_price:
+                raise ValueError('قیمت بسته تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
+            if not auto_deliver and int(stock or 0) < 1:
+                raise ValueError('موجودی این بسته تمام شده است.')
+
+            reservation_status = ''
+            if not auto_deliver:
+                cur.execute(
+                    'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
+                    'WHERE "Id"=%s AND "Stock">0',
+                    (int(gem_package_id),),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError('موجودی این بسته تمام شده است.')
+                reservation_status = 'MANUAL_RESERVED'
+
+            order_id = _insert_pending_order(
+                cur, user_db_id, price, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId", "ProductId", "ProductName", "Price", "Quantity") '
+                'VALUES (%s, NULL, %s, %s, 1) RETURNING "Id"',
+                (order_id, title, price),
+            )
+            item_id = cur.fetchone()[0]
+            cur.execute(
+                'INSERT INTO "GemOrderInfo" '
+                '("OrderId", "OrderItemId", "GemPackageId", "PurchaseType", '
+                '"TelegramId", "GameUID", "PlayerName", "G2BulkStatus") '
+                'VALUES (%s, %s, %s, \'by_id\', %s, %s, %s, %s)',
+                (
+                    order_id, item_id, int(gem_package_id), str(telegram_id),
+                    game_uid, player_name, reservation_status,
+                ),
+            )
+            conn.commit()
+            return order_id, str(title), price
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def create_sense_order_atomic(user_db_id, package_id, expected_price, *,
+                              telegram_id='', full_name=''):
+    """Create a sensitivity order and its immutable item snapshot atomically."""
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT "Title","Price" FROM "SensePackages" '
+                'WHERE "Id"=%s AND "IsActive"=true FOR UPDATE',
+                (int(package_id),),
+            )
+            package = cur.fetchone()
+            if not package:
+                raise ValueError('این بسته دیگر فعال یا قابل خرید نیست.')
+            title, price = package
+            price = checked_amount(price, label='قیمت بسته')
+            if price != expected_price:
+                raise ValueError('قیمت بسته تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
+            order_id = _insert_pending_order(
+                cur, user_db_id, price, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId", "ProductId", "ProductName", "Price", "Quantity") '
+                'VALUES (%s, NULL, %s, %s, 1)',
+                (order_id, title, price),
+            )
+            conn.commit()
+            return order_id, str(title), price
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def set_order_authority(order_id, authority, payment_method='zarinpal',
@@ -376,15 +508,6 @@ def record_order_payment_verified(order_id, method, expected_amount,
         return False, str(e)
 
 
-def set_order_payment_method(order_id, payment_method):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'UPDATE "Orders" SET "PaymentMethod"=%s WHERE "Id"=%s',
-            (payment_method, order_id),
-        )
-        conn.commit()
-
-
 def get_order(order_id):
     """Id, UserId, TotalAmount, Status, PaymentMethod, PaymentAuthority, TelegramId, WalletPaid"""
     with get_conn() as conn, conn.cursor() as cur:
@@ -400,15 +523,6 @@ def get_order(order_id):
 def get_order_payable(order_id):
     ok, _net, payable, _error = validate_order_financials(order_id)
     return payable if ok else 0
-
-
-def set_order_wallet_paid(order_id, amount):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'UPDATE "Orders" SET "WalletPaid"=%s WHERE "Id"=%s',
-            (int(amount), order_id),
-        )
-        conn.commit()
 
 
 def apply_wallet_to_order(user_db_id, order_id):
@@ -473,16 +587,33 @@ def apply_wallet_to_order(user_db_id, order_id):
 
 def refund_order_wallet(order_id):
     """اگر از کیف پول چیزی کسر شده، برگردان و WalletPaid را صفر کن."""
-    order = get_order(order_id)
-    if not order:
-        return 0
-    paid = int(order[7] or 0)
-    if paid <= 0:
-        return 0
-    user_db_id = order[1]
-    wallet_charge(user_db_id, paid, desc=f'برگشت کیف پول سفارش #{order_id}')
-    set_order_wallet_paid(order_id, 0)
-    return paid
+    raise RuntimeError(
+        'Unsafe legacy refund path is disabled; use an atomic order cancellation flow.'
+    )
+
+
+def _release_manual_gem_reservations(cur, order_id):
+    """Release only unpaid manual inventory reservations in caller transaction."""
+    cur.execute(
+        'SELECT "Id","GemPackageId" FROM "GemOrderInfo" '
+        'WHERE "OrderId"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\' '
+        'FOR UPDATE',
+        (int(order_id),),
+    )
+    reservations = cur.fetchall()
+    for info_id, package_id in reservations:
+        cur.execute(
+            'UPDATE "GemPackages" SET "Stock"="Stock"+1 WHERE "Id"=%s',
+            (int(package_id),),
+        )
+        if cur.rowcount != 1:
+            raise ValueError('بسته رزروشده برای آزادسازی پیدا نشد.')
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_RELEASED\' '
+            'WHERE "Id"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\'',
+            (int(info_id),),
+        )
+    return len(reservations)
 
 
 def cancel_order_and_refund(order_id, telegram_id=None):
@@ -501,6 +632,7 @@ def cancel_order_and_refund(order_id, telegram_id=None):
                 'برای سفارش لینک درگاه صادر شده است. برای جلوگیری از گم‌شدن پرداخت، '
                 'لغو خودکار ممکن نیست؛ ابتدا وضعیت پرداخت باید بررسی شود.'
             )
+        _release_manual_gem_reservations(cur, order_id)
         refunded = int(row[5] or 0)
         if refunded:
             cur.execute(
@@ -570,6 +702,7 @@ def expire_order_and_refund(order_id):
         )
         if cur.fetchone():
             return False, 0, 'رسید سفارش در انتظار بررسی است.'
+        _release_manual_gem_reservations(cur, order_id)
         refunded = int(row[5] or 0)
         if refunded:
             cur.execute(
@@ -891,6 +1024,11 @@ def record_gem_profit_snapshot(info_id, order_id, supplier_cost_usd, rate_info):
             conn.commit()
             return cur.rowcount == 1
     except Exception:
+        _LOG.exception(
+            "Could not persist profit snapshot for order=%s info=%s",
+            order_id,
+            info_id,
+        )
         return False
 
 
@@ -934,7 +1072,7 @@ def profit_report_stats():
             'sales': int(all_time[1] or 0),
             'cost': int(all_time[2] or 0),
             'profit': int(all_time[3] or 0),
-            'cost_usd': float(all_time[4] or 0),
+            'cost_usd': Decimal(str(all_time[4] or 0)),
             'month_count': int(month[0] or 0),
             'month_sales': int(month[1] or 0),
             'month_cost': int(month[2] or 0),
@@ -986,6 +1124,14 @@ def _reserve_manual_gem(info_id, package_id):
             return False
         if row[0] == 'MANUAL_PENDING':
             return True
+        if row[0] == 'MANUAL_RESERVED':
+            cur.execute(
+                'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\' '
+                'WHERE "Id"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\'',
+                (int(info_id),),
+            )
+            conn.commit()
+            return cur.rowcount == 1
         cur.execute(
             'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
             'WHERE "Id"=%s AND COALESCE("AutoDeliver",false)=false AND "Stock">0',
@@ -1510,6 +1656,7 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardNumber" VARCHAR(32) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardVerified" BOOLEAN NOT NULL DEFAULT false',
         'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "G2BulkSubmittedAt" TIMESTAMPTZ',
+        'ALTER TABLE "GemPackages" ADD COLUMN IF NOT EXISTS "SortOrder" INTEGER NOT NULL DEFAULT 0',
         '''CREATE TABLE IF NOT EXISTS "BotAdmins" (
             "TelegramId" VARCHAR(64) PRIMARY KEY,
             "Title" VARCHAR(150) NOT NULL DEFAULT '',
@@ -1603,6 +1750,7 @@ def ensure_admin_schema():
             "Price" INTEGER NOT NULL,
             "Description" TEXT NOT NULL DEFAULT '',
             "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''CREATE TABLE IF NOT EXISTS "SupportDepartments" (
@@ -1615,6 +1763,7 @@ def ensure_admin_schema():
             "Id" SERIAL PRIMARY KEY,
             "Title" VARCHAR(150) NOT NULL,
             "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''CREATE TABLE IF NOT EXISTS "StoreProducts" (
@@ -1625,6 +1774,7 @@ def ensure_admin_schema():
             "Stock" INTEGER NOT NULL DEFAULT 0,
             "Description" TEXT NOT NULL DEFAULT '',
             "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''CREATE TABLE IF NOT EXISTS "PromoCodes" (
@@ -1694,11 +1844,43 @@ def ensure_admin_schema():
             "Details" VARCHAR(500) NOT NULL DEFAULT '',
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        'ALTER TABLE "SensePackages" ADD COLUMN IF NOT EXISTS "SortOrder" INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE "ProductCategories" ADD COLUMN IF NOT EXISTS "SortOrder" INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE "StoreProducts" ADD COLUMN IF NOT EXISTS "SortOrder" INTEGER NOT NULL DEFAULT 0',
+        '''CREATE INDEX IF NOT EXISTS idx_gem_packages_sort
+           ON "GemPackages" ("SortOrder","Id")''',
+        '''CREATE INDEX IF NOT EXISTS idx_sense_packages_sort
+           ON "SensePackages" ("Platform","SortOrder","Id")''',
+        '''CREATE TABLE IF NOT EXISTS "OrderStatusHistory" (
+            "Id" BIGSERIAL PRIMARY KEY,
+            "OrderId" INTEGER NOT NULL REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "OldStatus" VARCHAR(30),
+            "NewStatus" VARCHAR(30) NOT NULL,
+            "ChangedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE OR REPLACE FUNCTION record_atomic_order_status_transition()
+           RETURNS trigger AS $$
+           BEGIN
+             IF TG_OP='INSERT' THEN
+               INSERT INTO "OrderStatusHistory" ("OrderId","OldStatus","NewStatus")
+               VALUES (NEW."Id",NULL,NEW."Status");
+             ELSIF OLD."Status" IS DISTINCT FROM NEW."Status" THEN
+               INSERT INTO "OrderStatusHistory" ("OrderId","OldStatus","NewStatus")
+               VALUES (NEW."Id",OLD."Status",NEW."Status");
+             END IF;
+             RETURN NEW;
+           END;
+           $$ LANGUAGE plpgsql''',
+        'DROP TRIGGER IF EXISTS trg_atomic_order_status_transition ON "Orders"',
+        '''CREATE TRIGGER trg_atomic_order_status_transition
+           AFTER INSERT OR UPDATE OF "Status" ON "Orders"
+           FOR EACH ROW EXECUTE FUNCTION record_atomic_order_status_transition()''',
         '''CREATE INDEX IF NOT EXISTS idx_admin_audit_created
            ON "AdminAuditLogs" ("CreatedAt" DESC)''',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "Role" VARCHAR(20) NOT NULL DEFAULT \'admin\'',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "AddedBy" VARCHAR(64)',
     ]
+    failures = []
     with get_conn() as conn, conn.cursor() as cur:
         for index, sql in enumerate(stmts):
             savepoint = f'schema_patch_{index}'
@@ -1707,9 +1889,14 @@ def ensure_admin_schema():
                 cur.execute(sql)
             except Exception as e:
                 cur.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
-                print(f'[DB] schema patch skipped: {sql[:40]}… ({e})')
+                failures.append((index, type(e).__name__))
+                _LOG.exception('Schema migration step %s failed', index)
             finally:
                 cur.execute(f'RELEASE SAVEPOINT {savepoint}')
+        if failures:
+            raise RuntimeError(
+                f'{len(failures)} database migration step(s) failed: {failures}'
+            )
         conn.commit()
 
 
@@ -1801,6 +1988,7 @@ def is_bot_admin(telegram_id):
             )
             return cur.fetchone() is not None
     except Exception:
+        _LOG.warning("Admin role lookup failed for telegram_id=%s", telegram_id, exc_info=True)
         return False
 
 
@@ -1816,6 +2004,11 @@ def is_premium_editor(telegram_id):
             )
             return cur.fetchone() is not None
     except Exception:
+        _LOG.warning(
+            "Premium editor role lookup failed for telegram_id=%s",
+            telegram_id,
+            exc_info=True,
+        )
         return False
 
 
@@ -2042,6 +2235,13 @@ def log_payment_attempt(*, provider, event, status, amount=None, order_id=None,
             conn.commit()
             return attempt_id
     except Exception:
+        _LOG.exception(
+            "Could not persist payment attempt provider=%s event=%s order=%s wallet_tx=%s",
+            provider,
+            event,
+            order_id,
+            wallet_tx_id,
+        )
         return None
 
 
@@ -2100,6 +2300,12 @@ def log_admin_action(admin_telegram_id, action, target_type='', target_id='', de
             conn.commit()
             return audit_id
     except Exception:
+        _LOG.exception(
+            "Could not persist admin audit action=%s target_type=%s target_id=%s",
+            action,
+            target_type,
+            target_id,
+        )
         return None
 
 
@@ -2269,6 +2475,13 @@ def financial_health_snapshot():
             'SELECT COUNT(*) FROM "PaymentAttempts" WHERE "Status"=\'failed\' '
             'AND "CreatedAt">=now()-interval \'24 hours\''
         ),
+        'wallet_mismatches': (
+            'SELECT COUNT(*) FROM "Wallets" w WHERE w."Balance" <> COALESCE(('
+            'SELECT SUM(CASE WHEN t."Kind"=\'charge\' THEN t."Amount" '
+            'WHEN t."Kind"=\'spend\' THEN -t."Amount" ELSE 0 END) '
+            'FROM "WalletTransactions" t WHERE t."WalletId"=w."Id" '
+            'AND COALESCE(t."IsPaid",false)=true),0)'
+        ),
     }
     result = {}
     with get_conn() as conn, conn.cursor() as cur:
@@ -2417,7 +2630,7 @@ def list_sense_packages(platform=None, active_only=False):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","Title","Platform","Price","Description","IsActive" '
-            'FROM "SensePackages"' + clause + ' ORDER BY "Platform","Price"',
+            'FROM "SensePackages"' + clause + ' ORDER BY "Platform","SortOrder","Id"',
             args,
         )
         return cur.fetchall()
@@ -2436,9 +2649,11 @@ def add_sense_package(title, platform, price, description=''):
     price = checked_amount(price, label='قیمت بسته')
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'INSERT INTO "SensePackages" ("Title","Platform","Price","Description") '
-            'VALUES (%s,%s,%s,%s) RETURNING "Id"',
-            (title, platform, price, description or ''),
+            'INSERT INTO "SensePackages" '
+            '("Title","Platform","Price","Description","SortOrder") '
+            'VALUES (%s,%s,%s,%s,(SELECT COALESCE(MAX("SortOrder"),0)+10 '
+            'FROM "SensePackages" WHERE "Platform"=%s)) RETURNING "Id"',
+            (title, platform, price, description or '', platform),
         )
         value = cur.fetchone()[0]
         conn.commit()
@@ -2446,11 +2661,13 @@ def add_sense_package(title, platform, price, description=''):
 
 
 def update_sense_package(package_id, field, value):
-    allowed = {'Title', 'Platform', 'Price', 'Description', 'IsActive'}
+    allowed = {'Title', 'Platform', 'Price', 'Description', 'IsActive', 'SortOrder'}
     if field not in allowed:
         raise ValueError('فیلد نامعتبر')
     if field == 'Price':
         value = checked_amount(value, label='قیمت بسته')
+    elif field == 'SortOrder':
+        value = max(0, int(value))
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f'UPDATE "SensePackages" SET "{field}"=%s WHERE "Id"=%s',
                     (value, int(package_id)))
@@ -2467,8 +2684,9 @@ def add_gem_package(title, amount, price, stock=9999):
         cur.execute(
             'INSERT INTO "GemPackages" '
             '("Title","Amount","BonusAmount","Price","PlanType","PurchaseType",'
-            '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive") '
-            'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,%s,true,true) RETURNING "Id"',
+            '"AutoDeliver","G2BulkCatalogueName","Stock","IsAvailable","IsActive","SortOrder") '
+            'VALUES (%s,%s,0,%s,\'once\',\'by_id\',true,%s,%s,true,true,'
+            '(SELECT COALESCE(MAX("SortOrder"),0)+10 FROM "GemPackages")) RETURNING "Id"',
             (title, amount, price, str(amount), stock),
         )
         value = cur.fetchone()[0]
@@ -2478,7 +2696,7 @@ def add_gem_package(title, amount, price, stock=9999):
 
 def update_gem_package(package_id, field, value):
     allowed = {'Title', 'Amount', 'Price', 'Stock', 'IsAvailable', 'IsActive',
-               'G2BulkCatalogueName', 'AutoDeliver'}
+               'G2BulkCatalogueName', 'AutoDeliver', 'SortOrder'}
     if field not in allowed:
         raise ValueError('فیلد نامعتبر')
     if field == 'Amount':
@@ -2489,6 +2707,8 @@ def update_gem_package(package_id, field, value):
         value = int(value)
         if value < 0:
             raise ValueError('موجودی نمی‌تواند منفی باشد')
+    elif field == 'SortOrder':
+        value = max(0, int(value))
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(f'UPDATE "GemPackages" SET "{field}"=%s WHERE "Id"=%s',
                     (value, int(package_id)))
@@ -2499,7 +2719,7 @@ def admin_list_gems():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f'SELECT {_GEM_COLS}, "IsActive" FROM "GemPackages" '
-            'WHERE "PurchaseType"=\'by_id\' ORDER BY "Id"'
+            'WHERE "PurchaseType"=\'by_id\' ORDER BY "SortOrder","Id"'
         )
         return cur.fetchall()
 
@@ -2687,7 +2907,14 @@ def is_user_blocked(telegram_id) -> bool:
             row = cur.fetchone()
             return bool(row and row[0])
     except Exception:
-        return False
+        # Access control must fail closed. An unreadable block state is denied
+        # until the database is healthy instead of bypassing an active ban.
+        _LOG.warning(
+            "Blocked-user lookup failed for telegram_id=%s; denying access",
+            tg,
+            exc_info=True,
+        )
+        return True
 
 
 def set_user_blocked(telegram_id, blocked=True, reason=''):
@@ -2954,6 +3181,55 @@ def list_unnotified_auto_deliveries(limit=50):
             (max(1, min(int(limit), 100)),),
         )
         return cur.fetchall()
+
+
+def move_catalogue_item(kind, item_id, direction):
+    """Move a gem or sensitivity pack and compact stable sort ranks."""
+    if kind not in {'gem', 'sense'}:
+        raise ValueError('نوع فهرست نامعتبر است.')
+    direction = str(direction or '').strip().lower()
+    if direction not in {'up', 'down', 'first', 'last'}:
+        raise ValueError('جهت مرتب‌سازی نامعتبر است.')
+    table = 'GemPackages' if kind == 'gem' else 'SensePackages'
+    with get_conn() as conn, conn.cursor() as cur:
+        if kind == 'gem':
+            cur.execute(
+                'SELECT "Id" FROM "GemPackages" '
+                'WHERE "PurchaseType"=\'by_id\' '
+                'ORDER BY "SortOrder","Id" FOR UPDATE'
+            )
+        else:
+            cur.execute(
+                'SELECT "Platform" FROM "SensePackages" WHERE "Id"=%s FOR UPDATE',
+                (int(item_id),),
+            )
+            selected = cur.fetchone()
+            if not selected:
+                raise ValueError('پک سنس پیدا نشد.')
+            cur.execute(
+                'SELECT "Id" FROM "SensePackages" WHERE "Platform"=%s '
+                'ORDER BY "SortOrder","Id" FOR UPDATE',
+                (selected[0],),
+            )
+        identifiers = [int(row[0]) for row in cur.fetchall()]
+        item_id = int(item_id)
+        if item_id not in identifiers:
+            raise ValueError('آیتم برای مرتب‌سازی پیدا نشد.')
+        old_index = identifiers.index(item_id)
+        new_index = {
+            'up': max(0, old_index - 1),
+            'down': min(len(identifiers) - 1, old_index + 1),
+            'first': 0,
+            'last': len(identifiers) - 1,
+        }[direction]
+        identifiers.pop(old_index)
+        identifiers.insert(new_index, item_id)
+        cur.executemany(
+            f'UPDATE "{table}" SET "SortOrder"=%s WHERE "Id"=%s',
+            [(rank * 10, identifier) for rank, identifier in enumerate(identifiers, 1)],
+        )
+        conn.commit()
+        return old_index != new_index
 
 
 def mark_delivery_notified(order_id, target):

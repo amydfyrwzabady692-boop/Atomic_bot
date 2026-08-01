@@ -1,6 +1,7 @@
 """پرداخت سفارش جم: زرین‌پال، کارت‌به‌کارت، کیف پول + تایید ادمین."""
 from html import escape
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -33,6 +34,8 @@ from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
 import time
 import g2bulk
+
+log = logging.getLogger(__name__)
 
 try:
     _ttl_minutes = int(os.getenv('ORDER_PAYMENT_TTL_MINUTES', '15'))
@@ -238,7 +241,12 @@ async def _notify_sense_sale(bot, order_id):
             un = (p[2] or '').strip()
             uname = f"@{un}" if un else '—'
     except Exception:
-        pass
+        log.warning(
+            "Could not load profile for sensitivity order=%s telegram_id=%s",
+            order_id,
+            tg,
+            exc_info=True,
+        )
     text = (
         f"🎯 *خرید پک سنس — سفارش #{order_id}*\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
@@ -323,7 +331,7 @@ async def _notify_user(bot, tg_id, text):
         await bot.send_message(chat_id=int(tg_id), text=text, parse_mode='Markdown',
                                reply_markup=main_menu())
     except Exception:
-        pass
+        log.exception('Could not notify Telegram user %s', tg_id)
 
 
 async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

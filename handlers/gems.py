@@ -14,8 +14,8 @@ from keyboards import (
     GEM_PRODUCTS_PER_PAGE,
 )
 from db import (
-    get_gems_by_id, get_gem, get_or_create_user, create_order,
-    add_order_item, add_gem_order_info, get_wallet_balance,
+    get_gems_by_id, get_gem, get_or_create_user, create_gem_order_atomic,
+    get_wallet_balance,
     get_bool_setting,
 )
 from payment_safety import checked_amount
@@ -292,20 +292,22 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         db_id, _ = get_or_create_user(
             user.id, user.first_name or '', user.last_name or '', user.username or ''
         )
-        order_id = create_order(
-            db_id, info['price'], telegram_id=user.id,
-            full_name=full_name, payment_method='pending',
-        )
-        item_id = add_order_item(order_id, info['title'], info['price'], 1)
-        add_gem_order_info(
-            order_id, item_id, info['pk'], 'by_id',
+        order_id, title, price = create_gem_order_atomic(
+            db_id, info['pk'], info['price'],
             telegram_id=user.id,
+            full_name=full_name,
             game_uid=info['game_uid'],
             player_name=info.get('player_name'),
         )
-        return db_id, order_id, int(get_wallet_balance(db_id) or 0)
+        return db_id, order_id, title, price, int(get_wallet_balance(db_id) or 0)
 
-    db_id, order_id, balance = await asyncio.to_thread(persist_order)
+    try:
+        db_id, order_id, title, price, balance = await asyncio.to_thread(persist_order)
+    except ValueError as exc:
+        ctx.user_data.pop('gem_buy', None)
+        await query.edit_message_text(f"❌ {exc}")
+        return ConversationHandler.END
+    info['title'], info['price'] = title, price
     ctx.user_data['db_id'] = db_id
 
     ctx.user_data['pending_order'] = {

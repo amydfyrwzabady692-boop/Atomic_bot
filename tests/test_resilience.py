@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import admin_notify
 import bot
+import db
 from handlers import sensitivity
 from text_safety import markdown_safe
 
@@ -48,7 +49,9 @@ class SensitivityPurchaseTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(sensitivity, 'get_bool_setting', return_value=True),
             patch.object(sensitivity, 'get_sense_package', return_value=None),
-            patch.object(sensitivity, 'create_order') as create_order,
+            patch.object(
+                sensitivity, 'create_sense_order_atomic'
+            ) as create_order,
         ):
             await sensitivity.sens_buy(update, ctx)
 
@@ -72,6 +75,7 @@ class UpdateRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         channel_post.reply_text.assert_not_awaited()
 
+
     async def test_error_handler_does_not_reply_to_channel(self):
         channel_post = SimpleNamespace(reply_text=AsyncMock())
         update = SimpleNamespace(
@@ -85,6 +89,12 @@ class UpdateRoutingTests(unittest.IsolatedAsyncioTestCase):
             await bot.error_handler(update, ctx)
 
         channel_post.reply_text.assert_not_awaited()
+
+
+class AccessFailureModeTests(unittest.TestCase):
+    def test_block_lookup_fails_closed(self):
+        with patch.object(db, 'get_conn', side_effect=RuntimeError('db unavailable')):
+            self.assertTrue(db.is_user_blocked('123456'))
 
 
 if __name__ == '__main__':

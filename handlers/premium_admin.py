@@ -101,7 +101,7 @@ async def studio_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not snapshot.get('ok'):
             text = f'❌ موجودی دریافت نشد:\n{snapshot.get("error") or "خطای نامشخص"}'
         else:
-            balance = float(snapshot['balance'])
+            balance = snapshot['balance']
             lines = [f'💵 موجودی G2Bulk: *${balance:,.4f}*', '━━━━━━━━━━━━━━━']
             for amount, cost in sorted(snapshot['prices'].items()):
                 count = int(balance // cost) if cost > 0 else 0

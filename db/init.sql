@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS "GemPackages" (
     "Stock" INTEGER NOT NULL DEFAULT 9999 CHECK ("Stock" >= 0),
     "IsAvailable" BOOLEAN NOT NULL DEFAULT true,
     "IsActive" BOOLEAN NOT NULL DEFAULT true,
+    "SortOrder" INTEGER NOT NULL DEFAULT 0 CHECK ("SortOrder" >= 0),
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

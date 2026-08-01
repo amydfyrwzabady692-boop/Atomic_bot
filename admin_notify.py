@@ -1,6 +1,7 @@
 """ارسال اعلان به ادمین (ADMIN_CHAT_ID)."""
 import os
 import time
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +11,7 @@ load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '').strip()
 _ROLE_CACHE_TTL = 300
 _role_cache = {}
+_LOG = logging.getLogger(__name__)
 
 
 def admin_id():
@@ -34,6 +36,7 @@ def is_admin(user_id) -> bool:
     except Exception:
         # A temporary database outage must not be cached as a five-minute
         # permission denial. The configured owner above remains available.
+        _LOG.warning("Admin role lookup failed for user_id=%s", numeric_user_id, exc_info=True)
         return False
     _role_cache[key] = (time.monotonic(), result)
     return result
@@ -52,6 +55,11 @@ def is_premium_admin(user_id) -> bool:
         from db import is_premium_editor
         result = bool(is_premium_editor(numeric_user_id))
     except Exception:
+        _LOG.warning(
+            "Premium editor role lookup failed for user_id=%s",
+            numeric_user_id,
+            exc_info=True,
+        )
         return False
     _role_cache[key] = (time.monotonic(), result)
     return result
@@ -79,14 +87,14 @@ def admin_ids():
             if row[2] and row[4] == 'admin' and str(row[0]).isdigit()
         )
     except Exception:
-        pass
+        _LOG.warning("Could not list delegated admins", exc_info=True)
     return list(dict.fromkeys(ids))
 
 
 async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
     recipients = admin_ids()
     if not recipients:
-        print('[ADMIN] ADMIN_CHAT_ID empty — notify skipped')
+        _LOG.error('ADMIN_CHAT_ID is empty; admin notification skipped')
         return False
     sent = False
     for aid in recipients:
@@ -99,7 +107,7 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
             )
             sent = True
         except Exception as e:
-            print(f'[ADMIN] notify {aid} failed: {e}')
+            _LOG.warning('Admin notification failed for chat_id=%s: %s', aid, e)
             # Dynamic user names/messages can contain malformed Markdown.
             # Never lose an operational/financial alert only because rendering
             # failed; retry the exact content as plain text.
@@ -112,5 +120,9 @@ async def notify_admin(bot, text, reply_markup=None, parse_mode='Markdown'):
                     )
                     sent = True
                 except Exception as plain_error:
-                    print(f'[ADMIN] plain notify {aid} failed: {plain_error}')
+                    _LOG.error(
+                        'Plain-text admin notification failed for chat_id=%s: %s',
+                        aid,
+                        plain_error,
+                    )
     return sent

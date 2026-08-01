@@ -169,13 +169,16 @@ async def error_handler(update, ctx):
 
 
 async def post_init(app):
+    # Database and schema readiness are mandatory.  A bot that accepts money
+    # with a partially migrated schema is less safe than a visible startup
+    # failure, so these exceptions must stop startup.
+    await asyncio.to_thread(open_db_pool)
+    await asyncio.to_thread(ensure_admin_schema)
+    from db import sync_gem_prices
     try:
-        await asyncio.to_thread(open_db_pool)
-        await asyncio.to_thread(ensure_admin_schema)
-        from db import sync_gem_prices
         await asyncio.to_thread(sync_gem_prices)
     except Exception as e:
-        logging.getLogger(__name__).warning('ensure_admin_schema/prices: %s', e)
+        logging.getLogger(__name__).warning('Gem price synchronization failed: %s', e)
     await start_web_server(app)
     app.bot_data['_g2_reconcile_task'] = asyncio.create_task(
         _g2_reconcile_loop(app), name='g2bulk-reconcile'
@@ -355,7 +358,10 @@ async def _payment_expiry_loop(app):
                                         chat_id=int(telegram_id), text=text
                                     )
                                 except Exception:
-                                    pass
+                                    logging.getLogger(__name__).exception(
+                                        'Could not notify user about expiry verification order=%s',
+                                        order_id,
+                                    )
                         continue
                     if verify_status != 'not_paid':
                         continue
@@ -386,7 +392,9 @@ async def _payment_expiry_loop(app):
                             ),
                         )
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).exception(
+                            'Could not notify user about expired order=%s', order_id
+                        )
         except asyncio.CancelledError:
             raise
         except Exception:
