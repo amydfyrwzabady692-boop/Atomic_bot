@@ -28,7 +28,8 @@ from db import (
     prepare_card_order_payment, cancel_order_and_refund,
     expire_order_and_refund,
     approve_card_order_payment, reject_card_order_payment,
-    log_payment_attempt, log_admin_action,
+    log_payment_attempt, log_admin_action, detach_order_authority_to_wallet,
+    get_gateway_wallet_charge, complete_wallet_charge_by_authority,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
@@ -688,6 +689,29 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def change_payment_method(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    order_id = int(query.data.split('_')[-1])
+    order, db_id = await _order_for_user(update, ctx, order_id)
+    if not order or order[3] != 'pending':
+        await query.edit_message_text("❌ این سفارش قابل تغییر نیست.")
+        return
+    changed, error = detach_order_authority_to_wallet(order_id, db_id)
+    if not changed:
+        await query.edit_message_text(
+            f"❌ {error or 'تغییر روش پرداخت ممکن نشد.'}",
+            reply_markup=_order_pay_keyboard(order_id, db_id),
+        )
+        return
+    await query.edit_message_text(
+        "✅ حالا روش جدید را انتخاب کن.\n\n"
+        "لینک قبلی را دیگر استفاده نکن؛ اگر بعداً از همان لینک پرداخت شود، "
+        "مبلغ فقط به کیف پولت اضافه می‌شود و سفارش دوباره تحویل نمی‌شود.",
+        reply_markup=_order_pay_keyboard(order_id, db_id),
+    )
+
+
 async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not get_bool_setting('payments_enabled', True):
@@ -1174,6 +1198,35 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
         or not order[5]
         or order[5] != authority
     ):
+        detached = get_gateway_wallet_charge(authority)
+        if detached and status_ok:
+            tx_id, amount, is_paid, _user_id, telegram_id = detached
+            if is_paid:
+                return True, 'wallet already credited'
+            ok, ref_id = await asyncio.to_thread(verify_payment, amount, authority)
+            if not ok:
+                return False, 'detached gateway verify failed'
+            done, _uid, credited, new_balance = await asyncio.to_thread(
+                complete_wallet_charge_by_authority,
+                authority,
+                verified_amount=amount,
+                ref_id=ref_id,
+            )
+            if not done:
+                return False, 'detached gateway wallet credit failed'
+            log_payment_attempt(
+                provider='zarinpal', event='detached_wallet_verified', status='success',
+                amount=credited, wallet_tx_id=tx_id, authority=authority,
+                ref_id=ref_id, telegram_id=telegram_id,
+            )
+            await _notify_user(
+                bot,
+                telegram_id,
+                f"✅ مبلغ لینک قبلی به کیف پولت اضافه شد.\n"
+                f"مبلغ: {credited:,} تومان\nموجودی: {new_balance:,} تومان\n"
+                f"کد پیگیری: {ref_id}",
+            )
+            return True, 'detached gateway credited to wallet'
         log_payment_attempt(
             provider='zarinpal', event='callback', status='failed',
             order_id=order_id, authority=authority,

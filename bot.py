@@ -22,7 +22,8 @@ from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens
 from handlers.cart import show_cart
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
-    start_card, pay_wallet, cancel_order, admin_approve, admin_reject,
+    start_card, pay_wallet, cancel_order, change_payment_method,
+    admin_approve, admin_reject,
     admin_review_order_prompt, admin_review_order_back,
 )
 from handlers.wallet import (
@@ -483,6 +484,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_zarinpal, pattern=r'^zp_check_\d+$'))
     app.add_handler(CallbackQueryHandler(start_card, pattern=r'^pay_card_\d+$'))
     app.add_handler(CallbackQueryHandler(pay_wallet, pattern=r'^pay_wallet_\d+$'))
+    app.add_handler(CallbackQueryHandler(change_payment_method, pattern=r'^change_pay_\d+$'))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern=r'^cancel_order_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_approve, pattern=r'^admin_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_reject, pattern=r'^admin_no_\d+$'))

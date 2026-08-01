@@ -179,7 +179,7 @@ def zarinpal_pay_keyboard(order_id, pay_url=None):
         rows.append([InlineKeyboardButton('🔗 باز کردن درگاه پرداخت', url=pay_url)])
     rows.extend([
         [InlineKeyboardButton('✅ پرداخت کردم', callback_data=f'zp_check_{order_id}')],
-        [InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')],
+        [InlineKeyboardButton('🔄 تغییر امن روش پرداخت', callback_data=f'change_pay_{order_id}')],
     ])
     return InlineKeyboardMarkup(rows)
 

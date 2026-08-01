@@ -448,6 +448,77 @@ def prepare_card_order_payment(order_id, user_db_id):
         return False, 0, str(e)
 
 
+def detach_order_authority_to_wallet(order_id, user_db_id):
+    """Allow a safe method change while preserving a possible late payment.
+
+    The old authority becomes a pending wallet charge. If the old link is paid
+    later, its callback can only credit the wallet and cannot fulfill the order.
+    """
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            row, _net, payable = _locked_order_financials(cur, order_id)
+            if row[6] != 'pending' or row[10]:
+                return False, 'سفارش قابل تغییر نیست.'
+            if int(row[1]) != int(user_db_id):
+                return False, 'سفارش متعلق به این کاربر نیست.'
+            authority = str(row[8] or '').strip()
+            expected = int(row[9] or 0)
+            if not authority or row[7] != 'zarinpal' or expected != payable:
+                return False, 'لینک درگاه فعالی برای تغییر پیدا نشد.'
+            cur.execute(
+                'SELECT "Id" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+                (int(user_db_id),),
+            )
+            wallet = cur.fetchone()
+            if not wallet:
+                cur.execute(
+                    'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
+                    'VALUES (%s,0,now()) RETURNING "Id"',
+                    (int(user_db_id),),
+                )
+                wallet = cur.fetchone()
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId","Amount","Kind","Description","Authority","IsPaid",'
+                '"PaymentExpectedAmount","CreatedAt") '
+                'VALUES (%s,%s,\'charge\',%s,%s,false,%s,now())',
+                (
+                    wallet[0], expected,
+                    f'لینک کنارگذاشته‌شده سفارش #{order_id}',
+                    authority, expected,
+                ),
+            )
+            cur.execute(
+                'UPDATE "Orders" SET "PaymentMethod"=NULL,"PaymentAuthority"=NULL,'
+                '"PaymentExpectedAmount"=NULL,"PaymentExpiresAt"=NULL '
+                'WHERE "Id"=%s AND "Status"=\'pending\' AND "PaymentAuthority"=%s',
+                (int(order_id), authority),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return False, 'روش پرداخت هم‌زمان تغییر کرده؛ دوباره بررسی کن.'
+            conn.commit()
+            return True, None
+    except (ValueError, TypeError) as e:
+        return False, str(e)
+
+
+def get_gateway_wallet_charge(authority):
+    authority = str(authority or '').strip()
+    if not authority:
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+            'WHERE t."Authority"=%s AND t."Kind"=\'charge\'',
+            (authority,),
+        )
+        return cur.fetchone()
+
+
 def get_order_payment_expected(order_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(

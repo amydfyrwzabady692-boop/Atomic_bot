@@ -1,3 +1,4 @@
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from keyboards import (
     admin_wallet_card_confirm_keyboard,
     admin_wallet_card_keyboard,
     wallet_charge_pay_keyboard,
+    zarinpal_pay_keyboard,
 )
 
 
@@ -127,6 +129,31 @@ class FinancialKeyboardTests(unittest.TestCase):
             'https://payment.zarinpal.com/pay',
         )
         self.assertIn('wchk_77', self._callbacks(markup))
+
+    def test_order_gateway_offers_safe_method_change(self):
+        markup = zarinpal_pay_keyboard(
+            42, 'https://payment.zarinpal.com/pg/StartPay/AUTH'
+        )
+        self.assertEqual(
+            markup.inline_keyboard[0][0].url,
+            'https://payment.zarinpal.com/pg/StartPay/AUTH',
+        )
+        self.assertIn('change_pay_42', self._callbacks(markup))
+        self.assertNotIn('cancel_order_42', self._callbacks(markup))
+
+
+class PaymentMethodChangeSafetyTests(unittest.TestCase):
+    def test_detached_authority_becomes_wallet_credit_not_second_delivery(self):
+        database_source = inspect.getsource(db.detach_order_authority_to_wallet)
+        callback_source = inspect.getsource(
+            __import__('handlers.payment', fromlist=['process_zarinpal_callback'])
+            .process_zarinpal_callback
+        )
+        self.assertIn('"PaymentAuthority"=NULL', database_source)
+        self.assertIn('"WalletTransactions"', database_source)
+        self.assertIn("charge", database_source)
+        self.assertIn('complete_wallet_charge_by_authority', callback_source)
+        self.assertIn('detached gateway credited to wallet', callback_source)
 
 
 class ReceiptInputTests(unittest.TestCase):
