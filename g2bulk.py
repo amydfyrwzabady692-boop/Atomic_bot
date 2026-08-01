@@ -208,7 +208,9 @@ def can_fulfill(amount, catalogue_name='', force=False):
             cost = snapshot.get('prices', {}).get(int(match.group()))
     if cost is None:
         return False, None, snapshot['balance'], 'بسته در کاتالوگ زنده API پیدا نشد.'
-    available = snapshot['balance'] + 1e-9 >= cost
+    # The live API values are parsed as Decimal. Mixing a float epsilon with
+    # Decimal raises TypeError and used to break every product click.
+    available = Decimal(str(snapshot['balance'])) >= Decimal(str(cost))
     return available, cost, snapshot['balance'], (
         None if available else 'موجودی دلاری API برای این بسته کافی نیست.'
     )

@@ -80,6 +80,19 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertTrue(error)
 
     @patch.object(g2bulk, 'get_inventory_snapshot')
+    def test_decimal_balance_comparison_never_mixes_float_types(self, snapshot):
+        snapshot.return_value = {
+            'ok': True,
+            'balance': Decimal('0.935'),
+            'prices': {110: Decimal('0.935')},
+        }
+        available, cost, balance, error = g2bulk.can_fulfill(110, '110')
+        self.assertTrue(available)
+        self.assertEqual(cost, Decimal('0.935'))
+        self.assertEqual(balance, Decimal('0.935'))
+        self.assertIsNone(error)
+
+    @patch.object(g2bulk, 'get_inventory_snapshot')
     def test_blocks_unknown_catalogue_instead_of_guessing(self, snapshot):
         snapshot.return_value = {
             'ok': True,
