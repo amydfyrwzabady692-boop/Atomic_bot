@@ -489,8 +489,8 @@ def detach_order_authority_to_wallet(order_id, user_db_id):
                 ),
             )
             cur.execute(
-                'UPDATE "Orders" SET "PaymentMethod"=NULL,"PaymentAuthority"=NULL,'
-                '"PaymentExpectedAmount"=NULL,"PaymentExpiresAt"=NULL '
+                'UPDATE "Orders" SET "PaymentMethod"=\'pending\','
+                '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL '
                 'WHERE "Id"=%s AND "Status"=\'pending\' AND "PaymentAuthority"=%s',
                 (int(order_id), authority),
             )

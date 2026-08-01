@@ -150,6 +150,9 @@ class PaymentMethodChangeSafetyTests(unittest.TestCase):
             .process_zarinpal_callback
         )
         self.assertIn('"PaymentAuthority"=NULL', database_source)
+        self.assertIn('"PaymentMethod"=\\\'pending\\\'', database_source)
+        self.assertNotIn('"PaymentMethod"=NULL', database_source)
+        self.assertNotIn('"PaymentExpiresAt"=NULL', database_source)
         self.assertIn('"WalletTransactions"', database_source)
         self.assertIn("charge", database_source)
         self.assertIn('complete_wallet_charge_by_authority', callback_source)
