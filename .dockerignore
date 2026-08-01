@@ -1,8 +1,11 @@
-﻿.env
+.env
+.env.*
 .venv
 .test-deps
 tests
 backups
+backup_*.sql
+*.dump
 __pycache__
 *.pyc
 .git
