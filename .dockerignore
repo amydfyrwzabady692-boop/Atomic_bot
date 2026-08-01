@@ -2,6 +2,7 @@
 .venv
 .test-deps
 tests
+backups
 __pycache__
 *.pyc
 .git
