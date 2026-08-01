@@ -76,22 +76,26 @@ def create_web_app(bot_app):
                 get_conn, complete_wallet_charge_by_authority, log_payment_attempt,
             )
             from payments import verify_payment
-            with get_conn() as conn, conn.cursor() as cur:
-                cur.execute(
-                    'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
-                    'FROM "WalletTransactions" t '
-                    'JOIN "Wallets" w ON w."Id"=t."WalletId" '
-                    'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
-                    'WHERE t."Authority"=%s AND t."Kind"=\'charge\' '
-                    'AND t."Authority" NOT LIKE \'wcard_%%\'',
-                    (authority,),
-                )
-                row = cur.fetchone()
+            def load_wallet_transaction():
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
+                        'FROM "WalletTransactions" t '
+                        'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+                        'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+                        'WHERE t."Authority"=%s AND t."Kind"=\'charge\' '
+                        'AND t."Authority" NOT LIKE \'wcard_%%\'',
+                        (authority,),
+                    )
+                    return cur.fetchone()
+
+            row = await asyncio.to_thread(load_wallet_transaction)
             if not row:
                 return web.Response(text=html_fail, content_type='text/html')
             tx_id, amount, is_paid, user_id, telegram_id = row
             if status != 'OK':
-                log_payment_attempt(
+                await asyncio.to_thread(
+                    log_payment_attempt,
                     provider='zarinpal', event='wallet_callback',
                     status='canceled', amount=amount, wallet_tx_id=tx_id,
                     telegram_id=telegram_id, authority=authority,
@@ -103,15 +107,17 @@ def create_web_app(bot_app):
                     verify_payment, amount, authority
                 )
                 if not ok:
-                    log_payment_attempt(
+                    await asyncio.to_thread(
+                        log_payment_attempt,
                         provider='zarinpal', event='wallet_callback',
                         status='failed', amount=amount, wallet_tx_id=tx_id,
                         telegram_id=telegram_id, authority=authority,
                         message='verify failed',
                     )
                     return web.Response(text=html_fail, content_type='text/html')
-                done, _uid, amt, new_bal = complete_wallet_charge_by_authority(
-                    authority, verified_amount=amount, ref_id=ref
+                done, _uid, amt, new_bal = await asyncio.to_thread(
+                    complete_wallet_charge_by_authority,
+                    authority, verified_amount=amount, ref_id=ref,
                 )
                 if not done:
                     logger.warning(
@@ -119,7 +125,8 @@ def create_web_app(bot_app):
                         authority,
                     )
                     return web.Response(text=html_fail, content_type='text/html')
-                log_payment_attempt(
+                await asyncio.to_thread(
+                    log_payment_attempt,
                     provider='zarinpal', event='wallet_verified',
                     status='success', amount=amt, wallet_tx_id=tx_id,
                     telegram_id=telegram_id, authority=authority, ref_id=ref,
@@ -136,7 +143,10 @@ def create_web_app(bot_app):
                             ),
                         )
                     except Exception:
-                        pass
+                        logger.exception(
+                            'wallet charged but Telegram notification failed tx=%s',
+                            tx_id,
+                        )
             return web.Response(text=html_ok, content_type='text/html')
         except Exception:
             logger.exception('wallet callback failed')

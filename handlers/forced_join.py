@@ -10,6 +10,23 @@ from db import get_or_create_user, list_forced_join_channels
 from forced_join_logic import member_is_joined
 from keyboards import main_menu
 
+_CHANNEL_CACHE_SECONDS = 30
+_MEMBERSHIP_CACHE_SECONDS = 10 * 60
+_channels_cache = {'at': 0.0, 'rows': ()}
+
+
+def invalidate_forced_join_cache():
+    _channels_cache.update(at=0.0, rows=())
+
+
+async def _forced_join_channels():
+    now = time.monotonic()
+    if now - _channels_cache['at'] < _CHANNEL_CACHE_SECONDS:
+        return _channels_cache['rows']
+    rows = tuple(await asyncio.to_thread(list_forced_join_channels, True))
+    _channels_cache.update(at=now, rows=rows)
+    return rows
+
 
 def _join_keyboard(channels):
     rows = [
@@ -82,10 +99,10 @@ async def _show_join_prompt(update, channels, missing, unavailable):
 async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """در گروه -1 ثبت می‌شود و آپدیت کاربران غیرعضو را متوقف می‌کند."""
     user = update.effective_user
-    if not user or is_admin(user.id):
+    if not user or await asyncio.to_thread(is_admin, user.id):
         return
 
-    channels = await asyncio.to_thread(list_forced_join_channels, True)
+    channels = await _forced_join_channels()
     if not channels:
         return
 
@@ -100,7 +117,7 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if (
         not checking_button
         and cache.get('signature') == signature
-        and time.time() - float(cache.get('at') or 0) < 60
+        and time.monotonic() - float(cache.get('at') or 0) < _MEMBERSHIP_CACHE_SECONDS
     ):
         return
 
@@ -110,7 +127,7 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not missing and not unavailable:
         ctx.user_data['_forced_join_ok'] = {
             'signature': signature,
-            'at': time.time(),
+            'at': time.monotonic(),
         }
         if checking_button:
             db_id, _is_new = await asyncio.to_thread(

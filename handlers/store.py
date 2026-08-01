@@ -1,4 +1,6 @@
 """نمایش محصولات مدیریت‌شده فروشگاه."""
+import asyncio
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -7,8 +9,7 @@ from keyboards import main_menu
 from text_safety import markdown_safe
 
 
-def _categories_keyboard():
-    rows = simple_list('ProductCategories', ['Id', 'Title', 'IsActive'])
+def _categories_keyboard(rows):
     buttons = [
         [InlineKeyboardButton(r[1], callback_data=f'storecat_{r[0]}')]
         for r in rows if r[2]
@@ -18,20 +19,24 @@ def _categories_keyboard():
 
 
 async def store_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    title = get_setting('shop_name', 'فروشگاه Atomic')
-    active = [r for r in simple_list(
-        'ProductCategories', ['Id', 'Title', 'IsActive']
-    ) if r[2]]
+    title, category_rows = await asyncio.gather(
+        asyncio.to_thread(get_setting, 'shop_name', 'فروشگاه Atomic'),
+        asyncio.to_thread(
+            simple_list, 'ProductCategories', ['Id', 'Title', 'IsActive']
+        ),
+    )
+    active = [r for r in category_rows if r[2]]
     text = f"🛍 *{markdown_safe(title, 120)}*\n━━━━━━━━━━━━━━━\n"
     text += "دسته‌بندی را انتخاب کن:" if active else "فعلاً محصول فعالی ثبت نشده است."
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=_categories_keyboard()
+            text, parse_mode='Markdown', reply_markup=_categories_keyboard(category_rows)
         )
     else:
         await update.message.reply_text(
-            text, parse_mode='Markdown', reply_markup=_categories_keyboard() if active else main_menu()
+            text, parse_mode='Markdown',
+            reply_markup=_categories_keyboard(category_rows) if active else main_menu(),
         )
 
 
@@ -40,7 +45,8 @@ async def show_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     category_id = int(query.data.rsplit('_', 1)[1])
     products = [
-        r for r in simple_list(
+        r for r in await asyncio.to_thread(
+            simple_list,
             'StoreProducts', ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'IsActive']
         ) if r[1] == category_id and r[5] and int(r[4] or 0) > 0
     ]
@@ -57,10 +63,12 @@ async def show_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     product_id = int(query.data.rsplit('_', 1)[1])
-    row = next((r for r in simple_list(
+    rows = await asyncio.to_thread(
+        simple_list,
         'StoreProducts',
-        ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'Description', 'IsActive']
-    ) if r[0] == product_id), None)
+        ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'Description', 'IsActive'],
+    )
+    row = next((r for r in rows if r[0] == product_id), None)
     if not row or not row[6] or int(row[4] or 0) <= 0:
         await query.edit_message_text('محصول پیدا نشد.')
         return

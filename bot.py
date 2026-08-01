@@ -1,6 +1,7 @@
 import logging
 import os
 import asyncio
+import weakref
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,7 +12,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, TypeHandler, filters,
+    BaseUpdateProcessor, CallbackQueryHandler, TypeHandler, filters,
 )
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
@@ -55,6 +56,7 @@ from db import (
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
     admin_operations_snapshot, get_bool_setting, get_setting,
+    open_db_pool, close_db_pool,
 )
 from payments import verify_payment_detailed
 from webapp import start_web_server
@@ -81,6 +83,35 @@ MENU_TEXTS = {
 }
 
 
+class PerUserUpdateProcessor(BaseUpdateProcessor):
+    """Run different users concurrently while keeping each user's flow ordered."""
+
+    def __init__(self, max_concurrent_updates=16):
+        super().__init__(max_concurrent_updates)
+        self._locks = weakref.WeakValueDictionary()
+
+    async def initialize(self):
+        return None
+
+    async def shutdown(self):
+        self._locks.clear()
+
+    async def do_process_update(self, update, coroutine):
+        user = getattr(update, 'effective_user', None)
+        chat = getattr(update, 'effective_chat', None)
+        key = (
+            ('user', int(user.id)) if user is not None
+            else ('chat', int(chat.id)) if chat is not None
+            else ('update', id(update))
+        )
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        async with lock:
+            await coroutine
+
+
 async def text_router(update, ctx):
     # MessageHandler also sees channel posts/edited messages through
     # effective_message. The customer menu is strictly a private-chat flow.
@@ -92,7 +123,11 @@ async def text_router(update, ctx):
         or chat.type != ChatType.PRIVATE or not isinstance(message.text, str)
     ):
         return
-    if user and is_user_blocked(user.id) and not is_admin(user.id):
+    blocked, admin = await asyncio.gather(
+        asyncio.to_thread(is_user_blocked, user.id),
+        asyncio.to_thread(is_admin, user.id),
+    )
+    if blocked and not admin:
         await message.reply_text(
             "🚫 حساب شما بلاک شده است.\nبرای پیگیری از طریق پشتیبانی سایت اقدام کن."
         )
@@ -135,9 +170,10 @@ async def error_handler(update, ctx):
 
 async def post_init(app):
     try:
-        ensure_admin_schema()
+        await asyncio.to_thread(open_db_pool)
+        await asyncio.to_thread(ensure_admin_schema)
         from db import sync_gem_prices
-        sync_gem_prices()
+        await asyncio.to_thread(sync_gem_prices)
     except Exception as e:
         logging.getLogger(__name__).warning('ensure_admin_schema/prices: %s', e)
     await start_web_server(app)
@@ -165,6 +201,7 @@ async def post_shutdown(app):
             await task
         except asyncio.CancelledError:
             pass
+    await asyncio.to_thread(close_db_pool)
 
 
 async def _g2_reconcile_loop(app):
@@ -403,6 +440,7 @@ def main():
     app = (
         ApplicationBuilder()
         .token(token)
+        .concurrent_updates(PerUserUpdateProcessor(16))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()

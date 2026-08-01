@@ -1,4 +1,5 @@
 """پنل مدیریت ادمین — فقط برای ADMIN_CHAT_ID."""
+import asyncio
 import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,10 +16,11 @@ from keyboards import (
 from db import (
     get_admin_stats, list_recent_users, get_user_profile, find_user_by_username,
     set_user_blocked, list_failed_deliveries, list_open_orders, admin_adjust_wallet,
-    admin_set_wallet_balance, list_wallet_txs, get_user_orders, fulfill_order, get_order,
+    admin_set_wallet_balance, list_wallet_txs, get_user_orders, get_order,
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
     admin_operations_snapshot, get_setting, log_admin_action,
 )
+from handlers.payment import fulfill_order_async
 
 WAIT_FIND = 1
 WAIT_MSG = 2
@@ -574,7 +576,7 @@ async def admin_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order:
         await query.answer("سفارش نیست", show_alert=True)
         return
-    success, status = fulfill_order(order_id)
+    success, status = await fulfill_order_async(order_id)
     tg = order[6]
     if success and status == 'delivered':
         msg = f"✅ سفارش #{order_id} تحویل شد."

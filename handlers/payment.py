@@ -40,6 +40,7 @@ except ValueError:
     _ttl_minutes = 15
 ZP_TTL_SEC = max(5, min(_ttl_minutes, 120)) * 60
 ZP_MAX_CHECKS = 10
+_FULFILLMENT_SLOTS = asyncio.Semaphore(4)
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
@@ -70,6 +71,12 @@ WAIT_RECEIPT = 0
 VPN_WARNING = (
     "⚠️ تلگرام فیلتر است؛ اول لینک را *کپی* کن، بعد VPN را خاموش کن و لینک را در مرورگر باز کن.\n"
 )
+
+
+async def fulfill_order_async(order_id):
+    """Bound supplier work so concurrent checkouts cannot exhaust DB/API slots."""
+    async with _FULFILLMENT_SLOTS:
+        return await asyncio.to_thread(fulfill_order, order_id)
 
 
 def _receipt_admin_caption(order_id, pending, user, receipt_text=''):
@@ -153,17 +160,24 @@ def _order_pay_keyboard(order_id, db_id=None):
     )
 
 
-def _order_for_user(update, ctx, order_id):
+async def _order_for_user(update, ctx, order_id):
     """سفارش را فقط به مالک واقعی تلگرام برمی‌گرداند."""
     user = update.effective_user
-    db_id, _ = get_or_create_user(
-        user.id, user.first_name or '', user.last_name or '', user.username or ''
+    db_id, _ = await asyncio.to_thread(
+        get_or_create_user,
+        user.id, user.first_name or '', user.last_name or '', user.username or '',
     )
     ctx.user_data['db_id'] = db_id
-    order = get_order(order_id)
-    if not order or not order_belongs_to(
-        order_id, user_db_id=db_id, telegram_id=user.id
-    ):
+    order, belongs = await asyncio.gather(
+        asyncio.to_thread(get_order, order_id),
+        asyncio.to_thread(
+            order_belongs_to,
+            order_id,
+            user_db_id=db_id,
+            telegram_id=user.id,
+        ),
+    )
+    if not order or not belongs:
         return None, db_id
     return order, db_id
 
@@ -323,7 +337,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'order_id': order_id,
         'tg_id': update.effective_user.id,
     }
-    order, db_id = _order_for_user(update, ctx, order_id)
+    order, db_id = await _order_for_user(update, ctx, order_id)
     if not order or order[3] not in ('pending',):
         await query.edit_message_text("❌ سفارش پیدا نشد، متعلق به شما نیست یا قابل پرداخت نیست.")
         return
@@ -346,7 +360,9 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"❌ اطلاعات مالی سفارش امن نیست: {financial_error or 'مبلغ قابل پرداخت صفر است.'}"
         )
         return
-    available, availability_error, _cost, _balance = _delivery_preflight(order_id)
+    available, availability_error, _cost, _balance = await asyncio.to_thread(
+        _delivery_preflight, order_id
+    )
     if not available:
         log_payment_attempt(
             provider='g2bulk', event='preflight', status='failed',
@@ -473,7 +489,7 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("در حال بررسی…")
     order_id = int(query.data.split('_')[-1])
-    order, _db_id = _order_for_user(update, ctx, order_id)
+    order, _db_id = await _order_for_user(update, ctx, order_id)
     if not order:
         await query.edit_message_text("❌ سفارش پیدا نشد یا متعلق به شما نیست.")
         return
@@ -574,7 +590,7 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ref_id=ref_id, telegram_id=update.effective_user.id,
         )
 
-    success, status = fulfill_order(order_id)
+    success, status = await fulfill_order_async(order_id)
     ctx.user_data.pop('pending_order', None)
     (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
     if success:
@@ -603,7 +619,7 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ پرداخت جدید موقتاً توسط مدیریت متوقف شده است.")
         return
     order_id = int(query.data.split('_')[-1])
-    order, db_id = _order_for_user(update, ctx, order_id)
+    order, db_id = await _order_for_user(update, ctx, order_id)
     if not order or order[3] != 'pending':
         await query.edit_message_text("❌ سفارش متعلق به شما نیست یا قابل پرداخت نیست.")
         return
@@ -613,7 +629,9 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
         )
         return
-    available, _availability_error, _cost, _balance = _delivery_preflight(order_id)
+    available, _availability_error, _cost, _balance = await asyncio.to_thread(
+        _delivery_preflight, order_id
+    )
     if not available:
         await query.edit_message_text(
             "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ کارت‌به‌کارت باز نشد."
@@ -699,7 +717,9 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
-    available, _availability_error, _cost, _balance = _delivery_preflight(order_id)
+    available, _availability_error, _cost, _balance = await asyncio.to_thread(
+        _delivery_preflight, order_id
+    )
     if not available:
         await query.edit_message_text(
             "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ "
@@ -715,7 +735,7 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if remaining <= 0:
-        success, status = fulfill_order(order_id)
+        success, status = await fulfill_order_async(order_id)
         ctx.user_data.pop('pending_order', None)
         if success and status == 'sense_manual':
             await _notify_sense_sale(ctx.bot, order_id)
@@ -744,7 +764,7 @@ async def paid_claim_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     order_id = int(query.data.split('_')[-1])
-    order, _db_id = _order_for_user(update, ctx, order_id)
+    order, _db_id = await _order_for_user(update, ctx, order_id)
     payable = get_order_payment_expected(order_id) if order else 0
     if (
         not order or order[3] != 'pending'
@@ -968,7 +988,7 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'amount={get_order_payment_expected(order_id)}',
     )
 
-    success, status = fulfill_order(order_id)
+    success, status = await fulfill_order_async(order_id)
     tg_id = order[6]
     if success and status == 'sense_manual':
         await _notify_sense_sale(ctx.bot, order_id)
@@ -1177,7 +1197,7 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
             amount=payable, order_id=order_id, authority=auth,
             ref_id=ref_id, telegram_id=order[6],
         )
-    success, st = fulfill_order(order_id)
+    success, st = await fulfill_order_async(order_id)
     tg_id = order[6]
     if success:
         if st == 'sense_manual':

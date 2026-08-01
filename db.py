@@ -3,10 +3,11 @@
 جدول‌ها و ستون‌ها PascalCase هستند و داخل گیومه قرار می‌گیرند.
 """
 import os
+import threading
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import psycopg
+from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 
 import g2bulk
@@ -22,6 +23,8 @@ _CONN = {
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', 'postgres'),
 }
+_POOL = None
+_POOL_LOCK = threading.Lock()
 
 
 def _payment_ttl_minutes():
@@ -32,8 +35,43 @@ def _payment_ttl_minutes():
     return max(5, min(value, 120))
 
 
+def open_db_pool():
+    """Open a bounded reusable connection pool once per bot process."""
+    global _POOL
+    if _POOL is not None:
+        return _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            try:
+                max_size = int(os.getenv('DB_POOL_MAX_SIZE', '16'))
+            except ValueError:
+                max_size = 16
+            max_size = max(2, min(max_size, 50))
+            pool = ConnectionPool(
+                conninfo='',
+                kwargs=_CONN,
+                min_size=1,
+                max_size=max_size,
+                timeout=5,
+                open=False,
+                name='atomic-telegram-db',
+            )
+            pool.open(wait=True, timeout=10)
+            _POOL = pool
+    return _POOL
+
+
+def close_db_pool():
+    global _POOL
+    with _POOL_LOCK:
+        pool, _POOL = _POOL, None
+    if pool is not None:
+        pool.close()
+
+
 def get_conn():
-    return psycopg.connect(**_CONN)
+    """Return a context manager that safely returns the connection to the pool."""
+    return open_db_pool().connection()
 
 
 # ─── Users ──────────────────────────────────────────────────────────────────────

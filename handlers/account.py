@@ -9,7 +9,8 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tg_user = update.effective_user
     db_id = ctx.user_data.get('db_id')
     if not db_id:
-        db_id, _ = get_or_create_user(
+        db_id, _ = await asyncio.to_thread(
+            get_or_create_user,
             tg_user.id, tg_user.first_name or '', tg_user.last_name or '', tg_user.username or ''
         )
         ctx.user_data['db_id'] = db_id
@@ -19,7 +20,7 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         128,
     )
     username = markdown_safe(f"@{tg_user.username}" if tg_user.username else "—", 64)
-    balance = get_wallet_balance(db_id)
+    balance = await asyncio.to_thread(get_wallet_balance, db_id)
 
     text = (
         f"✦ *حساب من*\n"
@@ -42,12 +43,13 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tg_user = update.effective_user
     db_id = ctx.user_data.get('db_id')
     if not db_id:
-        db_id, _ = get_or_create_user(
+        db_id, _ = await asyncio.to_thread(
+            get_or_create_user,
             tg_user.id, tg_user.first_name or '', tg_user.last_name or '', tg_user.username or ''
         )
         ctx.user_data['db_id'] = db_id
 
-    orders = get_user_orders(db_id)
+    orders = await asyncio.to_thread(get_user_orders, db_id)
     if not orders:
         text = "📦 *سفارش‌های من*\n\nهنوز سفارشی ثبت نکردی!"
     else:
@@ -72,3 +74,4 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=None)
     else:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+import asyncio

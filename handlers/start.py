@@ -1,3 +1,5 @@
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
@@ -7,13 +9,18 @@ from admin_notify import is_admin, is_premium_admin
 
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if is_user_blocked(user.id) and not is_admin(user.id):
+    blocked, admin = await asyncio.gather(
+        asyncio.to_thread(is_user_blocked, user.id),
+        asyncio.to_thread(is_admin, user.id),
+    )
+    if blocked and not admin:
         await update.message.reply_text(
             "🚫 حساب شما بلاک شده است.\nبرای پیگیری از پشتیبانی سایت اقدام کن."
         )
         return
 
-    db_id, is_new = get_or_create_user(
+    db_id, is_new = await asyncio.to_thread(
+        get_or_create_user,
         telegram_id=user.id,
         first_name=user.first_name or '',
         last_name=user.last_name or '',
@@ -39,11 +46,11 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "👇 برای شروع، یکی از گزینه‌های منوی پایین را انتخاب کن.\n\n"
         "⚛️ Atomic Shop"
     )
-    custom = get_setting('welcome_text', '').strip()
+    custom = (await asyncio.to_thread(get_setting, 'welcome_text', '')).strip()
     text = custom.replace('{name}', name).replace('{welcome}', welcome) if custom else default_text
-    if is_admin(user.id):
+    if admin:
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
-    elif bool(user.is_premium) and is_premium_admin(user.id):
+    elif bool(user.is_premium) and await asyncio.to_thread(is_premium_admin, user.id):
         text += "\n\n⭐ مدیر پریمیوم: دستور `/studio` را بزن."
     try:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())

@@ -1,4 +1,6 @@
 """پک سنس — بخش PC با پرداخت زرین‌پال / کارت‌به‌کارت (مثل جم)."""
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -38,7 +40,7 @@ async def sens_pc_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "بسته را انتخاب کن:",
         "",
     ]
-    packs = list_sense_packages('pc', active_only=True)
+    packs = await asyncio.to_thread(list_sense_packages, 'pc', active_only=True)
     for p in packs:
         lines.append(f"• *{markdown_safe(p[1], 120)}* — {p[3]:,} تومان")
     if not packs:
@@ -53,7 +55,7 @@ async def sens_pc_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def sens_mobile_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    packs = list_sense_packages('mobile', active_only=True)
+    packs = await asyncio.to_thread(list_sense_packages, 'mobile', active_only=True)
     if packs:
         lines = ["✦ *پک سنس — موبایل*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄", "بسته را انتخاب کن:", ""]
         for p in packs:
@@ -76,7 +78,7 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """خرید پک سنس پویا با شناسه دیتابیس."""
     query = update.callback_query
     await query.answer()
-    if not get_bool_setting('sales_enabled', True):
+    if not await asyncio.to_thread(get_bool_setting, 'sales_enabled', True):
         await query.edit_message_text(
             "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",
             reply_markup=main_menu(),
@@ -85,7 +87,7 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = query.data.replace('sens_buy_', '')
     # Only current database rows are purchasable. Old static callback buttons
     # must not bypass an admin deletion, deactivation, or price change.
-    row = get_sense_package(key) if key.isdigit() else None
+    row = await asyncio.to_thread(get_sense_package, key) if key.isdigit() else None
     if not row or not row[5]:
         await query.edit_message_text("بسته پیدا نشد.", reply_markup=main_menu())
         return
@@ -101,17 +103,21 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-    db_id, _ = get_or_create_user(
-        user.id, user.first_name or '', user.last_name or '', user.username or ''
-    )
-    ctx.user_data['db_id'] = db_id
-
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or 'کاربر تلگرام'
-    order_id = create_order(
-        db_id, pack['price'], telegram_id=user.id,
-        full_name=full_name, payment_method='pending',
-    )
-    add_order_item(order_id, pack['title'], pack['price'], 1)
+
+    def persist_order():
+        db_id, _ = get_or_create_user(
+            user.id, user.first_name or '', user.last_name or '', user.username or ''
+        )
+        order_id = create_order(
+            db_id, pack['price'], telegram_id=user.id,
+            full_name=full_name, payment_method='pending',
+        )
+        add_order_item(order_id, pack['title'], pack['price'], 1)
+        return db_id, order_id, int(get_wallet_balance(db_id) or 0)
+
+    db_id, order_id, balance = await asyncio.to_thread(persist_order)
+    ctx.user_data['db_id'] = db_id
 
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
@@ -121,7 +127,6 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'kind': 'sense',
     }
 
-    balance = int(get_wallet_balance(db_id) or 0)
     text = (
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"

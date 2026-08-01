@@ -1,4 +1,6 @@
 """خرید جم با آیدی — بسته‌ها مثل سایت + تایید G2Bulk."""
+import asyncio
+
 from telegram import Update
 from telegram.ext import (
     ContextTypes, ConversationHandler, MessageHandler,
@@ -42,17 +44,17 @@ def _gem_sold_out(g):
     return (not available) or stock <= 0
 
 
-def _gem_api_availability(g, force=False):
+async def _gem_api_availability(g, force=False):
     if not g or not bool(g[8]):
         return True, None
-    available, _cost, _balance, error = g2bulk.can_fulfill(
-        g[2], g[9] or str(g[2]), force=force
+    available, _cost, _balance, error = await asyncio.to_thread(
+        g2bulk.can_fulfill, g[2], g[9] or str(g[2]), force
     )
     return available, error
 
 
 async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    gems = get_gems_by_id()
+    gems = await asyncio.to_thread(get_gems_by_id)
     page = 1
     if update.callback_query and update.callback_query.data.startswith('gems_page_'):
         page = int(update.callback_query.data.rsplit('_', 1)[-1])
@@ -85,7 +87,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query.data == 'noop':
         return
     pk = int(query.data.split('_')[1])
-    g = get_gem(pk)
+    g = await asyncio.to_thread(get_gem, pk)
     if not g:
         await query.edit_message_text("❌ بسته پیدا نشد.")
         return
@@ -124,14 +126,14 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "(کارت ملی + دست‌نوشته + کارت بانکی).\n"
             "کارت‌به‌کارت بدون احراز است."
         )
-    api_available, api_error = _gem_api_availability(g)
+    api_available, api_error = await _gem_api_availability(g)
     if _gem_sold_out(g) or not api_available:
         text += "\n\n❌ این بسته فعلاً ناموجود است."
         if api_error:
             text += "\nموجودی سرویس تأمین برای این بسته کافی یا قابل بررسی نیست."
         await query.edit_message_text(text, parse_mode='Markdown',
                                       reply_markup=gems_list_keyboard(
-                                          get_gems_by_id(),
+                                          await asyncio.to_thread(get_gems_by_id),
                                           page=ctx.user_data.get('gems_page', 1),
                                       ))
         return
@@ -148,8 +150,10 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     pk = int(query.data.split('_')[1])
-    g = get_gem(pk)
-    api_available, _api_error = _gem_api_availability(g) if g else (False, None)
+    g = await asyncio.to_thread(get_gem, pk)
+    api_available, _api_error = (
+        await _gem_api_availability(g) if g else (False, None)
+    )
     if not g or _gem_sold_out(g) or not api_available:
         await query.edit_message_text("❌ این بسته در دسترس نیست.")
         return ConversationHandler.END
@@ -202,7 +206,7 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    result = g2bulk.check_player_id(uid)
+    result = await asyncio.to_thread(g2bulk.check_player_id, uid)
     if not result['ok']:
         await update.message.reply_text(
             f"❌ {result.get('error') or 'آیدی معتبر نیست.'}\n"
@@ -241,7 +245,7 @@ async def gem_reedit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not get_bool_setting('sales_enabled', True):
+    if not await asyncio.to_thread(get_bool_setting, 'sales_enabled', True):
         await query.edit_message_text(
             "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",
             reply_markup=main_menu(),
@@ -254,9 +258,9 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Never trust a price cached in Telegram state. The package may have been
     # changed, disabled, or sold out since the confirmation screen was opened.
-    current = get_gem(info.get('pk'))
+    current = await asyncio.to_thread(get_gem, info.get('pk'))
     api_available, _api_error = (
-        _gem_api_availability(current, force=True) if current else (False, None)
+        await _gem_api_availability(current, force=True) if current else (False, None)
     )
     if not current or _gem_sold_out(current) or not api_available:
         ctx.user_data.pop('gem_buy', None)
@@ -282,22 +286,27 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     })
 
     user = update.effective_user
-    db_id, _ = get_or_create_user(
-        user.id, user.first_name or '', user.last_name or '', user.username or ''
-    )
-    ctx.user_data['db_id'] = db_id
-
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or 'کاربر تلگرام'
-    order_id = create_order(
-        db_id, info['price'], telegram_id=user.id, full_name=full_name, payment_method='pending'
-    )
-    item_id = add_order_item(order_id, info['title'], info['price'], 1)
-    add_gem_order_info(
-        order_id, item_id, info['pk'], 'by_id',
-        telegram_id=user.id,
-        game_uid=info['game_uid'],
-        player_name=info.get('player_name'),
-    )
+
+    def persist_order():
+        db_id, _ = get_or_create_user(
+            user.id, user.first_name or '', user.last_name or '', user.username or ''
+        )
+        order_id = create_order(
+            db_id, info['price'], telegram_id=user.id,
+            full_name=full_name, payment_method='pending',
+        )
+        item_id = add_order_item(order_id, info['title'], info['price'], 1)
+        add_gem_order_info(
+            order_id, item_id, info['pk'], 'by_id',
+            telegram_id=user.id,
+            game_uid=info['game_uid'],
+            player_name=info.get('player_name'),
+        )
+        return db_id, order_id, int(get_wallet_balance(db_id) or 0)
+
+    db_id, order_id, balance = await asyncio.to_thread(persist_order)
+    ctx.user_data['db_id'] = db_id
 
     ctx.user_data['pending_order'] = {
         'order_id': order_id,
@@ -309,7 +318,6 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
     ctx.user_data.pop('gem_buy', None)
 
-    balance = int(get_wallet_balance(db_id) or 0)
     text = (
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"

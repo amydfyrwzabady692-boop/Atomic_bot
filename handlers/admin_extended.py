@@ -10,7 +10,7 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
-from admin_notify import admin_id, is_admin
+from admin_notify import admin_id, invalidate_role_cache, is_admin
 import g2bulk
 import profitability
 from forced_join_logic import (
@@ -32,6 +32,7 @@ from db import (
     admin_operations_snapshot, list_stuck_processing_orders,
     list_low_stock_items,
 )
+from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import admin_card_keyboard, admin_home_keyboard
 
 WAIT_VALUE = 50
@@ -602,6 +603,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data.startswith('admx_fjdel_'):
         channel_id = int(data.rsplit('_', 1)[1])
         removed = remove_forced_join_channel(channel_id)
+        if removed:
+            invalidate_forced_join_cache()
         await query.edit_message_text(
             '✅ کانال از جوین اجباری حذف شد.'
             if removed else 'کانال پیدا نشد.',
@@ -800,6 +803,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer('مدیر اصلی env قابل حذف نیست.', show_alert=True)
             return
         remove_bot_admin(tg)
+        invalidate_role_cache(tg)
         await query.edit_message_text('✅ دسترسی مدیر حذف شد.', reply_markup=_kb([_back('admx_admins')]))
     elif data.startswith('admx_massconfirm_'):
         raw_amount = data.rsplit('_', 1)[1]
@@ -1115,6 +1119,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 p[0], p[1] if len(p) > 1 else '', role=role,
                 added_by=update.effective_user.id,
             )
+            invalidate_role_cache(p[0])
             await update.message.reply_text(
                 '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
             )
@@ -1141,6 +1146,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             title = '' if p[2].strip() == '-' else p[2].strip()
             add_forced_join_channel(chat_id, p[1].strip(), title)
+            invalidate_forced_join_cache()
             await update.message.reply_text(
                 '✅ کانال به جوین اجباری اضافه شد.\n'
                 'حتماً ربات را داخل کانال ادمین کن.',

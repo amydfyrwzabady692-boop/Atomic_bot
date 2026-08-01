@@ -1,5 +1,6 @@
 """ارسال اعلان به ادمین (ADMIN_CHAT_ID)."""
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -7,6 +8,8 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
 ADMIN_CHAT_ID = (os.getenv('ADMIN_CHAT_ID') or '').strip()
+_ROLE_CACHE_TTL = 300
+_role_cache = {}
 
 
 def admin_id():
@@ -15,21 +18,54 @@ def admin_id():
 
 def is_admin(user_id) -> bool:
     aid = admin_id()
-    if aid and int(user_id) == aid:
+    try:
+        numeric_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    if aid and numeric_user_id == aid:
         return True
+    key = ('admin', str(numeric_user_id))
+    cached = _role_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _ROLE_CACHE_TTL:
+        return cached[1]
     try:
         from db import is_bot_admin
-        return is_bot_admin(user_id)
+        result = bool(is_bot_admin(numeric_user_id))
     except Exception:
+        # A temporary database outage must not be cached as a five-minute
+        # permission denial. The configured owner above remains available.
         return False
+    _role_cache[key] = (time.monotonic(), result)
+    return result
 
 
 def is_premium_admin(user_id) -> bool:
     try:
+        numeric_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    key = ('premium', str(numeric_user_id))
+    cached = _role_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _ROLE_CACHE_TTL:
+        return cached[1]
+    try:
         from db import is_premium_editor
-        return is_premium_editor(user_id)
+        result = bool(is_premium_editor(numeric_user_id))
     except Exception:
         return False
+    _role_cache[key] = (time.monotonic(), result)
+    return result
+
+
+def invalidate_role_cache(user_id=None):
+    """Make admin changes visible immediately after a management action."""
+    if user_id is None:
+        _role_cache.clear()
+        return
+    target = str(user_id)
+    for key in list(_role_cache):
+        if key[1] == target:
+            _role_cache.pop(key, None)
 
 
 def admin_ids():

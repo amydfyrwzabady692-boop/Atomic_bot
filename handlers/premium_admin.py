@@ -1,4 +1,6 @@
 """استودیوی محدود مدیر پریمیوم؛ بدون دسترسی به پول، درگاه یا مدیران."""
+import asyncio
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
@@ -95,7 +97,7 @@ async def studio_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=_keyboard(update.effective_user.id),
         )
     elif data == 'studio_g2':
-        snapshot = g2bulk.get_inventory_snapshot(force=True)
+        snapshot = await asyncio.to_thread(g2bulk.get_inventory_snapshot, True)
         if not snapshot.get('ok'):
             text = f'❌ موجودی دریافت نشد:\n{snapshot.get("error") or "خطای نامشخص"}'
         else:
