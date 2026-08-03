@@ -484,9 +484,28 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 lines.append('محاسبه قیمت واقعی نیازمند نرخ معتبر و تطبیق پک فعال با کاتالوگ است.')
             text = '\n'.join(lines)
         await _edit(query, text, [
-            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_g2balance')],
+            [
+                InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_g2balance'),
+                InlineKeyboardButton(
+                    '💾 اعمال قیمت با سود ۷٪',
+                    callback_data='admx_pricesync',
+                ),
+            ],
             _back('admx_finance'),
         ], markdown=snapshot.get('ok', False))
+    elif data == 'admx_pricesync':
+        await query.answer('در حال بروزرسانی قیمت جم…')
+        try:
+            updated = await asyncio.to_thread(db.sync_gem_prices_daily, _force=True)
+        except TypeError:
+            updated = 0
+        if updated:
+            text = f'✅ قیمت {updated} بسته جم با نرخ لحظه‌ای و سود ۷٪ به‌روزرسانی شد.'
+        else:
+            text = 'ℹ️ قیمت‌ها بروزرسانی شد؛ اگر تغییری نکرد یعنی همان قیمت قبلی معتبر است.'
+        await _edit(query, text, [
+            _back('admx_g2balance'),
+        ], markdown=False)
     elif data == 'admx_profit':
         current_fx = await asyncio.to_thread(
             profitability.get_usd_toman_rate, True

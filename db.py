@@ -2978,11 +2978,11 @@ def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=7):
     return (int(raw) // 1000 + (1 if int(raw) % 1000 else 0)) * 1000
 
 
-def sync_gem_prices_daily():
+def sync_gem_prices_daily(_force=False):
     """به‌روزرسانی روزانه قیمت بسته‌های جم از نرخ دلار + کاتالوگ G2Bulk + ۷٪ سود.
 
-    اگر کمتر از ۲۴ ساعت از آخرین اجرا گذشته باشد، چیزی انجام نمی‌دهد.
-    تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
+    اگر کمتر از ۲۴ ساعت از آخرین اجرا گذشته باشد و _force نباشد، چیزی
+    انجام نمی‌دهد. تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
     """
     try:
         settings = get_conn()
@@ -2997,7 +2997,7 @@ def sync_gem_prices_daily():
             ("gem_price_last_sync",),
         )
         row = cur.fetchone()
-    if row and row[0]:
+    if not _force and row and row[0]:
         from datetime import datetime, timezone
 
         try:
