@@ -504,7 +504,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             text = 'ℹ️ قیمت‌ها بروزرسانی شد؛ اگر تغییری نکرد یعنی همان قیمت قبلی معتبر است.'
         await _edit(query, text, [
-            _back('admx_g2balance'),
+            _back('adm_home'),
         ], markdown=False)
     elif data == 'admx_profit':
         current_fx = await asyncio.to_thread(

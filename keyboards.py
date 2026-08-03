@@ -285,9 +285,10 @@ def admin_home_keyboard():
             InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home'),
             InlineKeyboardButton('👮 لیست و مدیر پریمیوم', callback_data='admx_admins'),
         ],
-        [InlineKeyboardButton(
-            '➕ افزودن ادمین کامل با شناسه', callback_data='admi_admin'
-        )],
+        [
+            InlineKeyboardButton('🔄 بروزرسانی قیمت جم', callback_data='admx_pricesync'),
+            InlineKeyboardButton('➕ افزودن ادمین', callback_data='admi_admin'),
+        ],
         [InlineKeyboardButton('بروزرسانی', callback_data='adm_home')],
     ])
 
