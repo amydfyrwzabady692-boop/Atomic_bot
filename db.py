@@ -3057,8 +3057,8 @@ def sync_gem_prices_daily(_force=False):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemInfo"
-                   WHERE "IsAvailable"=true AND "G2BulkCatalogueName" IS NOT NULL
+                """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemPackages"
+                   WHERE "IsActive"=true AND "G2BulkCatalogueName" IS NOT NULL
                    AND "G2BulkCatalogueName"<>''"""
             )
             for gem_id, current_price, catalogue_name in cur.fetchall():
