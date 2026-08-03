@@ -3033,6 +3033,20 @@ def sync_gem_prices_daily(_force=False):
         _LOG.warning("gem price sync: G2Bulk error", exc_info=True)
         return 0
 
+    # درصد سود از تنظیمات خوانده می‌شود (پیش‌فرض ۷)
+    profit_percent = 7
+    with settings.cursor() as cur:
+        cur.execute(
+            "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+            ("gem_profit_percent",),
+        )
+        profit_row = cur.fetchone()
+    if profit_row and profit_row[0]:
+        try:
+            profit_percent = max(1, min(200, int(profit_row[0])))
+        except (TypeError, ValueError):
+            profit_percent = 7
+
     # به‌روزرسانی قیمت در دیتابیس
     updated = 0
     with settings.cursor() as cur:
@@ -3046,7 +3060,9 @@ def sync_gem_prices_daily(_force=False):
             cost_usd = prices_by_name.get(name_lower)
             if cost_usd is None:
                 continue
-            new_price = compute_gem_sale_price(cost_usd, rate_value, profit_percent=7)
+            new_price = compute_gem_sale_price(
+                cost_usd, rate_value, profit_percent=profit_percent
+            )
             if int(new_price) != int(current_price):
                 cur.execute(
                     'UPDATE "GemInfo" SET "Price"=%s WHERE "Id"=%s',
@@ -3061,9 +3077,10 @@ def sync_gem_prices_daily(_force=False):
         settings.commit()
 
     _LOG.info(
-        "Gem price sync done: %d updated, rate=%d, source=%s",
+        "Gem price sync done: %d updated, rate=%d, profit=%d%%, source=%s",
         updated,
         rate_value,
+        profit_percent,
         rate_result.get("source", "unknown"),
     )
     return updated

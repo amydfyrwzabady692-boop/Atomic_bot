@@ -329,6 +329,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '💱 نرخ زنده دلار و بهای واقعی پک‌ها',
                 callback_data='admx_g2balance',
             )],
+            [InlineKeyboardButton('📈 درصد سود جم', callback_data='admi_gemprofit')],
             [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
             _back(),
         ])
@@ -972,6 +973,10 @@ INPUT_ACTIONS = {
         'setting:low_stock_threshold',
         'حد هشدار موجودی کم را بفرست (مثلاً 5).',
     ),
+    'admi_gemprofit': (
+        'setting:gem_profit_percent',
+        'درصد سود بسته‌های جم را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 7',
+    ),
     'admi_department': ('department', 'نام دپارتمان جدید را بفرست.'),
     'admi_category': ('category', 'نام دسته‌بندی جدید را بفرست.'),
     'admi_product': ('product', 'با این قالب بفرست:\nعنوان | قیمت | موجودی | شناسه دسته\nمثال:\nاکانت لول 70 | 500000 | 2 | 1'),
@@ -1117,6 +1122,11 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not 0 <= threshold <= 10_000:
                     raise ValueError('حد موجودی باید بین ۰ تا ۱۰٬۰۰۰ باشد.')
                 raw = str(threshold)
+            if key == 'gem_profit_percent':
+                profit = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
+                if not 1 <= profit <= 200:
+                    raise ValueError('درصد سود باید بین ۱ تا ۲۰۰ باشد.')
+                raw = str(profit)
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             set_setting(key, raw)
