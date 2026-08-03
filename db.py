@@ -3053,6 +3053,7 @@ def sync_gem_prices_daily(_force=False):
 
     # به‌روزرسانی قیمت در دیتابیس
     updated = 0
+    matched = 0
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -3061,10 +3062,11 @@ def sync_gem_prices_daily(_force=False):
                    AND "G2BulkCatalogueName"<>''"""
             )
             for gem_id, current_price, catalogue_name in cur.fetchall():
-                name_lower = catalogue_name.strip().casefold()
-                cost_usd = prices_by_name.get(name_lower)
+                name_key = g2bulk._normalise_catalogue_name(catalogue_name)
+                cost_usd = prices_by_name.get(name_key)
                 if cost_usd is None:
                     continue
+                matched += 1
                 new_price = compute_gem_sale_price(
                     cost_usd, rate_value, profit_percent=profit_percent
                 )
@@ -3083,6 +3085,15 @@ def sync_gem_prices_daily(_force=False):
     except Exception:
         _LOG.warning("gem price sync: update failed", exc_info=True)
         return updated
+
+    _LOG.info(
+        "Gem price sync: matched=%d updated=%d rate=%d profit=%d%% source=%s",
+        matched,
+        updated,
+        rate_value,
+        profit_percent,
+        rate_result.get("source", "unknown"),
+    )
 
     _LOG.info(
         "Gem price sync done: %d updated, rate=%d, profit=%d%%, source=%s",
