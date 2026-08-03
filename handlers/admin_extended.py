@@ -27,6 +27,7 @@ from db import (
     move_catalogue_item,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
     list_profit_snapshots, profit_report_stats,
+    sync_gem_prices_daily,
     add_forced_join_channel, list_forced_join_channels,
     remove_forced_join_channel,
     financial_health_snapshot, list_admin_actions, log_admin_action,
@@ -160,9 +161,14 @@ def _low_stock_threshold():
 
 
 async def _edit(query, text, rows, markdown=False):
-    await query.edit_message_text(
-        text, parse_mode='Markdown' if markdown else None, reply_markup=_kb(rows)
-    )
+    try:
+        await query.edit_message_text(
+            text, parse_mode='Markdown' if markdown else None, reply_markup=_kb(rows)
+        )
+    except Exception as exc:
+        # "Message is not modified" is benign — the content already matches.
+        if 'not modified' not in str(exc).lower():
+            raise
 
 
 async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -497,7 +503,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == 'admx_pricesync':
         await query.answer('در حال بروزرسانی قیمت جم…')
         try:
-            updated = await asyncio.to_thread(db.sync_gem_prices_daily, _force=True)
+            updated = await asyncio.to_thread(sync_gem_prices_daily, True)
         except TypeError:
             updated = 0
         if updated:

@@ -2985,18 +2985,22 @@ def sync_gem_prices_daily(_force=False):
     انجام نمی‌دهد. تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
     """
     try:
-        settings = get_conn()
+        open_db_pool()
     except Exception:
         _LOG.warning("gem price sync skipped: DB unavailable")
         return 0
 
     # بررسی آخرین اجرا
-    with settings.cursor() as cur:
-        cur.execute(
-            "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
-            ("gem_price_last_sync",),
-        )
-        row = cur.fetchone()
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+                ("gem_price_last_sync",),
+            )
+            row = cur.fetchone()
+    except Exception:
+        _LOG.warning("gem price sync: last-sync check failed", exc_info=True)
+        return 0
     if not _force and row and row[0]:
         from datetime import datetime, timezone
 
@@ -3035,46 +3039,50 @@ def sync_gem_prices_daily(_force=False):
 
     # درصد سود از تنظیمات خوانده می‌شود (پیش‌فرض ۷)
     profit_percent = 7
-    with settings.cursor() as cur:
-        cur.execute(
-            "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
-            ("gem_profit_percent",),
-        )
-        profit_row = cur.fetchone()
-    if profit_row and profit_row[0]:
-        try:
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+                ("gem_profit_percent",),
+            )
+            profit_row = cur.fetchone()
+        if profit_row and profit_row[0]:
             profit_percent = max(1, min(200, int(profit_row[0])))
-        except (TypeError, ValueError):
-            profit_percent = 7
+    except Exception:
+        _LOG.warning("gem price sync: profit setting read failed", exc_info=True)
 
     # به‌روزرسانی قیمت در دیتابیس
     updated = 0
-    with settings.cursor() as cur:
-        cur.execute(
-            """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemInfo"
-               WHERE "IsAvailable"=true AND "G2BulkCatalogueName" IS NOT NULL
-               AND "G2BulkCatalogueName"<>''"""
-        )
-        for gem_id, current_price, catalogue_name in cur.fetchall():
-            name_lower = catalogue_name.strip().casefold()
-            cost_usd = prices_by_name.get(name_lower)
-            if cost_usd is None:
-                continue
-            new_price = compute_gem_sale_price(
-                cost_usd, rate_value, profit_percent=profit_percent
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemInfo"
+                   WHERE "IsAvailable"=true AND "G2BulkCatalogueName" IS NOT NULL
+                   AND "G2BulkCatalogueName"<>''"""
             )
-            if int(new_price) != int(current_price):
-                cur.execute(
-                    'UPDATE "GemInfo" SET "Price"=%s WHERE "Id"=%s',
-                    (new_price, gem_id),
+            for gem_id, current_price, catalogue_name in cur.fetchall():
+                name_lower = catalogue_name.strip().casefold()
+                cost_usd = prices_by_name.get(name_lower)
+                if cost_usd is None:
+                    continue
+                new_price = compute_gem_sale_price(
+                    cost_usd, rate_value, profit_percent=profit_percent
                 )
-                updated += 1
-        cur.execute(
-            """INSERT INTO "BotSettings"("Key","Value") VALUES(%s,%s)
-               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED.\"Value\"""",
-            ("gem_price_last_sync", str(datetime.now(timezone.utc).isoformat())),
-        )
-        settings.commit()
+                if int(new_price) != int(current_price):
+                    cur.execute(
+                        'UPDATE "GemInfo" SET "Price"=%s WHERE "Id"=%s',
+                        (new_price, gem_id),
+                    )
+                    updated += 1
+            cur.execute(
+                """INSERT INTO "BotSettings"("Key","Value") VALUES(%s,%s)
+                   ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED.\"Value\"""",
+                ("gem_price_last_sync", str(datetime.now(timezone.utc).isoformat())),
+            )
+            conn.commit()
+    except Exception:
+        _LOG.warning("gem price sync: update failed", exc_info=True)
+        return updated
 
     _LOG.info(
         "Gem price sync done: %d updated, rate=%d, profit=%d%%, source=%s",
