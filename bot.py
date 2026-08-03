@@ -413,16 +413,20 @@ async def _price_sync_loop(app):
     بسته جم را با سود ۷٪ محاسبه و در دیتابیس ذخیره می‌کند.
     """
     log = logging.getLogger(__name__)
-    # صبر اولیه ۶۰ ثانیه تا ربات کاملاً بالا بیاید
-    await asyncio.sleep(60)
+    # اولین اجرا بلافاصله (نرخ لحظه‌ای) + سپس هر ۲۴ ساعت
+    try:
+        from db import sync_gem_prices_daily
+        updated = await asyncio.to_thread(sync_gem_prices_daily, True)
+        if updated:
+            log.info('Gem price sync: %d products updated', updated)
+    except Exception:
+        log.exception('Gem price sync (initial) failed')
     while True:
         try:
-            from db import sync_gem_prices_daily
-            updated = await asyncio.to_thread(sync_gem_prices_daily)
+            await asyncio.sleep(24 * 3600)
+            updated = await asyncio.to_thread(sync_gem_prices_daily, True)
             if updated:
                 log.info('Gem price sync: %d products updated', updated)
-            # هر ۲۴ ساعت بررسی کن
-            await asyncio.sleep(24 * 3600)
         except asyncio.CancelledError:
             raise
         except Exception:
