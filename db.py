@@ -3072,7 +3072,7 @@ def sync_gem_prices_daily(_force=False):
                 )
                 if int(new_price) != int(current_price):
                     cur.execute(
-                        'UPDATE "GemInfo" SET "Price"=%s WHERE "Id"=%s',
+                        'UPDATE "GemPackages" SET "Price"=%s WHERE "Id"=%s',
                         (new_price, gem_id),
                     )
                     updated += 1
