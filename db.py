@@ -2994,7 +2994,7 @@ def sync_gem_prices_daily(_force=False):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+                'SELECT "Value" FROM "BotSettings" WHERE "Key"=%s',
                 ("gem_price_last_sync",),
             )
             row = cur.fetchone()
@@ -3042,7 +3042,7 @@ def sync_gem_prices_daily(_force=False):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+                'SELECT "Value" FROM "BotSettings" WHERE "Key"=%s',
                 ("gem_profit_percent",),
             )
             profit_row = cur.fetchone()
