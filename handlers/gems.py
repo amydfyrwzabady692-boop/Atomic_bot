@@ -126,11 +126,12 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "(کارت ملی + دست‌نوشته + کارت بانکی).\n"
             "کارت‌به‌کارت بدون احراز است."
         )
-    api_available, api_error = await _gem_api_availability(g)
-    if _gem_sold_out(g) or not api_available:
+    # Product-detail clicks must never wait for the supplier network.  The
+    # package is checked against G2Bulk again with force=True immediately
+    # before the local order is created, so removing this duplicate lookup
+    # improves latency without weakening the financial guard.
+    if _gem_sold_out(g):
         text += "\n\n❌ این بسته فعلاً ناموجود است."
-        if api_error:
-            text += "\nموجودی سرویس تأمین برای این بسته کافی یا قابل بررسی نیست."
         await query.edit_message_text(text, parse_mode='Markdown',
                                       reply_markup=gems_list_keyboard(
                                           await asyncio.to_thread(get_gems_by_id),
@@ -151,10 +152,9 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     pk = int(query.data.split('_')[1])
     g = await asyncio.to_thread(get_gem, pk)
-    api_available, _api_error = (
-        await _gem_api_availability(g) if g else (False, None)
-    )
-    if not g or _gem_sold_out(g) or not api_available:
+    # Keep this step local and instant.  A forced live supplier check still
+    # runs in gem_confirm before any payable order is persisted.
+    if not g or _gem_sold_out(g):
         await query.edit_message_text("❌ این بسته در دسترس نیست.")
         return ConversationHandler.END
 
@@ -198,9 +198,11 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                         reply_markup=main_menu())
         return ConversationHandler.END
 
-    await update.message.reply_text("⏳ در حال بررسی آیدی بازی…")
+    # Send an immediate "please wait" so the user sees feedback while
+    # the G2Bulk check_player_id call runs (can take ~1-2s).
+    wait_msg = await update.message.reply_text("⏳ در حال بررسی آیدی بازی…")
     if not g2bulk.is_configured():
-        await update.message.reply_text(
+        await wait_msg.edit_text(
             "❌ سرویس تایید آیدی پیکربندی نشده (G2BULK_API_KEY).",
             reply_markup=main_menu(),
         )
@@ -208,7 +210,7 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     result = await asyncio.to_thread(g2bulk.check_player_id, uid)
     if not result['ok']:
-        await update.message.reply_text(
+        await wait_msg.edit_text(
             f"❌ {result.get('error') or 'آیدی معتبر نیست.'}\n"
             "آیدی را اصلاح کن و دوباره بفرست:",
             reply_markup=gem_cancel_keyboard(),
@@ -218,7 +220,7 @@ async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     info['game_uid'] = uid
     info['player_name'] = result['name']
     pname = _md_escape(result['name'])
-    await update.message.reply_text(
+    await wait_msg.edit_text(
         f"✅ *اکانت تایید شد*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"👤 نام اکانت: *{pname}*\n"
@@ -245,6 +247,16 @@ async def gem_reedit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    # Edit the message text *before* the network calls so the user sees
+    # "در حال بررسی" while G2Bulk is contacted — prevents a frozen feel.
+    try:
+        await query.edit_message_text(
+            "⏳ *در حال بررسی نهایی موجودی و قیمت…*\n"
+            "لطفاً صبر کنید، دارد بررسی می‌شود.",
+            parse_mode='Markdown',
+        )
+    except Exception:
+        pass  # If edit fails, continue anyway
     if not await asyncio.to_thread(get_bool_setting, 'sales_enabled', True):
         await query.edit_message_text(
             "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",

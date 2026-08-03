@@ -7,6 +7,7 @@ import bot
 import db
 from admin_notify import is_admin, is_premium_admin
 from handlers import gems, payment
+from handlers import forced_join
 
 
 class _Identity:
@@ -85,6 +86,21 @@ class PerformanceGuardTests(unittest.TestCase):
         helper_source = inspect.getsource(payment.fulfill_order_async)
         self.assertIn("_FULFILLMENT_SLOTS", helper_source)
         self.assertIn("asyncio.to_thread(fulfill_order", helper_source)
+
+    def test_product_clicks_do_not_wait_for_supplier_network(self):
+        detail_source = inspect.getsource(gems.show_gem)
+        buy_source = inspect.getsource(gems.gem_buy_start)
+        confirm_source = inspect.getsource(gems.gem_confirm)
+        self.assertNotIn("_gem_api_availability", detail_source)
+        self.assertNotIn("_gem_api_availability", buy_source)
+        self.assertIn("_gem_api_availability(current, force=True)", confirm_source)
+
+    def test_forced_join_skips_admin_db_lookup_when_disabled(self):
+        source = inspect.getsource(forced_join.force_join_guard)
+        self.assertLess(
+            source.index("channels = await _forced_join_channels()"),
+            source.index("admin = await asyncio.to_thread(is_admin"),
+        )
 
 
 if __name__ == "__main__":

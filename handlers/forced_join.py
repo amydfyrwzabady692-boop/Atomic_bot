@@ -12,6 +12,7 @@ from keyboards import main_menu
 
 _CHANNEL_CACHE_SECONDS = 30
 _MEMBERSHIP_CACHE_SECONDS = 10 * 60
+_ADMIN_CACHE_SECONDS = 60
 _channels_cache = {'at': 0.0, 'rows': ()}
 
 
@@ -99,11 +100,31 @@ async def _show_join_prompt(update, channels, missing, unavailable):
 async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """در گروه -1 ثبت می‌شود و آپدیت کاربران غیرعضو را متوقف می‌کند."""
     user = update.effective_user
-    if not user or await asyncio.to_thread(is_admin, user.id):
+    if not user:
         return
 
+    # Most installations have forced join disabled.  Check the shared,
+    # memory-cached channel list first so ordinary button clicks do not pay
+    # for an unnecessary database admin lookup.
     channels = await _forced_join_channels()
     if not channels:
+        return
+
+    now = time.monotonic()
+    admin_cache = ctx.user_data.get('_forced_join_admin') or {}
+    if (
+        admin_cache.get('user_id') == user.id
+        and now - float(admin_cache.get('at') or 0) < _ADMIN_CACHE_SECONDS
+    ):
+        admin = bool(admin_cache.get('value'))
+    else:
+        admin = await asyncio.to_thread(is_admin, user.id)
+        ctx.user_data['_forced_join_admin'] = {
+            'user_id': user.id,
+            'value': bool(admin),
+            'at': now,
+        }
+    if admin:
         return
 
     signature = tuple(

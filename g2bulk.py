@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import re
+import threading
 import time
 import uuid
 import urllib.error
@@ -30,6 +31,9 @@ G2BULK_ME_CATALOGUE_NAMES = (
     '2420',
 )
 _inventory_cache = {'at': 0.0, 'value': None}
+_inventory_refresh_lock = threading.Lock()
+_INVENTORY_CACHE_SECONDS = 5 * 60
+_FORCED_REFRESH_COALESCE_SECONDS = 30
 
 
 def _api_key():
@@ -132,58 +136,78 @@ def get_inventory_snapshot(force=False):
     # تکرار 401 می‌تواند IP را مسدود کند.
     if cached and not cached.get('ok') and now - _inventory_cache.get('at', 0) < 60:
         return cached
-    if not force and cached and now - _inventory_cache.get('at', 0) < 45:
+    if (
+        not force and cached
+        and now - _inventory_cache.get('at', 0) < _INVENTORY_CACHE_SECONDS
+    ):
         return cached
 
-    me = _request('GET', '/getMe')
-    if not me.get('success') or me.get('balance') is None:
-        result = {
-            'ok': False,
-            'error': me.get('message') or 'دریافت موجودی G2Bulk ناموفق بود.',
-        }
-        _inventory_cache.update(at=now, value=result)
-        return result
-    catalogue = _request('GET', f'/games/{_game_code()}/catalogue')
-    if not catalogue.get('success'):
-        result = {
-            'ok': False,
-            'error': catalogue.get('message') or 'دریافت کاتالوگ G2Bulk ناموفق بود.',
-        }
-        _inventory_cache.update(at=now, value=result)
-        return result
-    try:
-        balance = Decimal(str(me['balance']))
-    except (InvalidOperation, TypeError, ValueError):
-        return {'ok': False, 'error': 'موجودی برگشتی G2Bulk معتبر نیست.'}
+    # Coalesce concurrent refreshes.  Without this lock, several users
+    # opening products together can each trigger the same two supplier calls
+    # and make the whole bot feel stuck.  A forced financial check only reuses
+    # a snapshot another request completed in the last two seconds.
+    with _inventory_refresh_lock:
+        now = time.monotonic()
+        cached = _inventory_cache.get('value')
+        age = now - _inventory_cache.get('at', 0)
+        if cached and (
+            (not force and age < _INVENTORY_CACHE_SECONDS)
+            or (force and cached.get('ok') and age < _FORCED_REFRESH_COALESCE_SECONDS)
+            or (not cached.get('ok') and age < 60)
+        ):
+            return cached
 
-    prices = {}
-    names = {}
-    prices_by_name = {}
-    for item in catalogue.get('catalogues') or []:
-        name = str(item.get('name') or '').strip()
-        match = re.search(r'\d+', name)
+        me = _request('GET', '/getMe')
+        if not me.get('success') or me.get('balance') is None:
+            result = {
+                'ok': False,
+                'error': me.get('message') or 'دریافت موجودی G2Bulk ناموفق بود.',
+            }
+            _inventory_cache.update(at=now, value=result)
+            return result
+        catalogue = _request('GET', f'/games/{_game_code()}/catalogue')
+        if not catalogue.get('success'):
+            result = {
+                'ok': False,
+                'error': catalogue.get('message') or 'دریافت کاتالوگ G2Bulk ناموفق بود.',
+            }
+            _inventory_cache.update(at=now, value=result)
+            return result
         try:
-            package_amount = int(match.group()) if match else None
-            cost = Decimal(str(item.get('amount')))
+            balance = Decimal(str(me['balance']))
         except (InvalidOperation, TypeError, ValueError):
-            continue
-        if not name or cost <= 0:
-            continue
-        prices_by_name[_normalise_catalogue_name(name)] = cost
-        if package_amount:
-            prices[package_amount] = cost
-            names[package_amount] = name
-    result = {
-        'ok': True,
-        'balance': balance,
-        'currency': str(me.get('currency') or 'USD'),
-        'prices': prices,
-        'prices_by_name': prices_by_name,
-        'names': names,
-        'username': me.get('username') or '',
-    }
-    _inventory_cache.update(at=now, value=result)
-    return result
+            result = {'ok': False, 'error': 'موجودی برگشتی G2Bulk معتبر نیست.'}
+            _inventory_cache.update(at=now, value=result)
+            return result
+
+        prices = {}
+        names = {}
+        prices_by_name = {}
+        for item in catalogue.get('catalogues') or []:
+            name = str(item.get('name') or '').strip()
+            match = re.search(r'\d+', name)
+            try:
+                package_amount = int(match.group()) if match else None
+                cost = Decimal(str(item.get('amount')))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if not name or cost <= 0:
+                continue
+            prices_by_name[_normalise_catalogue_name(name)] = cost
+            if package_amount:
+                prices[package_amount] = cost
+                names[package_amount] = name
+        result = {
+            'ok': True,
+            'balance': balance,
+            'currency': str(me.get('currency') or 'USD'),
+            'prices': prices,
+            'prices_by_name': prices_by_name,
+            'names': names,
+            'username': me.get('username') or '',
+        }
+        _inventory_cache.update(at=now, value=result)
+        return result
 
 
 def can_fulfill(amount, catalogue_name='', force=False):

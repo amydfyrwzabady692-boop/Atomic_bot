@@ -87,7 +87,7 @@ MENU_TEXTS = {
 class PerUserUpdateProcessor(BaseUpdateProcessor):
     """Run different users concurrently while keeping each user's flow ordered."""
 
-    def __init__(self, max_concurrent_updates=16):
+    def __init__(self, max_concurrent_updates=32):
         super().__init__(max_concurrent_updates)
         self._locks = weakref.WeakValueDictionary()
 
@@ -449,7 +449,10 @@ def main():
     app = (
         ApplicationBuilder()
         .token(token)
-        .concurrent_updates(PerUserUpdateProcessor(16))
+        .connection_pool_size(32)
+        .get_updates_connection_pool_size(4)
+        .pool_timeout(10)
+        .concurrent_updates(PerUserUpdateProcessor(32))
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
