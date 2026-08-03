@@ -190,6 +190,9 @@ async def post_init(app):
     app.bot_data['_admin_alert_task'] = asyncio.create_task(
         _admin_alert_loop(app), name='admin-alerts'
     )
+    app.bot_data['_price_sync_task'] = asyncio.create_task(
+        _price_sync_loop(app), name='gem-price-sync'
+    )
     _log_startup_checks()
 
 
@@ -401,6 +404,30 @@ async def _payment_expiry_loop(app):
         except Exception:
             logging.getLogger(__name__).exception('Payment expiry sweep failed')
         await asyncio.sleep(30)
+
+
+async def _price_sync_loop(app):
+    """به‌روزرسانی خودکار قیمت بسته‌های جم هر ۲۴ ساعت.
+
+    هر ۲۴ ساعت نرخ زنده دلار و کاتالوگ G2Bulk را می‌گیرد و قیمت فروش هر
+    بسته جم را با سود ۷٪ محاسبه و در دیتابیس ذخیره می‌کند.
+    """
+    log = logging.getLogger(__name__)
+    # صبر اولیه ۶۰ ثانیه تا ربات کاملاً بالا بیاید
+    await asyncio.sleep(60)
+    while True:
+        try:
+            from db import sync_gem_prices_daily
+            updated = await asyncio.to_thread(sync_gem_prices_daily)
+            if updated:
+                log.info('Gem price sync: %d products updated', updated)
+            # هر ۲۴ ساعت بررسی کن
+            await asyncio.sleep(24 * 3600)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception('Gem price sync failed')
+            await asyncio.sleep(5 * 60)
 
 
 def _log_startup_checks():

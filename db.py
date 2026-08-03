@@ -2967,6 +2967,108 @@ def sync_gem_prices():
         conn.commit()
 
 
+def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=7):
+    """قیمت فروش هر بسته جم با سود مشخص — گرد شده به نزدیک‌ترین هزار تومان."""
+    from decimal import Decimal, ROUND_HALF_UP
+
+    cost = Decimal(str(cost_usd))
+    rate = Decimal(str(usd_toman_rate_value))
+    profit = Decimal(1) + (Decimal(profit_percent) / Decimal(100))
+    raw = (cost * rate * profit).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    return (int(raw) // 1000 + (1 if int(raw) % 1000 else 0)) * 1000
+
+
+def sync_gem_prices_daily():
+    """به‌روزرسانی روزانه قیمت بسته‌های جم از نرخ دلار + کاتالوگ G2Bulk + ۷٪ سود.
+
+    اگر کمتر از ۲۴ ساعت از آخرین اجرا گذشته باشد، چیزی انجام نمی‌دهد.
+    تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
+    """
+    try:
+        settings = get_conn()
+    except Exception:
+        _LOG.warning("gem price sync skipped: DB unavailable")
+        return 0
+
+    # بررسی آخرین اجرا
+    with settings.cursor() as cur:
+        cur.execute(
+            "SELECT value FROM \"BotSettings\" WHERE \"Key\"=%s",
+            ("gem_price_last_sync",),
+        )
+        row = cur.fetchone()
+    if row and row[0]:
+        from datetime import datetime, timezone
+
+        try:
+            last = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - last).total_seconds() < 24 * 3600:
+                return 0
+        except (TypeError, ValueError):
+            pass
+
+    # دریافت نرخ دلار
+    try:
+        from profitability import get_usd_toman_rate
+
+        rate_result = get_usd_toman_rate(force=True)
+        if not rate_result.get("ok"):
+            _LOG.warning("gem price sync: USD rate fetch failed: %s", rate_result.get("error"))
+            return 0
+        rate_value = int(rate_result["rate"])
+    except Exception:
+        _LOG.warning("gem price sync: USD rate error", exc_info=True)
+        return 0
+
+    # دریافت کاتالوگ G2Bulk
+    try:
+        import g2bulk as g2
+
+        snapshot = g2.get_inventory_snapshot(force=True)
+        if not snapshot.get("ok"):
+            _LOG.warning("gem price sync: G2Bulk snapshot failed: %s", snapshot.get("error"))
+            return 0
+        prices_by_name = snapshot.get("prices_by_name") or {}
+    except Exception:
+        _LOG.warning("gem price sync: G2Bulk error", exc_info=True)
+        return 0
+
+    # به‌روزرسانی قیمت در دیتابیس
+    updated = 0
+    with settings.cursor() as cur:
+        cur.execute(
+            """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemInfo"
+               WHERE "IsAvailable"=true AND "G2BulkCatalogueName" IS NOT NULL
+               AND "G2BulkCatalogueName"<>''"""
+        )
+        for gem_id, current_price, catalogue_name in cur.fetchall():
+            name_lower = catalogue_name.strip().casefold()
+            cost_usd = prices_by_name.get(name_lower)
+            if cost_usd is None:
+                continue
+            new_price = compute_gem_sale_price(cost_usd, rate_value, profit_percent=7)
+            if int(new_price) != int(current_price):
+                cur.execute(
+                    'UPDATE "GemInfo" SET "Price"=%s WHERE "Id"=%s',
+                    (new_price, gem_id),
+                )
+                updated += 1
+        cur.execute(
+            """INSERT INTO "BotSettings"("Key","Value") VALUES(%s,%s)
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED.\"Value\"""",
+            ("gem_price_last_sync", str(datetime.now(timezone.utc).isoformat())),
+        )
+        settings.commit()
+
+    _LOG.info(
+        "Gem price sync done: %d updated, rate=%d, source=%s",
+        updated,
+        rate_value,
+        rate_result.get("source", "unknown"),
+    )
+    return updated
+
+
 def is_user_blocked(telegram_id) -> bool:
     tg = str(telegram_id)
     try:
