@@ -2984,6 +2984,7 @@ def sync_gem_prices_daily(_force=False):
     اگر کمتر از ۲۴ ساعت از آخرین اجرا گذشته باشد و _force نباشد، چیزی
     انجام نمی‌دهد. تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
     """
+    from datetime import datetime, timezone
     try:
         open_db_pool()
     except Exception:
@@ -3002,8 +3003,6 @@ def sync_gem_prices_daily(_force=False):
         _LOG.warning("gem price sync: last-sync check failed", exc_info=True)
         return 0
     if not _force and row and row[0]:
-        from datetime import datetime, timezone
-
         try:
             last = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
             if (datetime.now(timezone.utc) - last).total_seconds() < 24 * 3600:
