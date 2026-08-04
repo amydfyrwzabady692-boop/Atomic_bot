@@ -1218,6 +1218,70 @@ def _reserve_manual_gem(info_id, package_id):
         return True
 
 
+def _refund_failed_order(order_id):
+    """برگرداندن مبلغ سفارش رد شده به کیف پول کاربر."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            # وضعیت سفارش را بگیر
+            cur.execute(
+                '''SELECT "Id","UserId","TotalAmount","DiscountAmount",
+                      "WalletPaid","PaymentMethod"
+                   FROM "Orders" WHERE "Id"=%s''',
+                (order_id,),
+            )
+            order = cur.fetchone()
+            if not order:
+                return
+            order_db_id, user_db_id, total_amount, discount_amount, wallet_paid, payment_method = order
+            # محاسبه مبلغ قابل بازگشت: کل پرداخت شده
+            total_paid = int(wallet_paid or 0)
+            # اگر درگاه هم پرداخت شده، آن را هم پیدا کن
+            cur.execute(
+                '''SELECT "Amount" FROM "Payments"
+                   WHERE "OrderId"=%s AND "Provider"='zarinpal'
+                     AND "Status"='verified' ''',
+                (order_id,),
+            )
+            gateway_payment = cur.fetchone()
+            if gateway_payment:
+                total_paid += int(gateway_payment[0])
+            # اگر کارت‌به‌کارت، مبلغ از PaymentExpectedAmount بگیر
+            if payment_method == 'card_transfer':
+                cur.execute(
+                    '''SELECT "PaymentExpectedAmount" FROM "Orders" WHERE "Id"=%s''',
+                    (order_id,),
+                )
+                expected = cur.fetchone()
+                if expected and expected[0]:
+                    total_paid += int(expected[0])
+            if total_paid <= 0:
+                return
+            # مبلغ را به کیف پول برگردان
+            cur.execute(
+                '''SELECT "Id","Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE''',
+                (user_db_id,),
+            )
+            wallet = cur.fetchone()
+            if not wallet:
+                return
+            wallet_id, balance = wallet
+            new_balance = balance + total_paid
+            cur.execute(
+                '''UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s''',
+                (new_balance, wallet_id),
+            )
+            cur.execute(
+                '''INSERT INTO "WalletTransactions"
+                   ("WalletId","Amount","Kind","Description","IsPaid","CreatedAt")
+                   VALUES (%s,%s,'charge',%s,true,now())''',
+                (wallet_id, total_paid, f'برگشت تحویل ناموفق سفارش #{order_id}'),
+            )
+            conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Failed to refund failed order %s: %s", order_id, e)
+
+
 def fulfill_order(order_id):
     """تحویل فقط پس از اثبات پرداخت و با قفل سراسری idempotent برای هر سفارش."""
     order_id = int(order_id)
@@ -1383,7 +1447,9 @@ def fulfill_order(order_id):
             if delivered or processing_auto or (total_manual and manual_ok):
                 update_order_status(order_id, 'processing')
                 return True, 'processing'
-            return False, 'تحویل خودکار ناموفق بود. پشتیبانی بررسی می‌کند.'
+            # تمام تحویل‌های اتوماتیک ناموفق — مبلغ را به کیف پول برگردان
+            _refund_failed_order(order_id)
+            return False, 'تحویل خودکار ناموفق بود. مبلغ به کیف پول برگردانده شد.'
         finally:
             lock_cur.execute(
                 'SELECT pg_advisory_unlock(%s,%s)',
