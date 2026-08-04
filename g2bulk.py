@@ -236,7 +236,7 @@ def can_fulfill(amount, catalogue_name='', force=False):
     # Decimal raises TypeError and used to break every product click.
     available = Decimal(str(snapshot['balance'])) >= Decimal(str(cost))
     return available, cost, snapshot['balance'], (
-        None if available else 'موجودی دلاری API برای این بسته کافی نیست.'
+        None if available else 'موجودی سرویس تأمین برای این بسته کافی نیست.'
     )
 
 
