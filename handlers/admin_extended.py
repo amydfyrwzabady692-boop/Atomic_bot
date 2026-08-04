@@ -502,12 +502,13 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ], markdown=snapshot.get('ok', False))
     elif data == 'admx_pricesync':
         await query.answer('در حال بروزرسانی قیمت جم…')
+        profit = int(get_setting('gem_profit_percent', '7') or '7')
         try:
             updated = await asyncio.to_thread(sync_gem_prices_daily, True)
         except TypeError:
             updated = 0
         if updated:
-            text = f'✅ قیمت {updated} بسته جم با نرخ لحظه‌ای و سود ۷٪ به‌روزرسانی شد.'
+            text = f'✅ قیمت {updated} بسته جم با نرخ لحظه‌ای و سود {profit}٪ به‌روزرسانی شد.'
         else:
             text = 'ℹ️ قیمت‌ها بروزرسانی شد؛ اگر تغییری نکرد یعنی همان قیمت قبلی معتبر است.'
         await _edit(query, text, [
