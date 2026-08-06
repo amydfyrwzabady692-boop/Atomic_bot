@@ -37,10 +37,11 @@ from handlers.kyc import (
     kyc_conversation_handler, admin_kyc_approve, admin_kyc_reject, pay_back_methods,
 )
 from handlers.admin import (
-    admin_cmd, admin_home_cb, admin_users, admin_user_card, admin_user_cmd,
-    admin_block_toggle, admin_failed, admin_open_orders, admin_retry,
-    admin_tickets, admin_ticket_close, admin_user_orders, admin_conversation_handler,
-    admin_wallet_empty, admin_mark_done, admin_stuck_cancel,
+    admin_cmd, admin_home_cb, admin_users, admin_users_with_balance,
+    admin_user_card, admin_user_cmd, admin_block_toggle, admin_failed,
+    admin_open_orders, admin_retry, admin_tickets, admin_ticket_close,
+    admin_user_orders, admin_conversation_handler, admin_wallet_empty,
+    admin_mark_done, admin_stuck_cancel,
 )
 from handlers.admin_extended import (
     admin_ext_router, admin_extended_conversation_handler,
@@ -568,6 +569,9 @@ def main():
     # پنل ادمین
     app.add_handler(CallbackQueryHandler(admin_home_cb, pattern='^adm_home$'))
     app.add_handler(CallbackQueryHandler(admin_users, pattern='^adm_users$'))
+    app.add_handler(CallbackQueryHandler(
+        admin_users_with_balance, pattern='^adm_users_balance$'
+    ))
     app.add_handler(CallbackQueryHandler(admin_user_card, pattern=r'^adm_user_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_block_toggle, pattern=r'^adm_block_[01]_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_user_orders, pattern=r'^adm_ords_\d+$'))

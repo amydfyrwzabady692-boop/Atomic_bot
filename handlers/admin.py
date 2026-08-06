@@ -14,13 +14,13 @@ from keyboards import (
     admin_stuck_order_keyboard, admin_ticket_keyboard, main_menu,
 )
 from db import (
-    get_admin_stats, list_recent_users, get_user_profile, find_user_by_username,
-    set_user_blocked, list_failed_deliveries, list_open_orders, admin_adjust_wallet,
-    admin_set_wallet_balance, list_wallet_txs, get_user_orders, get_order,
-    list_open_tickets, get_ticket, close_ticket, add_ticket_message,
-    admin_operations_snapshot, get_setting, log_admin_action,
-    admin_mark_order_delivered, admin_cancel_stuck_order, mark_delivery_notified,
-    order_refund_amount,
+    get_admin_stats, list_recent_users, list_users_with_balance, get_user_profile,
+    find_user_by_username, set_user_blocked, list_failed_deliveries,
+    list_open_orders, admin_adjust_wallet, admin_set_wallet_balance,
+    list_wallet_txs, get_user_orders, get_order, list_open_tickets, get_ticket,
+    close_ticket, add_ticket_message, admin_operations_snapshot, get_setting,
+    log_admin_action, admin_mark_order_delivered, admin_cancel_stuck_order,
+    mark_delivery_notified, order_refund_amount,
 )
 from handlers.payment import fulfill_order_async
 
@@ -170,11 +170,55 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         label = f"{'🚫 ' if blocked else ''}{handle if handle != '—' else (safe_name or str(tg))}"
         buttons.append([InlineKeyboardButton(label[:40], callback_data=f'adm_user_{tg}')])
+        buttons.append([
+            InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
+            InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
+        ])
     lines.append("\nجستجو با آیدی @user یا شناسه عددی")
     buttons.append([InlineKeyboardButton('جستجو', callback_data='adm_find')])
     buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
         "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def admin_users_with_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """کاربرانی که موجودی کیف پول دارند — با دکمه شارژ/کسر مستقیم."""
+    query = update.callback_query
+    await query.answer()
+    if not await _require_admin(update):
+        return
+    try:
+        rows = list_users_with_balance(30)
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ خطا در دریافت کاربران:\n{e}",
+            reply_markup=admin_home_keyboard(),
+        )
+        return
+    lines = ["💰 *کاربران دارای موجودی*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    buttons = []
+    if not rows:
+        lines.append("کاربری با موجودی نیست.")
+    else:
+        for r in rows:
+            _db_id, tg, name, uname, blocked, bal = r
+            handle = _tg_handle(uname)
+            safe_name = (name or '—').replace('\n', ' ')[:24]
+            flag = "🚫" if blocked else "·"
+            lines.append(
+                f"{flag} {handle}  ·  {safe_name}\n"
+                f"   `{tg}`  ·  موجودی *{int(bal or 0):,}* ت"
+            )
+            buttons.append([
+                InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
+                InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
+            ])
+    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 

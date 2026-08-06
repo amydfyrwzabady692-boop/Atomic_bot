@@ -3473,6 +3473,33 @@ def list_recent_users(limit=15):
         return cur.fetchall()
 
 
+def list_users_with_balance(limit=30):
+    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance) کاربرانی با موجودی مثبت."""
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."FirstName", '
+                'COALESCE(u."TelegramUsername", \'\'), '
+                'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
+                'FROM "Users" u '
+                'JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'WHERE COALESCE(w."Balance", 0) > 0 '
+                'ORDER BY w."Balance" DESC LIMIT %s',
+                (limit,),
+            )
+        except Exception:
+            cur.execute(
+                'SELECT u."Id", u."TelegramId", u."FirstName", u."Username", '
+                'false, COALESCE(w."Balance", 0) '
+                'FROM "Users" u '
+                'JOIN "Wallets" w ON w."UserId"=u."Id" '
+                'WHERE COALESCE(w."Balance", 0) > 0 '
+                'ORDER BY w."Balance" DESC LIMIT %s',
+                (limit,),
+            )
+        return cur.fetchall()
+
+
 def admin_set_wallet_balance(user_db_id, new_balance, desc='تنظیم موجودی توسط ادمین'):
     """موجودی را دقیقاً روی عدد مشخص بگذار. خروجی: (ok, old, new, error)"""
     new_balance = int(new_balance)

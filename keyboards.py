@@ -260,6 +260,7 @@ def admin_home_keyboard():
             InlineKeyboardButton('کاربران', callback_data='adm_users'),
             InlineKeyboardButton('جستجو', callback_data='adm_find'),
         ],
+        [InlineKeyboardButton('💰 کاربران دارای موجودی', callback_data='adm_users_balance')],
         [
             InlineKeyboardButton('تحویل ناموفق', callback_data='adm_failed'),
             InlineKeyboardButton('سفارش‌های باز', callback_data='adm_open'),
