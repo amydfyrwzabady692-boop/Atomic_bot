@@ -253,6 +253,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'• `#{oid}` · {int(total):,} ت · {safe_method}\n'
                 f'  کاربر `{tg or "—"}` · G2: {safe_g2} · {str(verified_at)[:16]}'
             )
+            buttons.append([
+                InlineKeyboardButton(
+                    f'✅ انجام شد #{oid}', callback_data=f'adm_done_{oid}'
+                ),
+                InlineKeyboardButton(
+                    f'🗑 لغو #{oid}', callback_data=f'adm_cancel_{oid}'
+                ),
+            ])
             buttons.append([InlineKeyboardButton(
                 f'🔁 تلاش مجدد سفارش #{oid}', callback_data=f'adm_retry_{oid}'
             )])

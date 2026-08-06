@@ -1562,6 +1562,23 @@ def admin_cancel_stuck_order(order_id):
                 if method != 'wallet' and expected and verified_at:
                     total_paid += int(expected)
 
+                # Idempotency: اگر برای این سفارش از قبل بازپرداختی ثبت شده
+                # (برگشت تحویل ناموفق یا لغو ادمین)، دوباره بازپرداخت نکن؛ فقط
+                # سفارش را لغو کن تا کاربر دو بار پول نگیرد.
+                cur.execute(
+                    '''SELECT 1 FROM "WalletTransactions" wt
+                       JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                       WHERE wa."UserId"=%s
+                         AND wt."Kind"='charge'
+                         AND (wt."Description"=%s OR wt."Description"=%s)
+                       LIMIT 1''',
+                    (user_db_id,
+                     f'برگشت تحویل ناموفق سفارش #{order_id}',
+                     f'لغو توسط ادمین سفارش #{order_id}'),
+                )
+                if cur.fetchone():
+                    total_paid = 0
+
                 # بازپرداخت به کیف پول
                 refunded = 0
                 if total_paid > 0:
@@ -1606,6 +1623,33 @@ def admin_cancel_stuck_order(order_id):
                 'SELECT pg_advisory_unlock(%s,%s)',
                 (lock_namespace, order_id),
             )
+
+
+def order_refund_amount(order_id):
+    """مبلغی که برای این سفارش قبلاً به کیف پول برگشته (اگر برگشته باشد).
+
+    برای اینکه ادمین وقتی سفارش تحویل‌شده ثبت می‌کند بداند آیا باید موجودی
+    کیف پول کاربر را دوباره کم کند (وقتی پول قبلاً برگشت ولی محصول هم تحویل شد).
+    """
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                '''SELECT COALESCE(SUM(wt."Amount"),0)
+                   FROM "WalletTransactions" wt
+                   JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                   WHERE wa."UserId"=(
+                     SELECT "UserId" FROM "Orders" WHERE "Id"=%s
+                   )
+                     AND wt."Kind"='charge'
+                     AND (wt."Description"=%s OR wt."Description"=%s)''',
+                (int(order_id),
+                 f'برگشت تحویل ناموفق سفارش #{order_id}',
+                 f'لغو توسط ادمین سفارش #{order_id}'),
+            )
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
 
 
 # ─── Wallet ─────────────────────────────────────────────────────────────────────

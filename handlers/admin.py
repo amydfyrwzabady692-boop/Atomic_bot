@@ -20,6 +20,7 @@ from db import (
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
     admin_operations_snapshot, get_setting, log_admin_action,
     admin_mark_order_delivered, admin_cancel_stuck_order, mark_delivery_notified,
+    order_refund_amount,
 )
 from handlers.payment import fulfill_order_async
 
@@ -639,6 +640,15 @@ async def admin_mark_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if status == 'delivered'
             else f"ℹ️ سفارش #{order_id} از قبل تحویل‌شده بود."
         )
+        # اگر پول این سفارش قبلاً (مثلاً با تلاش مجدد ناموفق) به کیف پول کاربر
+        # برگشته، به ادمین یادآوری کن که موجودی کیف پول را کم کند.
+        refunded = await asyncio.to_thread(order_refund_amount, order_id)
+        if refunded > 0:
+            msg += (
+                f"\n\n⚠️ برای این سفارش {refunded:,} ت قبلاً به کیف پول کاربر "
+                "برگشت. چون محصول تحویل شده، موجودی را از کارت کاربر کم کن "
+                "(دکمه شارژ کیف پول → عدد منفی)."
+            )
         if status == 'delivered' and tg:
             try:
                 await ctx.bot.send_message(
