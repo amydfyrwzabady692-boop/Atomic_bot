@@ -40,7 +40,7 @@ from handlers.admin import (
     admin_cmd, admin_home_cb, admin_users, admin_user_card, admin_user_cmd,
     admin_block_toggle, admin_failed, admin_open_orders, admin_retry,
     admin_tickets, admin_ticket_close, admin_user_orders, admin_conversation_handler,
-    admin_wallet_empty,
+    admin_wallet_empty, admin_mark_done, admin_stuck_cancel,
 )
 from handlers.admin_extended import (
     admin_ext_router, admin_extended_conversation_handler,
@@ -145,9 +145,21 @@ async def text_router(update, ctx):
 async def error_handler(update, ctx):
     """Log unexpected failures and leave the user with a usable response."""
     log = logging.getLogger(__name__)
+    error = ctx.error
+    # «Message is not modified» خطای امن تلگرام است که دکمه‌های رفرش/بروزرسانی
+    # پنل ادمین (که همان متن قبلی را دوباره edit می‌کنند) ایجاد می‌کنند. اعلان
+    # «خطای داکر» به ادمین نباید برای این مورد ارسال شود؛ فقط لاگ debug کافی است.
+    err_text = str(
+        getattr(error, 'message', '')
+        or getattr(error, 'description', '')
+        or error
+    )
+    if 'message is not modified' in err_text.lower():
+        log.debug('Benign "Message is not modified" error ignored: %s', err_text)
+        return
     log.error(
         'Unhandled update error',
-        exc_info=(type(ctx.error), ctx.error, ctx.error.__traceback__),
+        exc_info=(type(error), error, error.__traceback__),
     )
     try:
         message = getattr(update, 'effective_message', None)
@@ -565,6 +577,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_failed, pattern='^adm_failed$'))
     app.add_handler(CallbackQueryHandler(admin_open_orders, pattern='^adm_open$'))
     app.add_handler(CallbackQueryHandler(admin_retry, pattern=r'^adm_retry_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_mark_done, pattern=r'^adm_done_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_stuck_cancel, pattern=r'^adm_cancel_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_tickets, pattern='^adm_tickets$'))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))

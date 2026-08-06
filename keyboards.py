@@ -316,8 +316,27 @@ def admin_user_keyboard(tg_id, is_blocked=False):
     ])
 
 
+def admin_stuck_order_keyboard(order_id, tg_id=''):
+    """کیبورد مدیریت سفارش گیرکرده/باز — انجام دستی یا لغو و بازپرداخت."""
+    rows = [
+        [
+            InlineKeyboardButton('✅ انجام شد', callback_data=f'adm_done_{order_id}'),
+            InlineKeyboardButton('🗑 لغو + بازپرداخت', callback_data=f'adm_cancel_{order_id}'),
+        ],
+        [InlineKeyboardButton('🔁 تلاش مجدد تحویل', callback_data=f'adm_retry_{order_id}')],
+    ]
+    if tg_id:
+        rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
+    rows.append([InlineKeyboardButton('🔙 بازگشت', callback_data='adm_home')])
+    return InlineKeyboardMarkup(rows)
+
+
 def admin_failed_order_keyboard(order_id, tg_id=''):
     rows = [
+        [
+            InlineKeyboardButton('✅ انجام شد', callback_data=f'adm_done_{order_id}'),
+            InlineKeyboardButton('🗑 لغو + بازپرداخت', callback_data=f'adm_cancel_{order_id}'),
+        ],
         [InlineKeyboardButton('🔁 تلاش مجدد تحویل', callback_data=f'adm_retry_{order_id}')],
     ]
     if tg_id:

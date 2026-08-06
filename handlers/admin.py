@@ -11,7 +11,7 @@ from telegram.ext import (
 from admin_notify import is_admin
 from keyboards import (
     admin_home_keyboard, admin_user_keyboard, admin_failed_order_keyboard,
-    admin_ticket_keyboard, main_menu,
+    admin_stuck_order_keyboard, admin_ticket_keyboard, main_menu,
 )
 from db import (
     get_admin_stats, list_recent_users, get_user_profile, find_user_by_username,
@@ -19,6 +19,7 @@ from db import (
     admin_set_wallet_balance, list_wallet_txs, get_user_orders, get_order,
     list_open_tickets, get_ticket, close_ticket, add_ticket_message,
     admin_operations_snapshot, get_setting, log_admin_action,
+    admin_mark_order_delivered, admin_cancel_stuck_order, mark_delivery_notified,
 )
 from handlers.payment import fulfill_order_async
 
@@ -31,6 +32,21 @@ WAIT_WALLET_SET = 5
 
 def _deny_text():
     return "❌ این دستور برای شما فعال نیست."
+
+
+def _edit_safe(query, text, reply_markup=None, parse_mode='Markdown'):
+    """ویرایش امن پیام؛ خطای «Message is not modified» را بی‌صدا رد می‌کند.
+
+    دکمه‌های رفرش/بروزرسانی پنل ادمین اغلب همان متن قبلی را دوباره edit می‌کنند؛
+    تلگرام این‌جا ۴۰۰ برمی‌گرداند که نباید به اعلان «خطای داکر» منجر شود.
+    """
+    try:
+        return query.edit_message_text(
+            text, parse_mode=parse_mode, reply_markup=reply_markup
+        )
+    except Exception as exc:
+        if 'message is not modified' not in str(exc).lower():
+            raise
 
 
 async def _require_admin(update: Update) -> bool:
@@ -118,9 +134,7 @@ async def _show_home(update, ctx, via_message=False):
     if via_message:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
     else:
-        await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=kb
-        )
+        await _edit_safe(update.callback_query, text, reply_markup=kb)
 
 
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -540,7 +554,11 @@ async def admin_failed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  `{tg}` · uid `{uid}` · {g2st}"
         )
         buttons.append([
-            InlineKeyboardButton(f'تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}')
+            InlineKeyboardButton(f'✅ انجام شد #{oid}', callback_data=f'adm_done_{oid}'),
+            InlineKeyboardButton(f'🗑 لغو #{oid}', callback_data=f'adm_cancel_{oid}'),
+        ])
+        buttons.append([
+            InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}')
         ])
     buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
@@ -556,13 +574,21 @@ async def admin_open_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     rows = list_open_orders(20)
     lines = ["✦ *سفارش‌های باز*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    buttons = []
     if not rows:
         lines.append("موردی نیست.")
     else:
         for r in rows:
             lines.append(f"#{r[0]} · {r[2]:,} ت · `{r[3]}` · `{r[1]}`")
+            oid, tg = r[0], r[1]
+            buttons.append([
+                InlineKeyboardButton(f'✅ انجام شد #{oid}', callback_data=f'adm_done_{oid}'),
+                InlineKeyboardButton(f'🗑 لغو #{oid}', callback_data=f'adm_cancel_{oid}'),
+            ])
+    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
-        "\n".join(lines), parse_mode='Markdown', reply_markup=admin_home_keyboard()
+        "\n".join(lines), parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -594,6 +620,88 @@ async def admin_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         msg, parse_mode='Markdown',
         reply_markup=admin_failed_order_keyboard(order_id, tg or ''),
+    )
+
+
+async def admin_mark_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """سفارشی که ادمین دستی تحویل داده را terminal 'delivered' کن."""
+    query = update.callback_query
+    await query.answer("در حال ثبت…")
+    if not await _require_admin(update):
+        return
+    order_id = int(query.data.replace('adm_done_', ''))
+    ok, status = await asyncio.to_thread(admin_mark_order_delivered, order_id)
+    order = get_order(order_id)
+    tg = order[6] if order else ''
+    if ok and status in ('delivered', 'already'):
+        msg = (
+            f"✅ سفارش #{order_id} تحویل‌شده ثبت شد."
+            if status == 'delivered'
+            else f"ℹ️ سفارش #{order_id} از قبل تحویل‌شده بود."
+        )
+        if status == 'delivered' and tg:
+            try:
+                await ctx.bot.send_message(
+                    chat_id=int(tg),
+                    text=f"✅ سفارش #{order_id} توسط پشتیبانی تحویل و تکمیل شد.",
+                    reply_markup=main_menu(),
+                )
+                await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+                await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+            except Exception:
+                pass
+    elif status == 'busy':
+        msg = f"⏳ سفارش #{order_id} در حال پردازش است؛ چند لحظه بعد دوباره تلاش کن."
+    else:
+        msg = f"❌ سفارش #{order_id} قابل ثبت به‌عنوان تحویل‌شده نیست."
+    await _edit_safe(
+        query, msg,
+        reply_markup=admin_stuck_order_keyboard(order_id, str(tg) if tg else ''),
+        parse_mode='Markdown',
+    )
+
+
+async def admin_stuck_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """لغو سفارش گیرکرده و بازپرداخت مبلغ به کیف پول کاربر."""
+    query = update.callback_query
+    await query.answer("در حال لغو…")
+    if not await _require_admin(update):
+        return
+    order_id = int(query.data.replace('adm_cancel_', ''))
+    ok, refunded, error = await asyncio.to_thread(
+        admin_cancel_stuck_order, order_id
+    )
+    order = get_order(order_id)
+    tg = order[6] if order else ''
+    if ok:
+        refund_line = (
+            f"\n💰 مبلغ {refunded:,} تومان به کیف پول کاربر برگشت."
+            if refunded > 0
+            else "\n(مبلغی از کیف پول کسر نشده بود.)"
+        )
+        msg = f"🗑 سفارش #{order_id} لغو شد.{refund_line}"
+        if tg:
+            try:
+                await ctx.bot.send_message(
+                    chat_id=int(tg),
+                    text=(
+                        f"⚠️ سفارش #{order_id} لغو شد."
+                        + (
+                            f"\n💰 مبلغ {refunded:,} تومان به کیف پولت برگشت."
+                            if refunded > 0
+                            else ""
+                        )
+                    ),
+                    reply_markup=main_menu(),
+                )
+            except Exception:
+                pass
+    else:
+        msg = f"❌ لغو انجام نشد: {error or 'وضعیت سفارش قابل لغو نیست.'}"
+    await _edit_safe(
+        query, msg,
+        reply_markup=admin_stuck_order_keyboard(order_id, str(tg) if tg else ''),
+        parse_mode='Markdown',
     )
 
 

@@ -1219,42 +1219,51 @@ def _reserve_manual_gem(info_id, package_id):
 
 
 def _refund_failed_order(order_id):
-    """برگرداندن مبلغ سفارش رد شده به کیف پول کاربر."""
+    """برگرداندن مبلغ سفارش رد شده به کیف پول کاربر.
+
+    مبلغ از ستون‌های خود "Orders" محاسبه می‌شود (جدول جداگانه "Payments" در
+    این ربات وجود ندارد):
+      - WalletPaid: سهم کیف پول (همان لحظه کسر شده)
+      - PaymentExpectedAmount: سهم درگاه/کارت‌به‌کارت فقط اگر پرداخت تایید شده باشد
+    هر بار یک ردیف WalletTransactions ثبت می‌کند؛ ردیف تکراری فقط اگر سفارش
+    از قبل cancelled شده باشد ساخته نمی‌شود.
+    """
     try:
         with get_conn() as conn, conn.cursor() as cur:
             # وضعیت سفارش را بگیر
             cur.execute(
-                '''SELECT "Id","UserId","TotalAmount","DiscountAmount",
-                      "WalletPaid","PaymentMethod"
-                   FROM "Orders" WHERE "Id"=%s''',
+                '''SELECT "Id","UserId","Status","TotalAmount","DiscountAmount",
+                      "WalletPaid","PaymentMethod","PaymentExpectedAmount",
+                      "PaymentVerifiedAt"
+                   FROM "Orders" WHERE "Id"=%s FOR UPDATE''',
                 (order_id,),
             )
             order = cur.fetchone()
             if not order:
                 return
-            order_db_id, user_db_id, total_amount, discount_amount, wallet_paid, payment_method = order
+            (_id, user_db_id, status, _total, _discount, wallet_paid,
+             payment_method, expected, verified_at) = order
+            if status in ('cancelled', 'canceled'):
+                return  # از قبل لغو شده — بازپرداخت دوباره ممنوع
             # محاسبه مبلغ قابل بازگشت: کل پرداخت شده
             total_paid = int(wallet_paid or 0)
-            # اگر درگاه هم پرداخت شده، آن را هم پیدا کن
-            cur.execute(
-                '''SELECT "Amount" FROM "Payments"
-                   WHERE "OrderId"=%s AND "Provider"='zarinpal'
-                     AND "Status"='verified' ''',
-                (order_id,),
-            )
-            gateway_payment = cur.fetchone()
-            if gateway_payment:
-                total_paid += int(gateway_payment[0])
-            # اگر کارت‌به‌کارت، مبلغ از PaymentExpectedAmount بگیر
-            if payment_method == 'card_transfer':
-                cur.execute(
-                    '''SELECT "PaymentExpectedAmount" FROM "Orders" WHERE "Id"=%s''',
-                    (order_id,),
-                )
-                expected = cur.fetchone()
-                if expected and expected[0]:
-                    total_paid += int(expected[0])
+            # سهم درگاه/کارت فقط وقتی که پرداخت تایید شده باشد
+            if payment_method != 'wallet' and expected and verified_at:
+                total_paid += int(expected)
             if total_paid <= 0:
+                return
+            # Idempotency: اگر بازپرداخت این سفارش از قبل ثبت شده، دوباره
+            # بازپرداخت نکن (مثلاً وقتی fulfill_order دوباره روی سفارش
+            # delivery_failed اجرا شود).
+            refund_desc = f'برگشت تحویل ناموفق سفارش #{order_id}'
+            cur.execute(
+                '''SELECT 1 FROM "WalletTransactions" w
+                   JOIN "Wallets" wa ON wa."Id"=w."WalletId"
+                   WHERE wa."UserId"=%s AND w."Kind"='charge'
+                     AND w."Description"=%s LIMIT 1''',
+                (user_db_id, refund_desc),
+            )
+            if cur.fetchone():
                 return
             # مبلغ را به کیف پول برگردان
             cur.execute(
@@ -1274,7 +1283,7 @@ def _refund_failed_order(order_id):
                 '''INSERT INTO "WalletTransactions"
                    ("WalletId","Amount","Kind","Description","IsPaid","CreatedAt")
                    VALUES (%s,%s,'charge',%s,true,now())''',
-                (wallet_id, total_paid, f'برگشت تحویل ناموفق سفارش #{order_id}'),
+                (wallet_id, total_paid, refund_desc),
             )
             conn.commit()
     except Exception as e:
@@ -1450,6 +1459,148 @@ def fulfill_order(order_id):
             # تمام تحویل‌های اتوماتیک ناموفق — مبلغ را به کیف پول برگردان
             _refund_failed_order(order_id)
             return False, 'تحویل خودکار ناموفق بود. مبلغ به کیف پول برگردانده شد.'
+        finally:
+            lock_cur.execute(
+                'SELECT pg_advisory_unlock(%s,%s)',
+                (lock_namespace, order_id),
+            )
+
+
+# ─── Admin manual order management ─────────────────────────────────────────────
+def admin_mark_order_delivered(order_id):
+    """سفارشی که ادمین دستی تحویل داده را terminal 'delivered' کن.
+
+    Idempotent است: روی سفارش delivered/completed دوباره اجرا شود خطا نمی‌سازد.
+    فقط از وضعیت paid/processing به delivered منتقل می‌کند و ردیف‌های GemOrderInfo
+    را COMPLETED می‌کند تا از لیست «تحویل ناموفق» حذف شوند. از همان advisory lock
+    فلو تحویل استفاده می‌کند تا با reconcile همزمان race نشود.
+    خروجی: (ok, status) که status ∈ {'delivered','already','refused'}
+    """
+    order_id = int(order_id)
+    lock_namespace = 41827
+    with get_conn() as lock_conn, lock_conn.cursor() as lock_cur:
+        lock_cur.execute(
+            'SELECT pg_try_advisory_lock(%s,%s)',
+            (lock_namespace, order_id),
+        )
+        if not lock_cur.fetchone()[0]:
+            return False, 'busy'
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    'SELECT "Status" FROM "Orders" WHERE "Id"=%s FOR UPDATE',
+                    (order_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False, 'not_found'
+                status = row[0]
+                if status in ('delivered', 'completed'):
+                    return True, 'already'
+                if status not in ('paid', 'processing'):
+                    return False, 'refused'
+                cur.execute(
+                    'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
+                    (order_id,),
+                )
+                cur.execute(
+                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'COMPLETED\' '
+                    'WHERE "OrderId"=%s',
+                    (order_id,),
+                )
+                conn.commit()
+                return True, 'delivered'
+        finally:
+            lock_cur.execute(
+                'SELECT pg_advisory_unlock(%s,%s)',
+                (lock_namespace, order_id),
+            )
+
+
+def admin_cancel_stuck_order(order_id):
+    """لغو ایمن سفارش گیرکرده و بازپرداخت مبلغ به کیف پول کاربر.
+
+    فقط روی وضعیت pending/paid/processing اجرا می‌شود؛ سفارش نهایی‌شده
+    (delivered/completed/cancelled/canceled) را رد می‌کند تا بازپرداخت دوباره
+    رخ ندهد. مبلغ بازپرداخت از ستون‌های خود "Orders" محاسبه می‌شود:
+      - WalletPaid: سهم کیف پول (همان لحظه کسر می‌شود)
+      - PaymentExpectedAmount: سهم درگاه/کارت‌به‌کارت فقط اگر پرداخت تایید شده باشد
+    خروجی: (ok, refunded, error)
+    """
+    order_id = int(order_id)
+    lock_namespace = 41827
+    with get_conn() as lock_conn, lock_conn.cursor() as lock_cur:
+        lock_cur.execute(
+            'SELECT pg_try_advisory_lock(%s,%s)',
+            (lock_namespace, order_id),
+        )
+        if not lock_cur.fetchone()[0]:
+            return False, 0, 'سفارش در حال پردازش است؛ چند لحظه بعد دوباره تلاش کن.'
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    'SELECT "Id","UserId","Status","PaymentMethod","WalletPaid",'
+                    '"PaymentExpectedAmount","PaymentVerifiedAt" '
+                    'FROM "Orders" WHERE "Id"=%s FOR UPDATE',
+                    (order_id,),
+                )
+                order = cur.fetchone()
+                if not order:
+                    return False, 0, 'سفارش پیدا نشد.'
+                _oid, user_db_id, status, method, wallet_paid, expected, verified_at = order
+                if status in ('delivered', 'completed', 'cancelled', 'canceled'):
+                    return False, 0, 'این سفارش قبلاً نهایی شده است.'
+                if status not in ('pending', 'paid', 'processing'):
+                    return False, 0, 'وضعیت سفارش قابل لغو نیست.'
+
+                # محاسبه مبلغ قابل بازپرداخت.
+                # - سهم کیف پول همیشه برمی‌گردد چون همان لحظه کسر شده است.
+                # - سهم درگاه/کارت فقط وقتی که پرداخت تایید شده باشد (verified).
+                #   برای سفارش wallet خالص، PaymentExpectedAmount=WalletPaid است و
+                #   تکرار نمی‌شود (دوبار بازپرداخت نشود).
+                total_paid = int(wallet_paid or 0)
+                if method != 'wallet' and expected and verified_at:
+                    total_paid += int(expected)
+
+                # بازپرداخت به کیف پول
+                refunded = 0
+                if total_paid > 0:
+                    cur.execute(
+                        'SELECT "Id","Balance" FROM "Wallets" '
+                        'WHERE "UserId"=%s FOR UPDATE',
+                        (user_db_id,),
+                    )
+                    wallet = cur.fetchone()
+                    if not wallet:
+                        return False, 0, 'کیف پول کاربر پیدا نشد.'
+                    cur.execute(
+                        'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() '
+                        'WHERE "Id"=%s',
+                        (int(wallet[1]) + total_paid, wallet[0]),
+                    )
+                    cur.execute(
+                        'INSERT INTO "WalletTransactions" '
+                        '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+                        'VALUES (%s,%s,\'charge\',%s,true,now())',
+                        (wallet[0], total_paid, f'لغو توسط ادمین سفارش #{order_id}'),
+                    )
+                    refunded = total_paid
+
+                _release_manual_gem_reservations(cur, order_id)
+
+                cur.execute(
+                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_CANCELLED\' '
+                    'WHERE "OrderId"=%s',
+                    (order_id,),
+                )
+                cur.execute(
+                    'UPDATE "Orders" SET "Status"=\'cancelled\',"WalletPaid"=0,'
+                    '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL '
+                    'WHERE "Id"=%s',
+                    (order_id,),
+                )
+                conn.commit()
+                return True, refunded, None
         finally:
             lock_cur.execute(
                 'SELECT pg_advisory_unlock(%s,%s)',
