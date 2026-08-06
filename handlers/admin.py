@@ -328,10 +328,29 @@ async def admin_wallet_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     tg = query.data.replace('adm_wal_', '')
     ctx.user_data['adm_wal_tg'] = tg
+    ctx.user_data['adm_wal_mode'] = 'charge'
     await query.edit_message_text(
-        f"💰 تنظیم کیف پول `{tg}`\n"
-        f"عدد مثبت = شارژ · منفی = کسر\n"
-        f"مثال: `50000` یا `-20000`\n/cancel",
+        f"💰 شارژ کیف پول `{tg}`\n"
+        f"عدد مثبت بفرست (مثال: `50000`)\n/cancel",
+        parse_mode='Markdown',
+    )
+    return WAIT_WALLET
+
+
+async def admin_wallet_deduct_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not await _require_admin(update):
+        return ConversationHandler.END
+    tg = query.data.replace('adm_wdeduct_', '')
+    ctx.user_data['adm_wal_tg'] = tg
+    ctx.user_data['adm_wal_mode'] = 'deduct'
+    profile = get_user_profile(telegram_id=tg)
+    cur = int(profile[7]) if profile else 0
+    await query.edit_message_text(
+        f"➖ کسر کیف پول `{tg}`\n"
+        f"موجودی فعلی: *{cur:,}* ت\n"
+        f"عدد مثبت بفرست (مثال: `20000`) تا این مقدار کسر شود\n/cancel",
         parse_mode='Markdown',
     )
     return WAIT_WALLET
@@ -341,12 +360,16 @@ async def admin_wallet_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return ConversationHandler.END
     tg = ctx.user_data.pop('adm_wal_tg', None)
+    mode = ctx.user_data.pop('adm_wal_mode', 'charge')
     raw = (update.message.text or '').strip().replace(',', '').replace('،', '')
-    if not raw.lstrip('-').isdigit():
-        await update.message.reply_text("فقط عدد بفرست.")
+    if not raw.isdigit() or int(raw) <= 0:
+        await update.message.reply_text("فقط عدد مثبت بفرست.")
         ctx.user_data['adm_wal_tg'] = tg
+        ctx.user_data['adm_wal_mode'] = mode
         return WAIT_WALLET
     amount = int(raw)
+    if mode == 'deduct':
+        amount = -amount
     profile = get_user_profile(telegram_id=tg)
     if not profile:
         await update.message.reply_text("کاربر پیدا نشد.")
@@ -355,12 +378,13 @@ async def admin_wallet_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ok:
         await update.message.reply_text(f"❌ {err}")
         return ConversationHandler.END
+    change_label = "شارژ شد" if mode == 'charge' else "کسر شد"
     try:
         await ctx.bot.send_message(
             chat_id=int(tg),
             text=(
-                f"💰 موجودی کیف پول تغییر کرد.\n"
-                f"تغییر: *{amount:+,}* ت\n"
+                f"💰 کیف پول شما {change_label}.\n"
+                f"تغییر: *{abs(amount):,}* ت\n"
                 f"موجودی: *{new_bal:,}* ت"
             ),
             parse_mode='Markdown',
@@ -368,7 +392,7 @@ async def admin_wallet_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     await update.message.reply_text(
-        f"✅ موجودی جدید: *{new_bal:,}* ت",
+        f"✅ {change_label}: *{abs(amount):,}* ت → موجودی *{new_bal:,}* ت",
         parse_mode='Markdown',
         reply_markup=admin_user_keyboard(tg, profile[5]),
     )
@@ -646,8 +670,8 @@ async def admin_mark_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if refunded > 0:
             msg += (
                 f"\n\n⚠️ برای این سفارش {refunded:,} ت قبلاً به کیف پول کاربر "
-                "برگشت. چون محصول تحویل شده، موجودی را از کارت کاربر کم کن "
-                "(دکمه شارژ کیف پول → عدد منفی)."
+                "برگشت. چون محصول تحویل شده، از کارت کاربر دکمه «➖ کسر کیف پول» "
+                "را بزن و همین مبلغ را کسر کن."
             )
         if status == 'delivered' and tg:
             try:
@@ -814,6 +838,7 @@ async def admin_ticket_close(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop('adm_msg_tg', None)
     ctx.user_data.pop('adm_wal_tg', None)
+    ctx.user_data.pop('adm_wal_mode', None)
     ctx.user_data.pop('adm_wset_tg', None)
     ctx.user_data.pop('adm_ticket_id', None)
     if update.message:
@@ -830,6 +855,7 @@ def admin_conversation_handler():
             CallbackQueryHandler(admin_find_start, pattern='^adm_find$'),
             CallbackQueryHandler(admin_msg_start, pattern=r'^adm_msg_\d+$'),
             CallbackQueryHandler(admin_wallet_start, pattern=r'^adm_wal_\d+$'),
+            CallbackQueryHandler(admin_wallet_deduct_start, pattern=r'^adm_wdeduct_\d+$'),
             CallbackQueryHandler(admin_wallet_set_start, pattern=r'^adm_wset_\d+$'),
             CallbackQueryHandler(admin_ticket_reply_start, pattern=r'^adm_treply_\d+$'),
         ],

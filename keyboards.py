@@ -306,12 +306,13 @@ def admin_user_keyboard(tg_id, is_blocked=False):
         ],
         [
             InlineKeyboardButton('➕ شارژ کیف پول', callback_data=f'adm_wal_{tg_id}'),
-            InlineKeyboardButton('🗑 خالی کردن کیف پول', callback_data=f'adm_wempty_{tg_id}'),
+            InlineKeyboardButton('➖ کسر کیف پول', callback_data=f'adm_wdeduct_{tg_id}'),
         ],
         [
-            InlineKeyboardButton('✏️ تنظیم موجودی دقیق', callback_data=f'adm_wset_{tg_id}'),
-            block_btn,
+            InlineKeyboardButton('🗑 خالی کردن کیف پول', callback_data=f'adm_wempty_{tg_id}'),
+            InlineKeyboardButton('✏️ تنظیم دقیق موجودی', callback_data=f'adm_wset_{tg_id}'),
         ],
+        [block_btn],
         [InlineKeyboardButton('بازگشت', callback_data='adm_home')],
     ])
 
