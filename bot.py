@@ -54,6 +54,7 @@ from admin_notify import is_admin, notify_admin
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
     fulfill_order, list_unnotified_auto_deliveries, mark_delivery_notified,
+    list_unnotified_refunds,
     list_expired_unpaid_orders,
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
@@ -231,7 +232,13 @@ async def _g2_reconcile_loop(app):
         try:
             order_ids = await asyncio.to_thread(list_processing_auto_orders, 50)
             for order_id in order_ids:
-                await asyncio.to_thread(fulfill_order, order_id)
+                success, status = await asyncio.to_thread(fulfill_order, order_id)
+                # اگر همین لحظه ریفاند شد، نوتیف‌ها در حلقه refund پایین‌تر می‌روند
+                if (not success) and str(status).startswith('refunded:'):
+                    logging.getLogger(__name__).info(
+                        'Order %s auto-refunded during reconcile: %s',
+                        order_id, status,
+                    )
 
             pending_notifications = await asyncio.to_thread(
                 list_unnotified_auto_deliveries, 50
@@ -243,8 +250,8 @@ async def _g2_reconcile_loop(app):
                             await app.bot.send_message(
                                 chat_id=int(telegram_id),
                                 text=(
-                                    f"✅ سفارش #{order_id} توسط سرویس تأمین تکمیل "
-                                    "و جم واریز شد."
+                                    f"✅ سفارش #{order_id} با موفقیت انجام شد.\n"
+                                    "💎 جم توسط سرویس تأمین به اکانتت واریز شد."
                                 ),
                             )
                             await asyncio.to_thread(
@@ -276,6 +283,60 @@ async def _g2_reconcile_loop(app):
                     except Exception:
                         logging.getLogger(__name__).exception(
                             'Could not notify admin for completed G2Bulk order %s',
+                            order_id,
+                        )
+
+            pending_refunds = await asyncio.to_thread(list_unnotified_refunds, 50)
+            for order_id, telegram_id, user_done, admin_done, refunded in pending_refunds:
+                amount = int(refunded or 0)
+                if not user_done:
+                    if telegram_id:
+                        try:
+                            text = (
+                                f"❌ سفارش #{order_id} انجام نشد.\n"
+                                "سرویس تأمین (G2Bulk) تحویل را رد کرد یا ناموفق بود.\n"
+                            )
+                            if amount > 0:
+                                text += (
+                                    f"💰 مبلغ {amount:,} تومان به کیف پولت واریز شد."
+                                )
+                            else:
+                                text += "پشتیبانی وضعیت را بررسی می‌کند."
+                            await app.bot.send_message(
+                                chat_id=int(telegram_id), text=text,
+                            )
+                            await asyncio.to_thread(
+                                mark_delivery_notified, order_id, 'user'
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                'Could not notify user for refunded order %s',
+                                order_id,
+                            )
+                    else:
+                        await asyncio.to_thread(
+                            mark_delivery_notified, order_id, 'user'
+                        )
+                if not admin_done:
+                    try:
+                        admin_text = (
+                            f"❌ سفارش #{order_id} در G2Bulk ناموفق بود و لغو شد."
+                        )
+                        if amount > 0:
+                            admin_text += (
+                                f"\n💰 {amount:,} ت به کیف پول کاربر "
+                                f"`{telegram_id or '—'}` واریز شد."
+                            )
+                        admin_sent = await notify_admin(
+                            app.bot, admin_text, parse_mode='Markdown',
+                        )
+                        if admin_sent:
+                            await asyncio.to_thread(
+                                mark_delivery_notified, order_id, 'admin'
+                            )
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            'Could not notify admin for refunded order %s',
                             order_id,
                         )
         except asyncio.CancelledError:

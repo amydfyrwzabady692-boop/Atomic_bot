@@ -202,13 +202,22 @@ def _delivery_preflight(order_id, force=True):
     return True, None, None, None
 
 
-async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
+async def _alert_fulfill_issue(bot, order_id, status, payment_hint='', refunded=None):
     if status == 'processing':
         return
     order = get_order(order_id)
     if not order:
         return
     tg = order[6] or '—'
+    refund_line = ''
+    if refunded is not None:
+        refund_line = f"\n💰 مبلغ برگشتی به کیف پول: *{int(refunded):,}* ت"
+    elif str(status).startswith('refunded:'):
+        try:
+            amt = int(str(status).split(':', 1)[1])
+            refund_line = f"\n💰 مبلغ برگشتی به کیف پول: *{amt:,}* ت"
+        except (TypeError, ValueError):
+            refund_line = '\n💰 مبلغ به کیف پول کاربر برگشت.'
     await notify_admin(
         bot,
         (
@@ -216,9 +225,10 @@ async def _alert_fulfill_issue(bot, order_id, status, payment_hint=''):
             f"━━━━━━━━━━━━━━━\n"
             f"وضعیت: `{status}`\n"
             f"پرداخت: {payment_hint or order[4]}\n"
-            f"مبلغ: {order[2]:,} ت\n"
+            f"مبلغ سفارش: {order[2]:,} ت"
+            f"{refund_line}\n"
             f"کاربر: `{tg}`\n\n"
-            f"از پنل /admin → تحویل ناموفق می‌توانی دوباره تلاش کنی."
+            f"اگر ریفاند انجام شده، کاربر مطلع شده است."
         ),
         reply_markup=admin_failed_order_keyboard(order_id, str(tg) if tg != '—' else ''),
     )
@@ -265,6 +275,16 @@ async def _notify_sense_sale(bot, order_id):
     await notify_admin(bot, text)
 
 
+def _parse_refunded_amount(status):
+    text = str(status or '')
+    if text.startswith('refunded:'):
+        try:
+            return int(text.split(':', 1)[1])
+        except (TypeError, ValueError):
+            return 0
+    return None
+
+
 def _success_user_text(order_id, status, ref_id=None):
     if status == 'sense_manual':
         msg = (
@@ -285,8 +305,85 @@ def _success_user_text(order_id, status, ref_id=None):
     elif status == 'paid':
         msg += "سفارش ثبت شد."
     else:
-        msg += "سفارش ثبت شد و در حال پردازش است."
+        msg += "سفارش ثبت شد و در حال پردازش است.\nنتیجه نهایی به‌صورت خودکار برایت ارسال می‌شود."
     return msg
+
+
+def _fail_refund_user_text(order_id, refunded):
+    amount = int(refunded or 0)
+    msg = (
+        f"❌ *سفارش #{order_id} انجام نشد*\n"
+        f"سرویس تأمین (G2Bulk) سفارش را رد کرد یا تحویل ناموفق بود.\n"
+    )
+    if amount > 0:
+        msg += (
+            f"💰 مبلغ *{amount:,}* تومان به کیف پولت واریز شد.\n"
+            "می‌توانی دوباره خرید کنی یا موجودی را نگه داری."
+        )
+    else:
+        msg += "پشتیبانی وضعیت پرداخت را بررسی می‌کند."
+    return msg
+
+
+async def _notify_admin_delivery_success(bot, order_id, payment_hint=''):
+    order = get_order(order_id)
+    if not order:
+        return
+    tg = order[6] or '—'
+    await notify_admin(
+        bot,
+        (
+            f"✅ سفارش #{order_id} با موفقیت در G2Bulk تکمیل شد.\n"
+            f"پرداخت: {payment_hint or order[4]}\n"
+            f"مبلغ: {order[2]:,} ت\n"
+            f"کاربر: `{tg}`"
+        ),
+        parse_mode='Markdown',
+    )
+
+
+async def _handle_fulfill_result(
+    bot, order_id, success, status, *, tg_id=None, payment_hint='',
+    ref_id=None, edit_message=None, reply_markup=None,
+):
+    """پیام‌های کاربر/ادمین برای نتیجه تحویل بعد از پرداخت موفق."""
+    from db import mark_delivery_notified
+
+    refunded = _parse_refunded_amount(status)
+    if success and status == 'delivered':
+        text = _success_user_text(order_id, status, ref_id)
+        if edit_message:
+            await edit_message(text)
+        elif tg_id:
+            await _notify_user(bot, tg_id, text)
+        await _notify_admin_delivery_success(bot, order_id, payment_hint)
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+        return 'delivered'
+
+    if success and status in ('paid', 'processing', 'sense_manual'):
+        if status == 'sense_manual':
+            await _notify_sense_sale(bot, order_id)
+        text = _success_user_text(order_id, status, ref_id)
+        if edit_message:
+            await edit_message(text)
+        elif tg_id:
+            await _notify_user(bot, tg_id, text)
+        return status
+
+    # ناموفق / ریفاند
+    await _alert_fulfill_issue(
+        bot, order_id, status, payment_hint, refunded=refunded,
+    )
+    text = _fail_refund_user_text(order_id, refunded if refunded is not None else 0)
+    if edit_message:
+        await edit_message(text)
+    elif tg_id:
+        await _notify_user(bot, tg_id, text)
+    if refunded is not None:
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+    return 'failed'
 
 
 def _zarinpal_link_text(order_id, total, pay_url):
@@ -602,23 +699,21 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     success, status = await fulfill_order_async(order_id)
     ctx.user_data.pop('pending_order', None)
     (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
+
+    async def _edit(text):
+        await query.edit_message_text(
+            text, parse_mode='Markdown', reply_markup=main_menu(),
+        )
+
+    await _handle_fulfill_result(
+        ctx.bot, order_id, success, status,
+        tg_id=update.effective_user.id,
+        payment_hint='zarinpal',
+        ref_id=ref_id,
+        edit_message=_edit,
+    )
     if success:
-        if status == 'sense_manual':
-            await _notify_sense_sale(ctx.bot, order_id)
-        elif status not in ('delivered', 'paid', 'sense_manual', 'processing'):
-            await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
-        await query.edit_message_text(
-            _success_user_text(order_id, status, ref_id),
-            parse_mode='Markdown',
-        )
         await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
-    else:
-        await _alert_fulfill_issue(ctx.bot, order_id, status, 'zarinpal')
-        await query.edit_message_text(
-            f"⚠️ پرداخت ثبت شد ولی تحویل خودکار کامل نشد.\n"
-            f"سفارش #{order_id} — پشتیبانی پیگیری می‌کند.\n({status})",
-            reply_markup=main_menu(),
-        )
 
 
 async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -769,15 +864,19 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if remaining <= 0:
         success, status = await fulfill_order_async(order_id)
         ctx.user_data.pop('pending_order', None)
-        if success and status == 'sense_manual':
-            await _notify_sense_sale(ctx.bot, order_id)
-        elif success and status not in (
-            'delivered', 'paid', 'sense_manual', 'processing'
-        ):
-            await _alert_fulfill_issue(ctx.bot, order_id, status, 'wallet')
-        msg = _success_user_text(order_id, status if success else 'paid')
-        msg += f"\nکسر از کیف پول: *{used:,}* ت\nموجودی: *{new_bal:,}* ت"
-        await query.edit_message_text(msg, parse_mode='Markdown')
+
+        async def _edit(text):
+            extra = f"\nکسر از کیف پول: *{used:,}* ت\nموجودی بعد از کسر: *{new_bal:,}* ت"
+            await query.edit_message_text(
+                text + extra, parse_mode='Markdown', reply_markup=main_menu(),
+            )
+
+        await _handle_fulfill_result(
+            ctx.bot, order_id, success, status,
+            tg_id=update.effective_user.id,
+            payment_hint='wallet',
+            edit_message=_edit,
+        )
         await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
 
@@ -1022,6 +1121,7 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     success, status = await fulfill_order_async(order_id)
     tg_id = order[6]
+    refunded = _parse_refunded_amount(status)
     if success and status == 'sense_manual':
         await _notify_sense_sale(ctx.bot, order_id)
         await _edit_review_message(
@@ -1033,15 +1133,27 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             tg_id,
             f"✅ سفارش #{order_id} تایید شد.\nپک سنس به‌زودی در پیوی برات ارسال می‌شود.",
         )
-    elif success and status in ('delivered', 'paid'):
+    elif success and status == 'delivered':
+        await _edit_review_message(
+            query, f"✅ سفارش #{order_id} تایید و جم تحویل شد."
+        )
+        await _notify_user(
+            ctx.bot,
+            tg_id,
+            f"✅ سفارش #{order_id} تایید شد.\n💎 جم به اکانتت واریز شد.",
+        )
+        await _notify_admin_delivery_success(ctx.bot, order_id, 'card_transfer')
+        from db import mark_delivery_notified
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+    elif success and status == 'paid':
         await _edit_review_message(
             query, f"✅ سفارش #{order_id} تایید و پردازش شد ({status})."
         )
         await _notify_user(
             ctx.bot,
             tg_id,
-            f"✅ سفارش #{order_id} تایید شد.\n"
-            + ("💎 جم به اکانتت واریز شد." if status == 'delivered' else "سفارش ثبت شد."),
+            f"✅ سفارش #{order_id} تایید شد.\nسفارش ثبت شد.",
         )
     elif success and status == 'processing':
         await _edit_review_message(
@@ -1056,18 +1168,28 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "پس از تکمیل، نتیجه خودکار برایت ارسال می‌شود.",
         )
     else:
-        await _alert_fulfill_issue(ctx.bot, order_id, status, 'card_transfer')
+        await _alert_fulfill_issue(
+            ctx.bot, order_id, status, 'card_transfer', refunded=refunded,
+        )
+        refund_note = (
+            f"\n💰 مبلغ {int(refunded):,} ت به کیف پول کاربر برگشت."
+            if refunded is not None else ''
+        )
         await _edit_review_message(
             query,
-            f"⚠️ تایید شد ولی تحویل کامل نشد: `{status}`\nدکمه تلاش مجدد در اعلان ادمین است.",
+            f"⚠️ تایید شد ولی تحویل کامل نشد: `{status}`{refund_note}",
             parse_mode='Markdown',
             reply_markup=admin_failed_order_keyboard(order_id, str(tg_id or '')),
         )
         await _notify_user(
             ctx.bot,
             tg_id,
-            f"⚠️ سفارش #{order_id} تایید شد ولی تحویل خودکار کامل نشد. پشتیبانی پیگیری می‌کند.",
+            _fail_refund_user_text(order_id, refunded if refunded is not None else 0),
         )
+        if refunded is not None:
+            from db import mark_delivery_notified
+            await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+            await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
 
 
 async def admin_review_order_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1260,12 +1382,10 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
         )
     success, st = await fulfill_order_async(order_id)
     tg_id = order[6]
-    if success:
-        if st == 'sense_manual':
-            await _notify_sense_sale(bot, order_id)
-        await _notify_user(
-            bot,
-            tg_id,
-            _success_user_text(order_id, st, ref_id),
-        )
+    await _handle_fulfill_result(
+        bot, order_id, success, st,
+        tg_id=tg_id,
+        payment_hint='zarinpal',
+        ref_id=ref_id,
+    )
     return success, st

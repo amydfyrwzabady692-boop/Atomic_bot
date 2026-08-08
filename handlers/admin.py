@@ -8,7 +8,7 @@ from telegram.ext import (
     CallbackQueryHandler, CommandHandler, filters,
 )
 
-from admin_notify import is_admin
+from admin_notify import is_admin, notify_admin
 from keyboards import (
     admin_home_keyboard, admin_user_keyboard, admin_failed_order_keyboard,
     admin_stuck_order_keyboard, admin_ticket_keyboard, main_menu,
@@ -673,13 +673,44 @@ async def admin_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     success, status = await fulfill_order_async(order_id)
     tg = order[6]
+    refunded = None
+    if str(status).startswith('refunded:'):
+        try:
+            refunded = int(str(status).split(':', 1)[1])
+        except (TypeError, ValueError):
+            refunded = 0
     if success and status == 'delivered':
         msg = f"✅ سفارش #{order_id} تحویل شد."
         if tg:
             try:
                 await ctx.bot.send_message(
                     chat_id=int(tg),
-                    text=f"✅ سفارش #{order_id} تحویل شد.",
+                    text=f"✅ سفارش #{order_id} تحویل شد.\n💎 جم به اکانتت واریز شد.",
+                    reply_markup=main_menu(),
+                )
+            except Exception:
+                pass
+        try:
+            await notify_admin(
+                ctx.bot,
+                f"✅ سفارش #{order_id} با تلاش مجدد ادمین تحویل شد.",
+                parse_mode=None,
+            )
+        except Exception:
+            pass
+    elif refunded is not None:
+        msg = (
+            f"❌ سفارش #{order_id} ناموفق بود و لغو شد.\n"
+            f"💰 مبلغ {refunded:,} ت به کیف پول کاربر برگشت."
+        )
+        if tg:
+            try:
+                await ctx.bot.send_message(
+                    chat_id=int(tg),
+                    text=(
+                        f"❌ سفارش #{order_id} انجام نشد.\n"
+                        f"💰 مبلغ {refunded:,} تومان به کیف پولت واریز شد."
+                    ),
                     reply_markup=main_menu(),
                 )
             except Exception:
@@ -774,6 +805,8 @@ async def admin_stuck_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
     else:
         msg = f"❌ لغو انجام نشد: {error or 'وضعیت سفارش قابل لغو نیست.'}"
     await _edit_safe(

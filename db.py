@@ -1005,7 +1005,30 @@ def apply_g2bulk_webhook(
             (status, str(player_name or ''), info_id),
         )
         if status == 'FAILED':
+            # اگر همه‌ی اقلام اتوماتیک رد شده‌اند، ریفاند کن
+            cur.execute(
+                'SELECT '
+                'COUNT(*) FILTER (WHERE p."AutoDeliver"=true),'
+                'COUNT(*) FILTER (WHERE p."AutoDeliver"=true '
+                'AND COALESCE(g."G2BulkStatus",\'\') IN '
+                '(\'FAILED\',\'REJECTED\',\'CANCELED\',\'CANCELLED\')),'
+                'COUNT(*) FILTER (WHERE p."AutoDeliver"=true '
+                'AND COALESCE(g."G2BulkStatus",\'\')=\'COMPLETED\') '
+                'FROM "GemOrderInfo" g '
+                'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
+                'WHERE g."OrderId"=%s',
+                (local_order_id,),
+            )
+            total_auto, failed_auto, completed_auto = cur.fetchone()
             conn.commit()
+            if (
+                total_auto
+                and int(failed_auto or 0) == int(total_auto)
+                and int(completed_auto or 0) == 0
+            ):
+                ok_refund, refunded = _refund_failed_order(local_order_id)
+                if ok_refund:
+                    return True, f'refunded:{int(refunded)}'
             return True, 'failed'
 
         cur.execute(
@@ -1219,80 +1242,147 @@ def _reserve_manual_gem(info_id, package_id):
 
 
 def _refund_failed_order(order_id):
-    """برگرداندن مبلغ سفارش رد شده به کیف پول کاربر.
+    """برگرداندن مبلغ سفارش ردشده به کیف پول و لغو امن سفارش.
 
-    مبلغ از ستون‌های خود "Orders" محاسبه می‌شود (جدول جداگانه "Payments" در
-    این ربات وجود ندارد):
-      - WalletPaid: سهم کیف پول (همان لحظه کسر شده)
-      - PaymentExpectedAmount: سهم درگاه/کارت‌به‌کارت فقط اگر پرداخت تایید شده باشد
-    هر بار یک ردیف WalletTransactions ثبت می‌کند؛ ردیف تکراری فقط اگر سفارش
-    از قبل cancelled شده باشد ساخته نمی‌شود.
+    خروجی: (ok, refunded_amount)
+    - ok=False یعنی سفارش پیدا نشد / قابل ریفاند نبود
+    - refunded_amount می‌تواند ۰ باشد اگر قبلاً ریفاند شده بود (idempotent)
     """
+    order_id = int(order_id)
     try:
         with get_conn() as conn, conn.cursor() as cur:
-            # وضعیت سفارش را بگیر
             cur.execute(
                 '''SELECT "Id","UserId","Status","TotalAmount","DiscountAmount",
                       "WalletPaid","PaymentMethod","PaymentExpectedAmount",
-                      "PaymentVerifiedAt"
+                      "PaymentVerifiedAt","TelegramId"
                    FROM "Orders" WHERE "Id"=%s FOR UPDATE''',
                 (order_id,),
             )
             order = cur.fetchone()
             if not order:
-                return
-            (_id, user_db_id, status, _total, _discount, wallet_paid,
-             payment_method, expected, verified_at) = order
+                return False, 0
+            (
+                _id, user_db_id, status, _total, _discount, wallet_paid,
+                payment_method, expected, verified_at, telegram_id,
+            ) = order
+            if status in ('delivered', 'completed'):
+                return False, 0
             if status in ('cancelled', 'canceled'):
-                return  # از قبل لغو شده — بازپرداخت دوباره ممنوع
-            # محاسبه مبلغ قابل بازگشت: کل پرداخت شده
+                # قبلاً لغو شده — مبلغ ریفاند قبلی را برگردان (برای پیام‌ها)
+                cur.execute(
+                    '''SELECT COALESCE(SUM(wt."Amount"),0)
+                       FROM "WalletTransactions" wt
+                       JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                       WHERE wa."UserId"=%s AND wt."Kind"='charge'
+                         AND (wt."Description"=%s OR wt."Description"=%s)''',
+                    (
+                        user_db_id,
+                        f'برگشت تحویل ناموفق سفارش #{order_id}',
+                        f'لغو توسط ادمین سفارش #{order_id}',
+                    ),
+                )
+                return True, int(cur.fetchone()[0] or 0)
+
             total_paid = int(wallet_paid or 0)
-            # سهم درگاه/کارت فقط وقتی که پرداخت تایید شده باشد
             if payment_method != 'wallet' and expected and verified_at:
                 total_paid += int(expected)
-            if total_paid <= 0:
-                return
-            # Idempotency: اگر بازپرداخت این سفارش از قبل ثبت شده، دوباره
-            # بازپرداخت نکن (مثلاً وقتی fulfill_order دوباره روی سفارش
-            # delivery_failed اجرا شود).
+
             refund_desc = f'برگشت تحویل ناموفق سفارش #{order_id}'
             cur.execute(
-                '''SELECT 1 FROM "WalletTransactions" w
-                   JOIN "Wallets" wa ON wa."Id"=w."WalletId"
-                   WHERE wa."UserId"=%s AND w."Kind"='charge'
-                     AND w."Description"=%s LIMIT 1''',
-                (user_db_id, refund_desc),
+                '''SELECT COALESCE(SUM(wt."Amount"),0)
+                   FROM "WalletTransactions" wt
+                   JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                   WHERE wa."UserId"=%s AND wt."Kind"='charge'
+                     AND (wt."Description"=%s OR wt."Description"=%s)''',
+                (
+                    user_db_id, refund_desc,
+                    f'لغو توسط ادمین سفارش #{order_id}',
+                ),
             )
-            if cur.fetchone():
-                return
-            # مبلغ را به کیف پول برگردان
+            already = int(cur.fetchone()[0] or 0)
+            refunded = 0
+            if already > 0:
+                refunded = already
+            elif total_paid > 0 and user_db_id:
+                cur.execute(
+                    '''SELECT "Id","Balance" FROM "Wallets"
+                       WHERE "UserId"=%s FOR UPDATE''',
+                    (user_db_id,),
+                )
+                wallet = cur.fetchone()
+                if not wallet:
+                    cur.execute(
+                        '''INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt")
+                           VALUES (%s,0,now())
+                           ON CONFLICT ("UserId") DO UPDATE
+                           SET "UpdatedAt"=now()
+                           RETURNING "Id","Balance"''',
+                        (user_db_id,),
+                    )
+                    wallet = cur.fetchone()
+                if not wallet:
+                    conn.rollback()
+                    return False, 0
+                wallet_id, balance = wallet
+                cur.execute(
+                    '''UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now()
+                       WHERE "Id"=%s''',
+                    (int(balance) + total_paid, wallet_id),
+                )
+                cur.execute(
+                    '''INSERT INTO "WalletTransactions"
+                       ("WalletId","Amount","Kind","Description","IsPaid","CreatedAt")
+                       VALUES (%s,%s,'charge',%s,true,now())''',
+                    (wallet_id, total_paid, refund_desc),
+                )
+                refunded = total_paid
+
+            _release_manual_gem_reservations(cur, order_id)
             cur.execute(
-                '''SELECT "Id","Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE''',
-                (user_db_id,),
+                '''UPDATE "GemOrderInfo"
+                   SET "G2BulkStatus"=CASE
+                        WHEN COALESCE("G2BulkStatus",'') IN
+                             ('COMPLETED','MANUAL_CANCELLED') THEN "G2BulkStatus"
+                        WHEN COALESCE("G2BulkStatus",'') IN
+                             ('FAILED','REJECTED','CANCELED','CANCELLED')
+                             THEN "G2BulkStatus"
+                        ELSE 'FAILED'
+                   END
+                   WHERE "OrderId"=%s''',
+                (order_id,),
             )
-            wallet = cur.fetchone()
-            if not wallet:
-                return
-            wallet_id, balance = wallet
-            new_balance = balance + total_paid
             cur.execute(
-                '''UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s''',
-                (new_balance, wallet_id),
-            )
-            cur.execute(
-                '''INSERT INTO "WalletTransactions"
-                   ("WalletId","Amount","Kind","Description","IsPaid","CreatedAt")
-                   VALUES (%s,%s,'charge',%s,true,now())''',
-                (wallet_id, total_paid, refund_desc),
+                '''UPDATE "Orders"
+                   SET "Status"='cancelled',"WalletPaid"=0,
+                       "PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL
+                   WHERE "Id"=%s''',
+                (order_id,),
             )
             conn.commit()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("Failed to refund failed order %s: %s", order_id, e)
+            _LOG.info(
+                'Refunded failed order #%s amount=%s telegram=%s',
+                order_id, refunded, telegram_id,
+            )
+            return True, refunded
+    except Exception:
+        _LOG.exception("Failed to refund failed order %s", order_id)
+        return False, 0
+
+
+def _is_terminal_g2_failure(status):
+    return str(status or '').strip().upper() in {
+        'FAILED', 'REJECTED', 'CANCELED', 'CANCELLED',
+    }
 
 
 def fulfill_order(order_id):
-    """تحویل فقط پس از اثبات پرداخت و با قفل سراسری idempotent برای هر سفارش."""
+    """تحویل فقط پس از اثبات پرداخت و با قفل سراسری idempotent برای هر سفارش.
+
+    خروجی: (ok, status)
+    statusهای مهم:
+      delivered | paid | processing | sense_manual |
+      refunded:<amount> | پیام خطا
+    """
     order_id = int(order_id)
     lock_namespace = 41827
     with get_conn() as lock_conn, lock_conn.cursor() as lock_cur:
@@ -1316,6 +1406,11 @@ def fulfill_order(order_id):
             status, verified_at, method, expected, payment_ref, wallet_paid = payment
             if status in ('delivered', 'completed'):
                 return True, 'delivered'
+            if status in ('cancelled', 'canceled'):
+                ok, refunded = _refund_failed_order(order_id)
+                if ok:
+                    return False, f'refunded:{int(refunded)}'
+                return False, 'سفارش لغو شده است.'
             if not verified_at or not payment_ref:
                 return False, 'پرداخت سفارش تأیید نشده است.'
             ok, net_total, payable, error = validate_order_financials(order_id)
@@ -1355,10 +1450,11 @@ def fulfill_order(order_id):
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
                     continue
                 total_auto += 1
+                g2_status_u = str(g2_status or '').strip().upper()
                 if g2_id:
                     live = g2bulk.get_game_order_status(g2_id)
                     if live.get('ok'):
-                        live_status = live['status']
+                        live_status = str(live.get('status') or '').upper()
                         update_gem_g2bulk(
                             info_id, status=live_status,
                             player_name=live.get('player_name') or player_name,
@@ -1367,8 +1463,18 @@ def fulfill_order(order_id):
                             delivered += 1
                         elif live_status in ('PENDING', 'PROCESSING'):
                             processing_auto += 1
+                        elif _is_terminal_g2_failure(live_status):
+                            pass
+                        else:
+                            processing_auto += 1
+                    else:
+                        # وضعیت زنده نامشخص — صبر کن، دوباره تلاش نشود به‌عنوان fail
+                        if _is_terminal_g2_failure(g2_status_u):
+                            pass
+                        else:
+                            processing_auto += 1
                     continue
-                if g2_status in ('SUBMITTING', 'SUBMIT_UNKNOWN', 'FAILED'):
+                if g2_status_u in ('SUBMITTING', 'SUBMIT_UNKNOWN'):
                     recovered = g2bulk.find_game_order_by_remark(
                         f'Atomic Bot order #{order_id}'
                     )
@@ -1388,9 +1494,16 @@ def fulfill_order(order_id):
                             delivered += 1
                         elif recovered_status in ('PENDING', 'PROCESSING'):
                             processing_auto += 1
+                        elif _is_terminal_g2_failure(recovered_status):
+                            pass
+                        else:
+                            processing_auto += 1
                     else:
-                        update_gem_g2bulk(info_id, status='SUBMIT_UNKNOWN')
+                        # هنوز معلوم نیست سفارش سمت تأمین ثبت شده یا نه
                         processing_auto += 1
+                    continue
+                if _is_terminal_g2_failure(g2_status_u):
+                    # رد قطعی قبلی — دوباره به G2B نفرست
                     continue
                 if not game_uid or not g2bulk.is_supported_catalogue(
                     amount, catalogue or str(amount)
@@ -1400,9 +1513,6 @@ def fulfill_order(order_id):
                 if not claim_gem_submission(info_id):
                     processing_auto += 1
                     continue
-                # Capture FX immediately before the supplier purchase. This
-                # snapshot is immutable, so later exchange-rate changes never
-                # rewrite the realized profit of this sale.
                 purchase_rate = profitability.get_purchase_rate_snapshot()
                 result = g2bulk.place_game_order(
                     catalogue_name=catalogue or str(amount),
@@ -1433,6 +1543,8 @@ def fulfill_order(order_id):
                         )
                     if api_status == 'COMPLETED':
                         delivered += 1
+                    elif _is_terminal_g2_failure(api_status):
+                        pass
                     else:
                         processing_auto += 1
                 else:
@@ -1444,8 +1556,6 @@ def fulfill_order(order_id):
 
             if total_auto and delivered == total_auto and manual_ok:
                 if total_manual:
-                    # قلم دستی فقط رزرو شده است؛ تا تحویل انسانی سفارش را
-                    # delivered اعلام نکن تا از پنل پیگیری حذف نشود.
                     update_order_status(order_id, 'paid')
                     return True, 'paid'
                 update_order_status(order_id, 'delivered')
@@ -1457,8 +1567,10 @@ def fulfill_order(order_id):
                 update_order_status(order_id, 'processing')
                 return True, 'processing'
             # تمام تحویل‌های اتوماتیک ناموفق — مبلغ را به کیف پول برگردان
-            _refund_failed_order(order_id)
-            return False, 'تحویل خودکار ناموفق بود. مبلغ به کیف پول برگردانده شد.'
+            ok_refund, refunded = _refund_failed_order(order_id)
+            if ok_refund:
+                return False, f'refunded:{int(refunded)}'
+            return False, 'تحویل خودکار ناموفق بود و بازپرداخت انجام نشد.'
         finally:
             lock_cur.execute(
                 'SELECT pg_advisory_unlock(%s,%s)',
@@ -1588,6 +1700,15 @@ def admin_cancel_stuck_order(order_id):
                         (user_db_id,),
                     )
                     wallet = cur.fetchone()
+                    if not wallet:
+                        cur.execute(
+                            'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
+                            'VALUES (%s,0,now()) '
+                            'ON CONFLICT ("UserId") DO UPDATE SET "UpdatedAt"=now() '
+                            'RETURNING "Id","Balance"',
+                            (user_db_id,),
+                        )
+                        wallet = cur.fetchone()
                     if not wallet:
                         return False, 0, 'کیف پول کاربر پیدا نشد.'
                     cur.execute(
@@ -3746,11 +3867,36 @@ def list_processing_auto_orders(limit=50):
             'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
             'AND p."AutoDeliver"=true AND (g."G2BulkOrderId" IS NOT NULL '
             'OR COALESCE(g."G2BulkStatus",\'\') '
-            'IN (\'SUBMITTING\',\'SUBMIT_UNKNOWN\',\'FAILED\')) '
+            'IN (\'SUBMITTING\',\'SUBMIT_UNKNOWN\',\'FAILED\',\'REJECTED\')) '
             'ORDER BY o."Id" LIMIT %s',
             (max(1, min(int(limit), 100)),),
         )
         return [int(row[0]) for row in cur.fetchall()]
+
+
+def list_unnotified_refunds(limit=50):
+    """سفارش‌های لغو+ریفاندشده که هنوز به کاربر/ادمین اعلام نشده‌اند."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT DISTINCT o."Id", o."TelegramId",
+                      (o."DeliveryUserNotifiedAt" IS NOT NULL),
+                      (o."DeliveryAdminNotifiedAt" IS NOT NULL),
+                      COALESCE((
+                          SELECT SUM(wt."Amount") FROM "WalletTransactions" wt
+                          JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                          WHERE wa."UserId"=o."UserId" AND wt."Kind"='charge'
+                            AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o."Id")
+                                 OR wt."Description"=('لغو توسط ادمین سفارش #' || o."Id"))
+                      ),0)
+               FROM "Orders" o
+               WHERE o."Status" IN ('cancelled','canceled')
+                 AND o."PaymentVerifiedAt" IS NOT NULL
+                 AND (o."DeliveryUserNotifiedAt" IS NULL
+                      OR o."DeliveryAdminNotifiedAt" IS NULL)
+               ORDER BY o."Id" DESC LIMIT %s''',
+            (max(1, min(int(limit), 100)),),
+        )
+        return cur.fetchall()
 
 
 def list_unnotified_auto_deliveries(limit=50):
