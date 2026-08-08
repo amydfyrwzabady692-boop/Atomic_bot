@@ -3103,6 +3103,70 @@ def add_store_product(title, price, stock=0, category_id=None, description=''):
         return value
 
 
+def get_store_product(product_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Title","Price","Stock","Description","IsActive","CategoryId" '
+            'FROM "StoreProducts" WHERE "Id"=%s',
+            (int(product_id),),
+        )
+        return cur.fetchone()
+
+
+def update_store_product(product_id, field, value):
+    allowed = {'Title', 'Price', 'Stock', 'Description', 'IsActive', 'CategoryId'}
+    if field not in allowed:
+        raise ValueError('فیلد نامعتبر')
+    if field == 'Price':
+        value = checked_amount(value, label='قیمت محصول')
+    elif field == 'Stock':
+        value = int(value)
+        if value < 0:
+            raise ValueError('موجودی نمی‌تواند منفی باشد')
+    elif field == 'IsActive':
+        value = bool(value)
+    elif field == 'CategoryId':
+        value = None if value in (None, '', '0', '-') else int(value)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "StoreProducts" SET "{field}"=%s WHERE "Id"=%s',
+            (value, int(product_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_promo_code(promo_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Code","CodeType","Value","MaxUses","UsedCount","IsActive" '
+            'FROM "PromoCodes" WHERE "Id"=%s',
+            (int(promo_id),),
+        )
+        return cur.fetchone()
+
+
+def update_promo_code(promo_id, field, value):
+    allowed = {'IsActive', 'MaxUses', 'Value'}
+    if field not in allowed:
+        raise ValueError('فیلد نامعتبر')
+    if field == 'IsActive':
+        value = bool(value)
+    elif field == 'MaxUses':
+        value = checked_amount(value, maximum=1_000_000, label='تعداد استفاده')
+    elif field == 'Value':
+        value = int(value)
+        if value < 0:
+            raise ValueError('مقدار نامعتبر است')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'UPDATE "PromoCodes" SET "{field}"=%s WHERE "Id"=%s',
+            (value, int(promo_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def add_promo_code(code, code_type, value, max_uses=1):
     code_type = str(code_type or '').strip().lower()
     max_uses = checked_amount(max_uses, maximum=1_000_000, label='تعداد استفاده')
@@ -3223,7 +3287,38 @@ def sync_gem_prices():
                 [
                     ('پک سنس PC', 'pc', 1_000_000, 'پک سنس مخصوص سیستم PC'),
                     ('پک سنس PC + خدمات', 'pc', 2_200_000, 'پک سنس PC همراه با خدمات'),
+                    ('پک سنس موبایل', 'mobile', 450_000, 'پک سنس مخصوص موبایل'),
+                    ('پک سنس موبایل + خدمات', 'mobile', 850_000, 'پک سنس موبایل همراه با خدمات'),
                 ],
+            )
+        # اگر فقط PC وجود دارد، پک موبایل را هم اضافه کن (بدون دست زدن به پک‌های فعلی)
+        mobile_seed_marker = 'sense_mobile_seed_v1_20260808'
+        cur.execute(
+            'SELECT 1 FROM "BotSettings" WHERE "Key"=%s', (mobile_seed_marker,)
+        )
+        if not cur.fetchone():
+            cur.execute(
+                'SELECT COUNT(*) FROM "SensePackages" WHERE "Platform"=\'mobile\''
+            )
+            if cur.fetchone()[0] == 0:
+                cur.executemany(
+                    'INSERT INTO "SensePackages" '
+                    '("Title","Platform","Price","Description","IsActive") '
+                    'VALUES (%s,%s,%s,%s,true)',
+                    [
+                        ('پک سنس موبایل', 'mobile', 450_000, 'پک سنس مخصوص موبایل'),
+                        (
+                            'پک سنس موبایل + خدمات',
+                            'mobile',
+                            850_000,
+                            'پک سنس موبایل همراه با خدمات',
+                        ),
+                    ],
+                )
+            cur.execute(
+                'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
+                'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
+                (mobile_seed_marker,),
             )
         conn.commit()
 

@@ -160,6 +160,20 @@ CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
 ON "PaymentAttempts" ("Status", "CreatedAt" DESC);
 CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
 ON "PaymentAttempts" ("OrderId", "CreatedAt" DESC);
+
+-- PaymentReceipts باید قبل از ایندکس pending ساخته شود (باگ قبلی init تازه)
+CREATE TABLE IF NOT EXISTS "PaymentReceipts" (
+    "Id" SERIAL PRIMARY KEY,
+    "OrderId" INTEGER REFERENCES "Orders"("Id") ON DELETE CASCADE,
+    "WalletTransactionId" INTEGER REFERENCES "WalletTransactions"("Id") ON DELETE CASCADE,
+    "TelegramId" VARCHAR(64),
+    "ReceiptType" VARCHAR(20) NOT NULL DEFAULT 'order',
+    "FileId" TEXT NOT NULL DEFAULT '',
+    "Text" TEXT NOT NULL DEFAULT '',
+    "Status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "ReviewedAt" TIMESTAMPTZ
+);
 CREATE INDEX IF NOT EXISTS idx_payment_receipts_pending
 ON "PaymentReceipts" ("CreatedAt")
 WHERE "Status"='pending';

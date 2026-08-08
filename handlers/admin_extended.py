@@ -20,11 +20,11 @@ from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
     delete_simple_record, get_gem, get_order_admin, get_payment_receipt,
-    get_sense_package, get_setting,
+    get_promo_code, get_sense_package, get_setting, get_store_product,
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
-    move_catalogue_item,
+    move_catalogue_item, update_promo_code, update_store_product,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
     list_profit_snapshots, profit_report_stats,
     sync_gem_prices_daily,
@@ -678,14 +678,24 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                   'card': 'شماره کارت فعال'}
         rows = list_users_filtered(kind)
         lines = [f'👥 کاربران {titles.get(kind, "")}', '━━━━━━━━━━━━━━━']
+        buttons = []
         for tg, name, username, balance, refs, card in rows:
             handle = f'@{username}' if username else (name or '—')
-            extra = (f'{balance:,} ت' if kind == 'balance' else
-                     f'{refs} زیرمجموعه' if kind == 'referral' else card)
+            if kind == 'balance':
+                extra = f'{balance:,} ت'
+            elif kind == 'referral':
+                extra = f'{refs} زیرمجموعه · موجودی {balance:,} ت'
+            else:
+                extra = f'{card or "—"} · موجودی {balance:,} ت'
             lines.append(f'{handle} · `{tg}` · {extra}')
+            buttons.append([
+                InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
+                InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
+            ])
         if not rows:
             lines.append('موردی ثبت نشده است.')
-        await _edit(query, '\n'.join(lines), [_back('admx_actions')], markdown=True)
+        buttons.append(_back('admx_actions'))
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_receipts':
         rows = list_pending_receipts()
         wallet_rows = list_pending_wallet_card_charges(30)
@@ -803,7 +813,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ), [
             [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_senseprice_{sid}'),
              InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_sensetitle_{sid}')],
-            [InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_sensetoggle_{sid}')],
+            [InlineKeyboardButton('✏️ توضیح', callback_data=f'admi_sensedesc_{sid}'),
+             InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_sensetoggle_{sid}')],
             [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_sensemove_up_{sid}'),
              InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_sensemove_down_{sid}')],
             _back('admx_sense'),
@@ -820,6 +831,71 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         p = get_sense_package(sid)
         update_sense_package(sid, 'IsActive', not bool(p[5]))
         await query.edit_message_text('✅ وضعیت پک تغییر کرد.', reply_markup=_kb([_back('admx_sense')]))
+    elif data.startswith('admx_product_'):
+        pid = int(data.rsplit('_', 1)[1])
+        p = get_store_product(pid)
+        if not p:
+            await _edit(query, 'محصول پیدا نشد.', [_back('admx_products')])
+        else:
+            await _edit(query, (
+                f'📦 {p[1]}\nشناسه: {p[0]}\nقیمت: {p[2]:,} تومان\n'
+                f'موجودی: {p[3]}\nتوضیح: {p[4] or "—"}\n'
+                f'دسته: {p[6] or "—"}\nفعال: {"بله" if p[5] else "خیر"}'
+            ), [
+                [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_productprice_{pid}'),
+                 InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_producttitle_{pid}')],
+                [InlineKeyboardButton('✏️ موجودی', callback_data=f'admi_productstock_{pid}'),
+                 InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_producttoggle_{pid}')],
+                [InlineKeyboardButton(
+                    '🗑 حذف', callback_data=f'admx_del_product_{pid}'
+                )],
+                _back('admx_products'),
+            ])
+    elif data.startswith('admx_producttoggle_'):
+        pid = int(data.rsplit('_', 1)[1])
+        p = get_store_product(pid)
+        if not p:
+            await _edit(query, 'محصول پیدا نشد.', [_back('admx_products')])
+        else:
+            update_store_product(pid, 'IsActive', not bool(p[5]))
+            await query.edit_message_text(
+                '✅ وضعیت محصول تغییر کرد.',
+                reply_markup=_kb([_back('admx_products')]),
+            )
+    elif data.startswith('admx_promo_'):
+        pid = int(data.rsplit('_', 1)[1])
+        p = get_promo_code(pid)
+        if not p:
+            await _edit(query, 'کد پیدا نشد.', [_back('admx_shop')])
+        else:
+            kind_label = 'هدیه' if p[2] == 'gift' else 'تخفیف'
+            back_cb = 'admx_gift' if p[2] == 'gift' else 'admx_discount'
+            await _edit(query, (
+                f'🏷 کد {kind_label}: `{p[1]}`\nمقدار: {p[3]}\n'
+                f'استفاده: {p[5]}/{p[4]}\nفعال: {"بله" if p[6] else "خیر"}'
+            ), [
+                [InlineKeyboardButton(
+                    'فعال/غیرفعال', callback_data=f'admx_promotoggle_{pid}'
+                )],
+                [InlineKeyboardButton(
+                    '🗑 حذف', callback_data=f'admx_del_code_{pid}'
+                )],
+                _back(back_cb),
+            ], markdown=True)
+    elif data.startswith('admx_promotoggle_'):
+        pid = int(data.rsplit('_', 1)[1])
+        p = get_promo_code(pid)
+        if not p:
+            await _edit(query, 'کد پیدا نشد.', [_back('admx_shop')])
+        else:
+            update_promo_code(pid, 'IsActive', not bool(p[6]))
+            back_cb = 'admx_gift' if p[2] == 'gift' else 'admx_discount'
+            await query.edit_message_text(
+                '✅ وضعیت کد تغییر کرد.',
+                reply_markup=_kb([_back(back_cb)]),
+            )
+    elif data == 'admx_noop':
+        await query.answer('مدیر اصلی از env خوانده می‌شود و قابل حذف نیست.', show_alert=True)
     elif data in ('admx_categories', 'admx_products', 'admx_departments',
                   'admx_gift', 'admx_discount', 'admx_admins'):
         await _show_simple_list(query, data)
@@ -954,13 +1030,20 @@ async def _show_simple_list(query, data):
     for row in rows:
         if data == 'admx_products':
             lines.append(f'#{row[0]} · {row[1]} · {row[2]:,} ت · موجودی {row[3]}')
+            buttons.append([InlineKeyboardButton(
+                f'✏️ ویرایش #{row[0]}', callback_data=f'admx_product_{row[0]}'
+            )])
         elif data in ('admx_gift', 'admx_discount'):
-            lines.append(f'#{row[0]} · {row[1]} · مقدار {row[3]} · {row[5]}/{row[4]}')
+            status = '✅' if row[6] else '❌'
+            lines.append(f'{status} #{row[0]} · {row[1]} · مقدار {row[3]} · {row[5]}/{row[4]}')
+            buttons.append([InlineKeyboardButton(
+                f'✏️ مدیریت #{row[0]}', callback_data=f'admx_promo_{row[0]}'
+            )])
         else:
             lines.append(f'#{row[0]} · {row[1]}')
-        buttons.append([InlineKeyboardButton(
-            f'🗑 حذف #{row[0]}', callback_data=f'admx_del_{kind}_{row[0]}'
-        )])
+            buttons.append([InlineKeyboardButton(
+                f'🗑 حذف #{row[0]}', callback_data=f'admx_del_{kind}_{row[0]}'
+            )])
     if not rows:
         lines.append('موردی ثبت نشده است.')
     buttons.extend([[InlineKeyboardButton('➕ افزودن', callback_data=add_cb)], _back(back)])
@@ -1025,7 +1108,9 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for prefix, field in (
         ('admi_gemprice_', 'gemprice'), ('admi_gemtitle_', 'gemtitle'),
         ('admi_gemstock_', 'gemstock'), ('admi_senseprice_', 'senseprice'),
-        ('admi_sensetitle_', 'sensetitle'),
+        ('admi_sensetitle_', 'sensetitle'), ('admi_sensedesc_', 'sensedesc'),
+        ('admi_productprice_', 'productprice'), ('admi_producttitle_', 'producttitle'),
+        ('admi_productstock_', 'productstock'),
     ):
         if data.startswith(prefix):
             action = f'{field}:{data[len(prefix):]}'
@@ -1225,11 +1310,20 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             field = {'gemprice': 'Price', 'gemtitle': 'Title', 'gemstock': 'Stock'}[kind]
             update_gem_package(gid, field, raw.replace(',', '') if field != 'Title' else raw)
             await update.message.reply_text('✅ بسته جم ویرایش شد.', reply_markup=admin_home_keyboard())
-        elif action.startswith(('senseprice:', 'sensetitle:')):
+        elif action.startswith(('senseprice:', 'sensetitle:', 'sensedesc:')):
             kind, sid = action.split(':')
-            field = 'Price' if kind == 'senseprice' else 'Title'
+            field = {
+                'senseprice': 'Price', 'sensetitle': 'Title', 'sensedesc': 'Description',
+            }[kind]
             update_sense_package(sid, field, raw.replace(',', '') if field == 'Price' else raw)
             await update.message.reply_text('✅ پک سنس ویرایش شد.', reply_markup=admin_home_keyboard())
+        elif action.startswith(('productprice:', 'producttitle:', 'productstock:')):
+            kind, pid = action.split(':')
+            field = {
+                'productprice': 'Price', 'producttitle': 'Title', 'productstock': 'Stock',
+            }[kind]
+            update_store_product(pid, field, raw.replace(',', '') if field != 'Title' else raw)
+            await update.message.reply_text('✅ محصول ویرایش شد.', reply_markup=admin_home_keyboard())
     except (ValueError, IndexError) as e:
         ctx.user_data['admin_ext_action'] = action
         if action in COMPOUND_FIELDS:
@@ -1259,7 +1353,11 @@ async def admin_input_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def admin_extended_conversation_handler():
     patterns = list(INPUT_ACTIONS)
-    entry_pattern = '^(' + '|'.join(patterns) + r'|admi_(?:gemprice|gemtitle|gemstock|senseprice|sensetitle)_\d+)$'
+    entry_pattern = (
+        '^(' + '|'.join(patterns)
+        + r'|admi_(?:gemprice|gemtitle|gemstock|senseprice|sensetitle|sensedesc'
+        r'|productprice|producttitle|productstock)_\d+)$'
+    )
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_input_start, pattern=entry_pattern)],
         states={WAIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_input_receive)]},

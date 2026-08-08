@@ -212,6 +212,7 @@ async def post_init(app):
 async def post_shutdown(app):
     for key in (
         '_g2_reconcile_task', '_payment_expiry_task', '_admin_alert_task',
+        '_price_sync_task',
     ):
         task = app.bot_data.pop(key, None)
         if not task:
