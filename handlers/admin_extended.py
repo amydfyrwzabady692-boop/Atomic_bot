@@ -34,7 +34,12 @@ from db import (
     list_low_stock_items, list_wallet_refunded_orders,
 )
 from handlers.forced_join import invalidate_forced_join_cache
-from keyboards import admin_card_keyboard, admin_home_keyboard
+from keyboards import (
+    admin_card_keyboard, admin_home_keyboard,
+    admin_hub_orders_keyboard, admin_hub_users_keyboard,
+    admin_hub_reports_keyboard, admin_hub_support_keyboard,
+    admin_hub_system_keyboard,
+)
 
 WAIT_VALUE = 50
 
@@ -197,6 +202,47 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not self_answer:
         await query.answer()
 
+    if data == 'admx_hub_orders':
+        await query.edit_message_text(
+            '📦 *مدیریت سفارش‌ها*\n'
+            'باز · ناموفق · گیرکرده · ریفاند · رسید',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_orders_keyboard(),
+        )
+        return
+    if data == 'admx_hub_users':
+        await query.edit_message_text(
+            '👥 *مدیریت کاربران*\n'
+            'جستجو · موجودی · پیام/شارژ',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_users_keyboard(),
+        )
+        return
+    if data == 'admx_hub_reports':
+        await query.edit_message_text(
+            '📊 *گزارش و آمار*\n'
+            'فروش · سود جم · سلامت مالی',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_reports_keyboard(),
+        )
+        return
+    if data == 'admx_hub_support':
+        await query.edit_message_text(
+            '🎧 *پشتیبانی*\n'
+            'تیکت‌ها و دپارتمان‌ها',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_support_keyboard(),
+        )
+        return
+    if data == 'admx_hub_system':
+        await query.edit_message_text(
+            '⚙️ *تنظیمات سیستم*\n'
+            'عمومی · جوین · مدیران · ظاهر',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_system_keyboard(),
+        )
+        return
+
     if data == 'admx_ops':
         threshold = _low_stock_threshold()
         ops = admin_operations_snapshot(threshold)
@@ -233,12 +279,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(
                 f'💰 برگشت کیف پول ({ops.get("wallet_refunds_7d", 0)})',
                 callback_data='admx_refunds',
+            ), InlineKeyboardButton(
+                '📦 منوی سفارش‌ها', callback_data='admx_hub_orders',
             )],
             [InlineKeyboardButton(
                 f'📦 موجودی کم ({ops["low_gem_stock"] + ops["low_store_stock"]})',
                 callback_data='admx_lowstock',
             ), InlineKeyboardButton(
-                f'🎧 تیکت‌ها ({ops["open_tickets"]})', callback_data='adm_tickets'
+                f'🎫 تیکت‌ها ({ops["open_tickets"]})', callback_data='adm_tickets'
             )],
             [InlineKeyboardButton('📅 گزارش امروز', callback_data='admx_daily'),
              InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health')],
@@ -295,7 +343,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append('✅ سفارش گیرکرده‌ای وجود ندارد.')
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_stuck')],
-            _back('admx_ops'),
+            _back('admx_hub_orders'),
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_refunds':
@@ -330,7 +378,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append('موردی ثبت نشده است.')
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_refunds')],
-            _back('admx_ops'),
+            _back('admx_hub_orders'),
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_lowstock':

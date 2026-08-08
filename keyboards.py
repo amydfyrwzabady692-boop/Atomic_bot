@@ -254,68 +254,107 @@ def support_cancel_keyboard():
 
 
 def admin_home_keyboard():
+    """منوی اصلی پنل — گروه‌بندی شفاف، بدون شلوغی دکمه‌های تکراری."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🚨 مرکز عملیات و هشدارها', callback_data='admx_ops')],
+        [InlineKeyboardButton('🚨 مرکز عملیات', callback_data='admx_ops')],
         [
-            InlineKeyboardButton('کاربران', callback_data='adm_users'),
-            InlineKeyboardButton('جستجو', callback_data='adm_find'),
+            InlineKeyboardButton('📦 سفارش‌ها', callback_data='admx_hub_orders'),
+            InlineKeyboardButton('👥 کاربران', callback_data='admx_hub_users'),
         ],
-        [InlineKeyboardButton('💰 کاربران دارای موجودی', callback_data='adm_users_balance')],
         [
-            InlineKeyboardButton('تحویل ناموفق', callback_data='adm_failed'),
-            InlineKeyboardButton('سفارش‌های باز', callback_data='adm_open'),
+            InlineKeyboardButton('🛍 فروشگاه', callback_data='admx_shop'),
+            InlineKeyboardButton('💳 مالی و درگاه', callback_data='admx_finance'),
         ],
+        [
+            InlineKeyboardButton('📊 گزارش‌ها', callback_data='admx_hub_reports'),
+            InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_hub_support'),
+        ],
+        [
+            InlineKeyboardButton('⚙️ تنظیمات سیستم', callback_data='admx_hub_system'),
+        ],
+        [InlineKeyboardButton('🔄 بروزرسانی پنل', callback_data='adm_home')],
+    ])
+
+
+def admin_hub_orders_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],
+        [InlineKeyboardButton('❌ تحویل ناموفق G2B', callback_data='adm_failed')],
+        [InlineKeyboardButton('⏳ گیرکرده در پردازش', callback_data='admx_stuck')],
         [InlineKeyboardButton('💰 برگشت به کیف پول', callback_data='admx_refunds')],
-        [InlineKeyboardButton('تیکت‌ها', callback_data='adm_tickets')],
+        [InlineKeyboardButton('🧾 رسیدهای کارت‌به‌کارت', callback_data='admx_receipts')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+    ])
+
+
+def admin_hub_users_keyboard():
+    return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('🛍 مدیریت فروشگاه', callback_data='admx_shop'),
-            InlineKeyboardButton('💳 امور مالی', callback_data='admx_finance'),
+            InlineKeyboardButton('📋 آخرین کاربران', callback_data='adm_users'),
+            InlineKeyboardButton('🔎 جستجوی کاربر', callback_data='adm_find'),
         ],
-        [
-            InlineKeyboardButton('📨 پیام و شارژ', callback_data='admx_actions'),
-            InlineKeyboardButton('📊 گزارش و آمار', callback_data='admx_stats'),
-        ],
-        [
-            InlineKeyboardButton('🎧 پشتیبانی', callback_data='admx_support'),
-            InlineKeyboardButton('⚙️ تنظیمات', callback_data='admx_settings'),
-        ],
-        [InlineKeyboardButton(
-            '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
-        )],
-        [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
+        [InlineKeyboardButton('💰 دارای موجودی کیف پول', callback_data='adm_users_balance')],
+        [InlineKeyboardButton('📨 پیام همگانی / شارژ', callback_data='admx_actions')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+    ])
+
+
+def admin_hub_reports_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('📈 آمار کلی', callback_data='admx_stats')],
+        [InlineKeyboardButton('📅 گزارش امروز', callback_data='admx_daily')],
+        [InlineKeyboardButton('💎 سود فروش جم', callback_data='admx_profit')],
+        [InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health')],
+        [InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+    ])
+
+
+def admin_hub_support_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🎫 تیکت‌های باز', callback_data='adm_tickets')],
+        [InlineKeyboardButton('🏢 دپارتمان‌ها', callback_data='admx_departments')],
+        [InlineKeyboardButton('🎧 تنظیمات پشتیبانی', callback_data='admx_support')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+    ])
+
+
+def admin_hub_system_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('⚙️ تنظیمات عمومی', callback_data='admx_settings')],
+        [InlineKeyboardButton('📢 جوین اجباری', callback_data='admx_forcedjoin')],
+        [InlineKeyboardButton('🔄 بروزرسانی قیمت جم', callback_data='admx_pricesync')],
         [
             InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home'),
-            InlineKeyboardButton('👮 لیست و مدیر پریمیوم', callback_data='admx_admins'),
+            InlineKeyboardButton('👮 مدیران', callback_data='admx_admins'),
         ],
-        [
-            InlineKeyboardButton('🔄 بروزرسانی قیمت جم', callback_data='admx_pricesync'),
-            InlineKeyboardButton('➕ افزودن ادمین', callback_data='admi_admin'),
-        ],
-        [InlineKeyboardButton('بروزرسانی', callback_data='adm_home')],
+        [InlineKeyboardButton('➕ افزودن مدیر', callback_data='admi_admin')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 
 
 def admin_user_keyboard(tg_id, is_blocked=False):
     block_btn = (
-        InlineKeyboardButton('آنبلاک', callback_data=f'adm_block_0_{tg_id}')
+        InlineKeyboardButton('✅ آنبلاک کاربر', callback_data=f'adm_block_0_{tg_id}')
         if is_blocked else
-        InlineKeyboardButton('بلاک', callback_data=f'adm_block_1_{tg_id}')
+        InlineKeyboardButton('🚫 بلاک کاربر', callback_data=f'adm_block_1_{tg_id}')
     )
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('پیام', callback_data=f'adm_msg_{tg_id}'),
-            InlineKeyboardButton('سفارش‌ها', callback_data=f'adm_ords_{tg_id}'),
+            InlineKeyboardButton('💬 پیام به کاربر', callback_data=f'adm_msg_{tg_id}'),
+            InlineKeyboardButton('📦 سفارش‌هایش', callback_data=f'adm_ords_{tg_id}'),
         ],
         [
             InlineKeyboardButton('➕ شارژ کیف پول', callback_data=f'adm_wal_{tg_id}'),
-            InlineKeyboardButton('➖ کسر کیف پول', callback_data=f'adm_wdeduct_{tg_id}'),
+            InlineKeyboardButton('➖ کسر از کیف پول', callback_data=f'adm_wdeduct_{tg_id}'),
         ],
         [
-            InlineKeyboardButton('🗑 خالی کردن کیف پول', callback_data=f'adm_wempty_{tg_id}'),
+            InlineKeyboardButton('🗑 صفر کردن موجودی', callback_data=f'adm_wempty_{tg_id}'),
             InlineKeyboardButton('✏️ تنظیم دقیق موجودی', callback_data=f'adm_wset_{tg_id}'),
         ],
         [block_btn],
-        [InlineKeyboardButton('بازگشت', callback_data='adm_home')],
+        [InlineKeyboardButton('🔙 منوی کاربران', callback_data='admx_hub_users')],
+        [InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home')],
     ])
 
 
@@ -323,28 +362,29 @@ def admin_stuck_order_keyboard(order_id, tg_id=''):
     """کیبورد مدیریت سفارش گیرکرده/باز — انجام دستی یا لغو و بازپرداخت."""
     rows = [
         [
-            InlineKeyboardButton('✅ انجام شد', callback_data=f'adm_done_{order_id}'),
-            InlineKeyboardButton('🗑 لغو + بازپرداخت', callback_data=f'adm_cancel_{order_id}'),
+            InlineKeyboardButton('✅ انجام‌شده ثبت کن', callback_data=f'adm_done_{order_id}'),
+            InlineKeyboardButton('🗑 لغو + ریفاند', callback_data=f'adm_cancel_{order_id}'),
         ],
         [InlineKeyboardButton('🔁 تلاش مجدد تحویل', callback_data=f'adm_retry_{order_id}')],
     ]
     if tg_id:
         rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
-    rows.append([InlineKeyboardButton('🔙 بازگشت', callback_data='adm_home')])
+    rows.append([InlineKeyboardButton('🔙 سفارش‌ها', callback_data='admx_hub_orders')])
     return InlineKeyboardMarkup(rows)
 
 
 def admin_failed_order_keyboard(order_id, tg_id=''):
     rows = [
         [
-            InlineKeyboardButton('✅ انجام شد', callback_data=f'adm_done_{order_id}'),
-            InlineKeyboardButton('🗑 لغو + بازپرداخت', callback_data=f'adm_cancel_{order_id}'),
+            InlineKeyboardButton('✅ انجام‌شده ثبت کن', callback_data=f'adm_done_{order_id}'),
+            InlineKeyboardButton('🗑 لغو + ریفاند', callback_data=f'adm_cancel_{order_id}'),
         ],
         [InlineKeyboardButton('🔁 تلاش مجدد تحویل', callback_data=f'adm_retry_{order_id}')],
     ]
     if tg_id:
         rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
     rows.append([InlineKeyboardButton('🔙 تحویل‌های ناموفق', callback_data='adm_failed')])
+    rows.append([InlineKeyboardButton('📦 منوی سفارش‌ها', callback_data='admx_hub_orders')])
     return InlineKeyboardMarkup(rows)
 
 

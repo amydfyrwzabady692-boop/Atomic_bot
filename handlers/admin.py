@@ -121,16 +121,16 @@ async def _show_home(update, ctx, via_message=False):
     text = (
         f"✦ *پنل ادمین Atomic*\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"کاربران: *{s['users']:,}*  ·  بلاک: {s['blocked']}\n"
-        f"سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
-        f"تحویل ناموفق: *{s['failed_g2']:,}*\n"
-        f"برگشت کیف پول ۷روز: *{ops.get('wallet_refunds_7d', 0):,}*\n"
-        f"تیکت باز: *{s['open_tickets']:,}*\n"
-        f"مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
+        f"👥 کاربران: *{s['users']:,}*  ·  🚫 بلاک: {s['blocked']}\n"
+        f"📦 سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
+        f"❌ تحویل ناموفق: *{s['failed_g2']:,}*\n"
+        f"💰 برگشت کیف‌پول (۷روز): *{ops.get('wallet_refunds_7d', 0):,}*\n"
+        f"🎫 تیکت باز: *{s['open_tickets']:,}*\n"
+        f"🏦 مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"فروش امروز: *{ops['sales_today_amount']:,}* ت "
-        f"از {ops['sales_today_count']:,} سفارش\n"
-        f"{'🚨' if alerts else '✅'} هشدارهای قابل اقدام: *{alerts:,}*"
+        f"📅 فروش امروز: *{ops['sales_today_amount']:,}* ت "
+        f"({ops['sales_today_count']:,} سفارش)\n"
+        f"{'🚨 نیاز به اقدام:' if alerts else '✅ وضعیت عادی — هشدار:'} *{alerts:,}*"
     )
     kb = admin_home_keyboard()
     if via_message:
@@ -633,7 +633,7 @@ async def admin_failed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.append([
             InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}')
         ])
-    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    buttons.append([InlineKeyboardButton('بازگشت به سفارش‌ها', callback_data='admx_hub_orders')])
     await query.edit_message_text(
         "\n".join(lines), parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -668,7 +668,7 @@ async def admin_open_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 buttons.append([
                     InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}'),
                 ])
-    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    buttons.append([InlineKeyboardButton('بازگشت به سفارش‌ها', callback_data='admx_hub_orders')])
     await query.edit_message_text(
         "\n".join(lines), parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(buttons),
