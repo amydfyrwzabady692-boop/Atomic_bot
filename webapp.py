@@ -187,6 +187,25 @@ def create_web_app(bot_app):
                 'G2Bulk callback applied order=%s item=%s status=%s result=%s',
                 order_id, info_id, status, result,
             )
+            # ریفاند فوری → خبر به کاربر و ادمین
+            if str(result).startswith('refunded:'):
+                try:
+                    amount = int(str(result).split(':', 1)[1])
+                except (TypeError, ValueError):
+                    amount = 0
+                try:
+                    from refund_notify import notify_g2_refund
+                    await notify_g2_refund(
+                        bot_app.bot, int(order_id), amount=amount,
+                    )
+                except Exception:
+                    logger.exception(
+                        'Could not notify refund from G2Bulk callback order=%s',
+                        order_id,
+                    )
+            elif result == 'delivered':
+                # نوتیف موفقیت را حلقه reconcile هم می‌فرستد؛ اینجا فقط لاگ کافی است
+                pass
             return web.json_response({'success': True, 'result': result})
         except (TypeError, ValueError):
             return web.json_response(

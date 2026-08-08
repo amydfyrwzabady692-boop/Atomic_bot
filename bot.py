@@ -51,10 +51,11 @@ from handlers.premium_admin import (
 )
 from handlers.forced_join import force_join_guard
 from admin_notify import is_admin, notify_admin
+from refund_notify import notify_g2_refund
 from db import (
     is_user_blocked, ensure_admin_schema, list_processing_auto_orders,
     fulfill_order, list_unnotified_auto_deliveries, mark_delivery_notified,
-    list_unnotified_refunds,
+    list_unnotified_refunds, close_orders_already_refunded,
     list_expired_unpaid_orders,
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
@@ -230,15 +231,25 @@ async def _g2_reconcile_loop(app):
     """سفارش‌های PENDING سرویس تأمین را بدون ثبت سفارش دوباره پیگیری می‌کند."""
     while True:
         try:
+            closed = await asyncio.to_thread(close_orders_already_refunded, 50)
+            if closed:
+                logging.getLogger(__name__).info(
+                    'Closed already-refunded open orders: %s', closed,
+                )
+
             order_ids = await asyncio.to_thread(list_processing_auto_orders, 50)
             for order_id in order_ids:
                 success, status = await asyncio.to_thread(fulfill_order, order_id)
-                # اگر همین لحظه ریفاند شد، نوتیف‌ها در حلقه refund پایین‌تر می‌روند
                 if (not success) and str(status).startswith('refunded:'):
+                    try:
+                        amount = int(str(status).split(':', 1)[1])
+                    except (TypeError, ValueError):
+                        amount = 0
                     logging.getLogger(__name__).info(
                         'Order %s auto-refunded during reconcile: %s',
                         order_id, status,
                     )
+                    await notify_g2_refund(app.bot, order_id, amount=amount)
 
             pending_notifications = await asyncio.to_thread(
                 list_unnotified_auto_deliveries, 50
@@ -288,52 +299,12 @@ async def _g2_reconcile_loop(app):
 
             pending_refunds = await asyncio.to_thread(list_unnotified_refunds, 50)
             for order_id, telegram_id, user_done, admin_done, refunded in pending_refunds:
-                amount = int(refunded or 0)
-                if not user_done:
-                    if telegram_id:
-                        try:
-                            text = (
-                                f"❌ سفارش #{order_id} انجام نشد.\n"
-                                "سرویس تأمین (G2Bulk) تحویل را رد کرد یا ناموفق بود.\n"
-                            )
-                            if amount > 0:
-                                text += (
-                                    f"💰 مبلغ {amount:,} تومان به کیف پولت واریز شد."
-                                )
-                            else:
-                                text += "پشتیبانی وضعیت را بررسی می‌کند."
-                            await app.bot.send_message(
-                                chat_id=int(telegram_id), text=text,
-                            )
-                        except Exception:
-                            logging.getLogger(__name__).exception(
-                                'Could not notify user for refunded order %s',
-                                order_id,
-                            )
-                    # همیشه فلگ را بزن تا اسپم نشود (حتی اگر ارسال شکست بخورد)
-                    await asyncio.to_thread(
-                        mark_delivery_notified, order_id, 'user'
-                    )
-                if not admin_done:
-                    try:
-                        admin_text = (
-                            f"❌ سفارش #{order_id} در G2Bulk ناموفق بود و لغو شد."
-                        )
-                        if amount > 0:
-                            admin_text += (
-                                f"\n💰 {amount:,} ت به کیف پول کاربر "
-                                f"`{telegram_id or '—'}` واریز شد."
-                            )
-                        await notify_admin(
-                            app.bot, admin_text, parse_mode='Markdown',
-                        )
-                    except Exception:
-                        logging.getLogger(__name__).exception(
-                            'Could not notify admin for refunded order %s',
-                            order_id,
-                        )
-                    await asyncio.to_thread(
-                        mark_delivery_notified, order_id, 'admin'
+                if not user_done or not admin_done:
+                    await notify_g2_refund(
+                        app.bot,
+                        order_id,
+                        telegram_id=telegram_id,
+                        amount=int(refunded or 0),
                     )
         except asyncio.CancelledError:
             raise

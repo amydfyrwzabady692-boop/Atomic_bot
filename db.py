@@ -1394,7 +1394,9 @@ def _refund_failed_order(order_id):
             cur.execute(
                 '''UPDATE "Orders"
                    SET "Status"='cancelled',"WalletPaid"=0,
-                       "PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL
+                       "PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL,
+                       "DeliveryUserNotifiedAt"=NULL,
+                       "DeliveryAdminNotifiedAt"=NULL
                    WHERE "Id"=%s''',
                 (order_id,),
             )
@@ -3092,9 +3094,16 @@ def admin_operations_snapshot(low_stock_threshold=5):
             f'(SELECT COALESCE(SUM("TotalAmount"-"DiscountAmount"),0) FROM "Orders" '
             f' WHERE "CreatedAt">=CURRENT_DATE AND "Status" IN {successful}),'
             '(SELECT COUNT(*) FROM "PaymentReceipts" WHERE "Status"=\'pending\'),'
-            '(SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'processing\' '
-            ' AND "PaymentVerifiedAt" IS NOT NULL '
-            ' AND "PaymentVerifiedAt"<now()-interval \'15 minutes\'),'
+            '(SELECT COUNT(*) FROM "Orders" o WHERE o."Status"=\'processing\' '
+            ' AND o."PaymentVerifiedAt" IS NOT NULL '
+            ' AND o."PaymentVerifiedAt"<now()-interval \'15 minutes\' '
+            ' AND NOT EXISTS ('
+            '   SELECT 1 FROM "WalletTransactions" wt '
+            '   JOIN "Wallets" wa ON wa."Id"=wt."WalletId" '
+            '   WHERE wa."UserId"=o."UserId" AND wt."Kind"=\'charge\' '
+            '     AND (wt."Description"=(\'برگشت تحویل ناموفق سفارش #\' || o."Id") '
+            '          OR wt."Description"=(\'لغو توسط ادمین سفارش #\' || o."Id"))'
+            ' )),'
             '(SELECT COUNT(*) FROM "PaymentAttempts" WHERE "Status"=\'failed\' '
             ' AND "CreatedAt">=now()-interval \'24 hours\'),'
             '(SELECT COUNT(*) FROM "SupportTickets" WHERE "Status"=\'open\'),'
@@ -3119,7 +3128,10 @@ def admin_operations_snapshot(low_stock_threshold=5):
 
 
 def list_stuck_processing_orders(limit=30, older_minutes=15):
-    """سفارش پرداخت‌شده‌ای که بیش از حد در processing مانده است."""
+    """سفارش پرداخت‌شده‌ای که بیش از حد در processing مانده است.
+
+    سفارش‌هایی که پولشان به کیف پول برگشته (لغو/ریفاند) اینجا نمی‌آیند.
+    """
     limit = max(1, min(int(limit), 100))
     older_minutes = max(5, min(int(older_minutes), 24 * 60))
     with get_conn() as conn, conn.cursor() as cur:
@@ -3131,10 +3143,48 @@ def list_stuck_processing_orders(limit=30, older_minutes=15):
             'LEFT JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
             'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
             'AND o."PaymentVerifiedAt"<now()-(%s * interval \'1 minute\') '
+            'AND NOT EXISTS ('
+            '  SELECT 1 FROM "WalletTransactions" wt '
+            '  JOIN "Wallets" wa ON wa."Id"=wt."WalletId" '
+            '  WHERE wa."UserId"=o."UserId" AND wt."Kind"=\'charge\' '
+            '    AND (wt."Description"=(\'برگشت تحویل ناموفق سفارش #\' || o."Id") '
+            '         OR wt."Description"=(\'لغو توسط ادمین سفارش #\' || o."Id"))'
+            ') '
             'GROUP BY o."Id" ORDER BY o."PaymentVerifiedAt" LIMIT %s',
             (older_minutes, limit),
         )
         return cur.fetchall()
+
+
+def close_orders_already_refunded(limit=50):
+    """اگر پول برگشته ولی وضعیت هنوز paid/processing است، سفارش را لغو کن.
+
+    خروجی: تعداد سفارش‌هایی که وضعیت‌شان اصلاح شد.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''UPDATE "Orders" o
+               SET "Status"='cancelled',"WalletPaid"=0,
+                   "PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL
+               WHERE o."Id" IN (
+                 SELECT o2."Id" FROM "Orders" o2
+                 WHERE o2."Status" IN ('paid','processing')
+                   AND EXISTS (
+                     SELECT 1 FROM "WalletTransactions" wt
+                     JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                     WHERE wa."UserId"=o2."UserId" AND wt."Kind"='charge'
+                       AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o2."Id")
+                            OR wt."Description"=('لغو توسط ادمین سفارش #' || o2."Id"))
+                   )
+                 ORDER BY o2."Id"
+                 LIMIT %s
+               )
+               RETURNING o."Id"''',
+            (max(1, min(int(limit), 200)),),
+        )
+        rows = cur.fetchall()
+        conn.commit()
+        return [int(r[0]) for r in rows]
 
 
 def list_low_stock_items(threshold=5, limit=50):
@@ -3896,7 +3946,11 @@ def get_admin_stats():
         )
         open_orders = cur.fetchone()[0]
         cur.execute(
-            'SELECT COUNT(*) FROM "GemOrderInfo" WHERE "G2BulkStatus"=\'FAILED\''
+            'SELECT COUNT(DISTINCT o."Id") FROM "Orders" o '
+            'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'paid\',\'processing\') '
+            'AND COALESCE(g."G2BulkStatus",\'\') '
+            'IN (\'FAILED\',\'REJECTED\')'
         )
         failed_g2 = cur.fetchone()[0]
         cur.execute(
@@ -3965,7 +4019,17 @@ def list_unnotified_refunds(limit=50):
                       ),0)
                FROM "Orders" o
                WHERE o."Status" IN ('cancelled','canceled')
-                 AND o."PaymentVerifiedAt" IS NOT NULL
+                 AND (
+                      o."PaymentVerifiedAt" IS NOT NULL
+                      OR COALESCE(o."WalletPaid",0) > 0
+                      OR EXISTS (
+                          SELECT 1 FROM "WalletTransactions" wt
+                          JOIN "Wallets" wa ON wa."Id"=wt."WalletId"
+                          WHERE wa."UserId"=o."UserId" AND wt."Kind"='charge'
+                            AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o."Id")
+                                 OR wt."Description"=('لغو توسط ادمین سفارش #' || o."Id"))
+                      )
+                 )
                  AND (o."DeliveryUserNotifiedAt" IS NULL
                       OR o."DeliveryAdminNotifiedAt" IS NULL)
                ORDER BY o."Id" DESC LIMIT %s''',
