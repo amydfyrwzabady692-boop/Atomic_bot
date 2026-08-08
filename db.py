@@ -3917,14 +3917,15 @@ def get_admin_stats():
 
 
 def list_failed_deliveries(limit=20):
-    """سفارش‌هایی که تحویل G2Bulk شکست خورده."""
+    """سفارش‌های پرداخت‌شده که تحویل G2Bulk شکست خورده (نه لغو/تحویل‌شده)."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT DISTINCT o."Id", o."TelegramId", o."TotalAmount", o."Status", '
             'o."PaymentMethod", g."GameUID", g."G2BulkStatus" '
             'FROM "Orders" o '
             'JOIN "GemOrderInfo" g ON g."OrderId"=o."Id" '
-            'WHERE COALESCE(g."G2BulkStatus",\'\') '
+            'WHERE o."Status" IN (\'paid\',\'processing\') '
+            'AND COALESCE(g."G2BulkStatus",\'\') '
             'IN (\'FAILED\',\'REJECTED\',\'SUBMIT_UNKNOWN\') '
             'ORDER BY o."Id" DESC LIMIT %s',
             (limit,),

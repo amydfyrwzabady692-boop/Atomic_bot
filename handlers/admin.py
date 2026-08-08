@@ -480,16 +480,19 @@ async def admin_wallet_empty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         str(armed.get('tg') or '') != str(tg)
         or time.time() - float(armed.get('armed_at') or 0) > 120
     ):
-        await query.answer(
+        await query.edit_message_text(
             'تأیید منقضی یا نامعتبر است؛ دوباره از کارت کاربر شروع کن.',
-            show_alert=True,
+            reply_markup=admin_user_keyboard(tg, profile[5]),
         )
         return
     ok, old, new_bal, err = admin_set_wallet_balance(
         profile[0], 0, desc=f'خالی کردن توسط ادمین tg:{tg}'
     )
     if not ok:
-        await query.answer(err or 'خطا', show_alert=True)
+        await query.edit_message_text(
+            err or 'خطا',
+            reply_markup=admin_user_keyboard(tg, profile[5]),
+        )
         return
     log_admin_action(
         update.effective_user.id, 'wallet_emptied', 'user', tg,
@@ -641,19 +644,29 @@ async def admin_open_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not await _require_admin(update):
         return
-    rows = list_open_orders(20)
+    rows = list_open_orders(15)
     lines = ["✦ *سفارش‌های باز*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     if not rows:
         lines.append("موردی نیست.")
     else:
         for r in rows:
-            lines.append(f"#{r[0]} · {r[2]:,} ت · `{r[3]}` · `{r[1]}`")
-            oid, tg = r[0], r[1]
-            buttons.append([
-                InlineKeyboardButton(f'✅ انجام شد #{oid}', callback_data=f'adm_done_{oid}'),
-                InlineKeyboardButton(f'🗑 لغو #{oid}', callback_data=f'adm_cancel_{oid}'),
-            ])
+            oid, tg, total, status, method, _created = r
+            lines.append(f"#{oid} · {total:,} ت · `{status}` · `{method}` · `{tg}`")
+            if status == 'pending':
+                buttons.append([
+                    InlineKeyboardButton(
+                        f'🗑 لغو پرداخت‌نشده #{oid}', callback_data=f'adm_cancel_{oid}'
+                    ),
+                ])
+            else:
+                buttons.append([
+                    InlineKeyboardButton(f'✅ انجام شد #{oid}', callback_data=f'adm_done_{oid}'),
+                    InlineKeyboardButton(f'🗑 لغو+ریفاند #{oid}', callback_data=f'adm_cancel_{oid}'),
+                ])
+                buttons.append([
+                    InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}'),
+                ])
     buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
     await query.edit_message_text(
         "\n".join(lines), parse_mode='Markdown',
@@ -669,7 +682,10 @@ async def admin_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     order_id = int(query.data.replace('adm_retry_', ''))
     order = get_order(order_id)
     if not order:
-        await query.answer("سفارش نیست", show_alert=True)
+        await query.edit_message_text(
+            "سفارش نیست",
+            reply_markup=admin_home_keyboard(),
+        )
         return
     success, status = await fulfill_order_async(order_id)
     tg = order[6]

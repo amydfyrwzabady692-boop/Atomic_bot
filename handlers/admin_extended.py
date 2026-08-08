@@ -181,10 +181,21 @@ async def _edit(query, text, rows, markdown=False):
 
 async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    # _guard خودش در صورت عدم دسترسی answer می‌زند — دوباره نزن
     if not await _guard(update):
         return
     data = query.data
+
+    # این شاخه‌ها خودشان answer می‌زنند (جلوگیری از Query is too old / double answer)
+    self_answer = (
+        data in ('admx_noop', 'admx_pricesync')
+        or data.startswith('admx_delconfirm_')
+        or data.startswith('admx_massconfirm_')
+        or data.startswith('admx_adminremove_')
+        or data.startswith('admx_gemtoggle_')
+    )
+    if not self_answer:
+        await query.answer()
 
     if data == 'admx_ops':
         threshold = _low_stock_threshold()
@@ -684,7 +695,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kind = data.replace('admx_users_', '')
         titles = {'balance': 'دارای موجودی', 'referral': 'دارای زیرمجموعه',
                   'card': 'شماره کارت فعال'}
-        rows = list_users_filtered(kind)
+        rows = list_users_filtered(kind, limit=12)
         lines = [f'👥 کاربران {titles.get(kind, "")}', '━━━━━━━━━━━━━━━']
         buttons = []
         for tg, name, username, balance, refs, card in rows:
@@ -695,13 +706,20 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 extra = f'{refs} زیرمجموعه · موجودی {balance:,} ت'
             else:
                 extra = f'{card or "—"} · موجودی {balance:,} ت'
-            lines.append(f'{handle} · `{tg}` · {extra}')
+            lines.append(f'{_md_safe(handle)} · `{tg}` · {extra}')
             buttons.append([
-                InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
-                InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
+                InlineKeyboardButton(
+                    f'👤 {_md_safe(handle, 18)}', callback_data=f'adm_user_{tg}'
+                ),
+            ])
+            buttons.append([
+                InlineKeyboardButton(f'➖ کسر', callback_data=f'adm_wdeduct_{tg}'),
+                InlineKeyboardButton(f'➕ شارژ', callback_data=f'adm_wal_{tg}'),
             ])
         if not rows:
             lines.append('موردی ثبت نشده است.')
+        else:
+            lines.append('\nحداکثر ۱۲ مورد اخیر — برای بقیه از جستجوی کاربر استفاده کن.')
         buttons.append(_back('admx_actions'))
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_receipts':
@@ -896,12 +914,23 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not g:
             await _edit(query, 'بسته پیدا نشد.', [_back('admx_gems')])
         else:
-            # IsActive = نمایش در کاتالوگ (همان چیزی که لیست با ✅/❌ نشان می‌دهد)
             update_gem_package(gid, 'IsActive', not bool(g[12]))
-            await query.edit_message_text(
-                '✅ وضعیت فعال بودن بسته تغییر کرد.',
-                reply_markup=_kb([_back('admx_gems')]),
-            )
+            g = get_gem_admin(gid)
+            await _edit(query, (
+                f'💎 {g[1]}\nشناسه: {g[0]}\nمقدار: {g[2]}\n'
+                f'قیمت: {g[4]:,} تومان\nموجودی: {g[10]}\n'
+                f'قابل خرید (موجود): {"بله" if g[11] else "خیر"}\n'
+                f'فعال در کاتالوگ: {"بله" if g[12] else "خیر"}\n\n'
+                '✅ وضعیت فعال بودن بسته تغییر کرد.'
+            ), [
+                [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_gemprice_{gid}'),
+                 InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_gemtitle_{gid}')],
+                [InlineKeyboardButton('✏️ موجودی', callback_data=f'admi_gemstock_{gid}'),
+                 InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_gemtoggle_{gid}')],
+                [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_gemmove_up_{gid}'),
+                 InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_gemmove_down_{gid}')],
+                _back('admx_gems'),
+            ])
     elif data == 'admx_sense':
         rows = list_sense_packages()
         buttons = [[InlineKeyboardButton(
