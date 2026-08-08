@@ -1,4 +1,3 @@
-"""بخش‌های توسعه‌یافته پنل تلگرامی ادمین."""
 import asyncio
 import time
 import uuid
@@ -19,7 +18,7 @@ from forced_join_logic import (
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
-    delete_simple_record, get_gem, get_order_admin, get_payment_receipt,
+    delete_simple_record, get_gem_admin, get_order_admin, get_payment_receipt,
     get_promo_code, get_sense_package, get_setting, get_store_product,
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
     list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
@@ -166,9 +165,18 @@ async def _edit(query, text, rows, markdown=False):
             text, parse_mode='Markdown' if markdown else None, reply_markup=_kb(rows)
         )
     except Exception as exc:
-        # "Message is not modified" is benign — the content already matches.
-        if 'not modified' not in str(exc).lower():
-            raise
+        msg = str(exc).lower()
+        if 'not modified' in msg:
+            return
+        if markdown:
+            try:
+                await query.edit_message_text(text, reply_markup=_kb(rows))
+                return
+            except Exception as exc2:
+                if 'not modified' in str(exc2).lower():
+                    return
+                raise
+        raise
 
 
 async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -701,18 +709,22 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         wallet_rows = list_pending_wallet_card_charges(30)
         lines = ['🧾 *رسیدهای تاییدنشده*', '━━━━━━━━━━━━━━━']
         buttons = []
-        for oid, tg, total, _created in rows:
-            lines.append(f'سفارش `#{oid}` · {total:,} ت · `{tg}`')
+        for oid, tg, total, _created, _file_id, _rid in rows:
+            lines.append(f'🛒 سفارش `#{oid}` · {total:,} ت · `{tg}`')
             buttons.append([InlineKeyboardButton(
-                f'بررسی سفارش #{oid}', callback_data=f'admx_receipt_{oid}'
+                f'🖼 بررسی رسید سفارش #{oid}', callback_data=f'admx_receipt_{oid}'
             )])
-        for txid, amount, _authority, _uid, tg, name in wallet_rows:
-            lines.append(f'شارژ کیف پول `#{txid}` · {amount:,} ت · `{tg}` · {name or "—"}')
+        for row in wallet_rows:
+            txid, amount, _authority, _uid, tg, name = row[:6]
+            lines.append(
+                f'💰 شارژ `#{txid}` · {amount:,} ت · `{tg}` · {_md_safe(name)}'
+            )
             buttons.append([InlineKeyboardButton(
-                f'✅ بررسی شارژ #{txid}', callback_data=f'wadmin_review_ok_{txid}'
-            ), InlineKeyboardButton('❌ بررسی رد', callback_data=f'wadmin_review_no_{txid}')])
+                f'🖼 بررسی رسید شارژ #{txid}', callback_data=f'admx_wreceipt_{txid}'
+            )])
         if not rows and not wallet_rows:
             lines.append('✅ رسید تاییدنشده‌ای وجود ندارد.')
+        buttons.append([InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_receipts')])
         buttons.append(_back('admx_finance'))
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data.startswith('admx_receipt_'):
@@ -723,26 +735,62 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             caption = (
                 f'🧾 سفارش #{oid}\n'
-                f'کاربر: {order[7] or "—"} @{order[8] or "—"}\n'
+                f'کاربر: {_md_safe(order[7])} @{_md_safe(order[8])}\n'
                 f'شناسه: {order[1]}\nمبلغ: {order[2]:,} تومان\n'
                 f'روش: {order[4]}\nوضعیت: {order[5]}'
             )
-            receipt = get_payment_receipt(order_id=oid)
+            receipt = get_payment_receipt(order_id=oid, pending_only=True)
+            review_kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        '✅ بررسی برای تأیید',
+                        callback_data=f'admin_review_ok_{oid}',
+                    ),
+                    InlineKeyboardButton(
+                        '❌ بررسی برای رد',
+                        callback_data=f'admin_review_no_{oid}',
+                    ),
+                ],
+                [InlineKeyboardButton('🔙 لیست رسیدها', callback_data='admx_receipts')],
+            ])
             if receipt and receipt[2]:
+                sent = False
                 try:
                     await query.message.reply_photo(
                         photo=receipt[2], caption=caption,
-                        reply_markup=admin_card_keyboard(oid),
+                        reply_markup=review_kb,
                     )
+                    sent = True
                 except Exception:
-                    await query.message.reply_document(
-                        document=receipt[2], caption=caption,
-                        reply_markup=admin_card_keyboard(oid),
+                    try:
+                        await query.message.reply_document(
+                            document=receipt[2], caption=caption,
+                            reply_markup=review_kb,
+                        )
+                        sent = True
+                    except Exception:
+                        sent = False
+                if sent:
+                    await query.edit_message_text(
+                        f'🧾 تصویر رسید سفارش #{oid} در پیام بعدی نمایش داده شد.\n'
+                        'از دکمه‌های زیر همان عکس تایید/رد کن.',
+                        reply_markup=_kb([
+                            [InlineKeyboardButton('🔄 لیست رسیدها', callback_data='admx_receipts')],
+                            _back('admx_finance'),
+                        ]),
                     )
-                await query.edit_message_text(
-                    f'🧾 تصویر رسید سفارش #{oid} در پیام بعدی نمایش داده شد.',
-                    reply_markup=_kb([_back('admx_receipts')]),
-                )
+                else:
+                    await _edit(
+                        query,
+                        caption + '\n\n⚠️ ارسال تصویر رسید ناموفق بود؛ file_id نامعتبر است.',
+                        [
+                            [InlineKeyboardButton(
+                                '❌ بررسی برای رد',
+                                callback_data=f'admin_review_no_{oid}',
+                            )],
+                            _back('admx_receipts'),
+                        ],
+                    )
             else:
                 await _edit(query, caption + '\n\n⚠️ فایل تصویری برای این رسید ثبت نشده.', [
                     [InlineKeyboardButton(
@@ -751,6 +799,59 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )],
                     _back('admx_receipts'),
                 ])
+    elif data.startswith('admx_wreceipt_'):
+        txid = int(data.rsplit('_', 1)[1])
+        from db import get_wallet_tx
+        from keyboards import admin_wallet_card_keyboard
+        row = get_wallet_tx(txid)
+        receipt = get_payment_receipt(wallet_tx_id=txid, pending_only=True)
+        if not row:
+            await _edit(query, 'تراکنش پیدا نشد.', [_back('admx_receipts')])
+        else:
+            _id, amount, authority, is_paid, _uid, tg, bal = row
+            caption = (
+                f'💰 شارژ کیف پول #{txid}\n'
+                f'مبلغ: {amount:,} تومان\n'
+                f'کاربر: `{tg}`\n'
+                f'موجودی فعلی: {int(bal or 0):,} ت\n'
+                f'وضعیت: {"پرداخت‌شده" if is_paid else "در انتظار"}'
+            )
+            if receipt and receipt[2] and not is_paid:
+                try:
+                    await query.message.reply_photo(
+                        photo=receipt[2], caption=caption,
+                        reply_markup=admin_wallet_card_keyboard(txid),
+                        parse_mode='Markdown',
+                    )
+                except Exception:
+                    try:
+                        await query.message.reply_document(
+                            document=receipt[2], caption=caption,
+                            reply_markup=admin_wallet_card_keyboard(txid),
+                            parse_mode='Markdown',
+                        )
+                    except Exception:
+                        await _edit(
+                            query,
+                            caption + '\n\n⚠️ ارسال تصویر ناموفق بود.',
+                            [_back('admx_receipts')],
+                            markdown=True,
+                        )
+                        return
+                await query.edit_message_text(
+                    f'🧾 تصویر رسید شارژ #{txid} در پیام بعدی نمایش داده شد.',
+                    reply_markup=_kb([
+                        [InlineKeyboardButton('🔄 لیست رسیدها', callback_data='admx_receipts')],
+                        _back('admx_finance'),
+                    ]),
+                )
+            else:
+                await _edit(
+                    query,
+                    caption + '\n\n⚠️ رسید تصویری pending پیدا نشد.',
+                    [_back('admx_receipts')],
+                    markdown=True,
+                )
     elif data == 'admx_gems':
         rows = admin_list_gems()
         buttons = [[InlineKeyboardButton(
@@ -764,14 +865,15 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, '💎 مدیریت بسته‌های جم\nبرای ویرایش یک بسته را انتخاب کن.', buttons)
     elif data.startswith('admx_gem_'):
         gid = int(data.rsplit('_', 1)[1])
-        g = get_gem(gid)
+        g = get_gem_admin(gid)
         if not g:
             await _edit(query, 'بسته پیدا نشد.', [_back('admx_gems')])
         else:
             await _edit(query, (
                 f'💎 {g[1]}\nشناسه: {g[0]}\nمقدار: {g[2]}\n'
                 f'قیمت: {g[4]:,} تومان\nموجودی: {g[10]}\n'
-                f'فعال: {"بله" if g[11] else "خیر"}'
+                f'قابل خرید (موجود): {"بله" if g[11] else "خیر"}\n'
+                f'فعال در کاتالوگ: {"بله" if g[12] else "خیر"}'
             ), [
                 [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_gemprice_{gid}'),
                  InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_gemtitle_{gid}')],
@@ -790,9 +892,16 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     elif data.startswith('admx_gemtoggle_'):
         gid = int(data.rsplit('_', 1)[1])
-        g = get_gem(gid)
-        update_gem_package(gid, 'IsAvailable', not bool(g[11]))
-        await query.edit_message_text('✅ وضعیت بسته تغییر کرد.', reply_markup=_kb([_back('admx_gems')]))
+        g = get_gem_admin(gid)
+        if not g:
+            await _edit(query, 'بسته پیدا نشد.', [_back('admx_gems')])
+        else:
+            # IsActive = نمایش در کاتالوگ (همان چیزی که لیست با ✅/❌ نشان می‌دهد)
+            update_gem_package(gid, 'IsActive', not bool(g[12]))
+            await query.edit_message_text(
+                '✅ وضعیت فعال بودن بسته تغییر کرد.',
+                reply_markup=_kb([_back('admx_gems')]),
+            )
     elif data == 'admx_sense':
         rows = list_sense_packages()
         buttons = [[InlineKeyboardButton(
@@ -807,18 +916,21 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data.startswith('admx_senseitem_'):
         sid = int(data.rsplit('_', 1)[1])
         p = get_sense_package(sid)
-        await _edit(query, (
-            f'🎯 {p[1]}\nپلتفرم: {p[2]}\nقیمت: {p[3]:,} تومان\n'
-            f'توضیح: {p[4] or "—"}\nفعال: {"بله" if p[5] else "خیر"}'
-        ), [
-            [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_senseprice_{sid}'),
-             InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_sensetitle_{sid}')],
-            [InlineKeyboardButton('✏️ توضیح', callback_data=f'admi_sensedesc_{sid}'),
-             InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_sensetoggle_{sid}')],
-            [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_sensemove_up_{sid}'),
-             InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_sensemove_down_{sid}')],
-            _back('admx_sense'),
-        ])
+        if not p:
+            await _edit(query, 'پک پیدا نشد.', [_back('admx_sense')])
+        else:
+            await _edit(query, (
+                f'🎯 {_md_safe(p[1])}\nپلتفرم: {p[2]}\nقیمت: {p[3]:,} تومان\n'
+                f'توضیح: {_md_safe(p[4])}\nفعال: {"بله" if p[5] else "خیر"}'
+            ), [
+                [InlineKeyboardButton('✏️ قیمت', callback_data=f'admi_senseprice_{sid}'),
+                 InlineKeyboardButton('✏️ عنوان', callback_data=f'admi_sensetitle_{sid}')],
+                [InlineKeyboardButton('✏️ توضیح', callback_data=f'admi_sensedesc_{sid}'),
+                 InlineKeyboardButton('فعال/غیرفعال', callback_data=f'admx_sensetoggle_{sid}')],
+                [InlineKeyboardButton('⬆️ بالاتر', callback_data=f'admx_sensemove_up_{sid}'),
+                 InlineKeyboardButton('⬇️ پایین‌تر', callback_data=f'admx_sensemove_down_{sid}')],
+                _back('admx_sense'),
+            ])
     elif data.startswith('admx_sensemove_'):
         _, _, direction, sid = data.split('_', 3)
         move_catalogue_item('sense', int(sid), direction)
@@ -829,8 +941,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data.startswith('admx_sensetoggle_'):
         sid = int(data.rsplit('_', 1)[1])
         p = get_sense_package(sid)
-        update_sense_package(sid, 'IsActive', not bool(p[5]))
-        await query.edit_message_text('✅ وضعیت پک تغییر کرد.', reply_markup=_kb([_back('admx_sense')]))
+        if not p:
+            await _edit(query, 'پک پیدا نشد.', [_back('admx_sense')])
+        else:
+            update_sense_package(sid, 'IsActive', not bool(p[5]))
+            await query.edit_message_text(
+                '✅ وضعیت پک تغییر کرد.',
+                reply_markup=_kb([_back('admx_sense')]),
+            )
     elif data.startswith('admx_product_'):
         pid = int(data.rsplit('_', 1)[1])
         p = get_store_product(pid)
@@ -986,6 +1104,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             '✅ وضعیت تغییر کرد.', reply_markup=_kb([_back(back)])
         )
+    else:
+        await query.answer('این گزینه پنل شناخته نشد یا منقضی شده.', show_alert=True)
 
 
 async def _show_simple_list(query, data):
@@ -1191,12 +1311,23 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order_admin(int(raw.lstrip('#')))
             if not order:
                 raise ValueError('سفارش پیدا نشد.')
+            receipt = None
+            if order[5] == 'pending' and order[4] == 'card_transfer':
+                receipt = get_payment_receipt(order_id=order[0], pending_only=True)
+            kb = (
+                admin_card_keyboard(order[0])
+                if receipt and receipt[2]
+                else admin_home_keyboard()
+            )
             await update.message.reply_text(
-                f'🔎 سفارش #{order[0]}\nکاربر: {order[7] or "—"} @{order[8] or "—"}\n'
+                f'🔎 سفارش #{order[0]}\n'
+                f'کاربر: {_md_safe(order[7])} @{_md_safe(order[8])}\n'
                 f'شناسه تلگرام: `{order[1]}`\nمبلغ: {order[2]:,} تومان\n'
-                f'تخفیف: {order[3]:,}\nروش: {order[4]}\nوضعیت: {order[5]}\nتاریخ: {order[6]}',
-                parse_mode='Markdown', reply_markup=admin_card_keyboard(order[0])
-                if order[5] == 'pending' else admin_home_keyboard(),
+                f'تخفیف: {order[3]:,}\nروش: {order[4]}\nوضعیت: {order[5]}\n'
+                f'تاریخ: {order[6]}'
+                + ('\n📸 رسید تصویری در انتظار بررسی دارد.' if receipt else ''),
+                parse_mode='Markdown',
+                reply_markup=kb,
             )
         elif action.startswith('setting:'):
             key = action.split(':', 1)[1]

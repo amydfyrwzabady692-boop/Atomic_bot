@@ -851,18 +851,58 @@ def approve_card_order_payment(order_id):
 
 
 def reject_card_order_payment(order_id):
-    """رد رسید و بازگشت اتمیک سهم کیف پول."""
-    ok, refunded, error = cancel_order_and_refund(order_id)
-    if not ok:
-        return False, 0, error
+    """رد رسید و بازگشت اتمیک سهم کیف پول در یک تراکنش."""
     with get_conn() as conn, conn.cursor() as cur:
+        try:
+            row, _net, _payable = _locked_order_financials(cur, order_id)
+        except ValueError as e:
+            return False, 0, str(e)
+        if row[6] != 'pending' or row[10]:
+            return False, 0, 'سفارش پرداخت‌شده یا در حال پردازش قابل رد نیست.'
+        if row[7] != 'card_transfer':
+            return False, 0, 'روش پرداخت سفارش کارت‌به‌کارت نیست.'
+        # حتی اگر لینک درگاه هم بوده، رد رسید کارت باید ممکن باشد
+        _release_manual_gem_reservations(cur, order_id)
+        refunded = int(row[5] or 0)
+        if refunded:
+            cur.execute(
+                'SELECT "Id","Balance" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+                (row[1],),
+            )
+            wallet = cur.fetchone()
+            if not wallet:
+                cur.execute(
+                    'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
+                    'VALUES (%s,0,now()) '
+                    'ON CONFLICT ("UserId") DO UPDATE SET "UpdatedAt"=now() '
+                    'RETURNING "Id","Balance"',
+                    (row[1],),
+                )
+                wallet = cur.fetchone()
+            if not wallet:
+                return False, 0, 'کیف پول کاربر پیدا نشد.'
+            cur.execute(
+                'UPDATE "Wallets" SET "Balance"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+                (int(wallet[1]) + refunded, wallet[0]),
+            )
+            cur.execute(
+                'INSERT INTO "WalletTransactions" '
+                '("WalletId","Amount","Kind","Description","IsPaid","CreatedAt") '
+                'VALUES (%s,%s,\'charge\',%s,true,now())',
+                (wallet[0], refunded, f'برگشت کیف پول سفارش #{order_id}'),
+            )
         cur.execute(
             'UPDATE "PaymentReceipts" SET "Status"=\'rejected\',"ReviewedAt"=now() '
             'WHERE "OrderId"=%s AND "Status"=\'pending\'',
             (int(order_id),),
         )
+        cur.execute(
+            'UPDATE "Orders" SET "WalletPaid"=0,"Status"=\'canceled\','
+            '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL WHERE "Id"=%s',
+            (int(order_id),),
+        )
         conn.commit()
-    return True, refunded, None
+        return True, refunded, None
 
 
 def add_order_item(order_id, product_name, price, qty=1, product_id=None):
@@ -2570,12 +2610,39 @@ def get_order_admin(order_id):
 
 
 def list_pending_receipts(limit=30):
+    """فقط سفارش‌هایی که رسید تصویری pending دارند."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."CreatedAt" '
-            'FROM "Orders" o WHERE o."PaymentMethod"=\'card_transfer\' '
-            'AND o."Status"=\'pending\' ORDER BY o."Id" DESC LIMIT %s',
+            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."CreatedAt",'
+            'r."FileId",r."Id" '
+            'FROM "Orders" o '
+            'JOIN "PaymentReceipts" r ON r."OrderId"=o."Id" '
+            'WHERE o."PaymentMethod"=\'card_transfer\' '
+            'AND o."Status"=\'pending\' '
+            'AND r."Status"=\'pending\' '
+            'AND COALESCE(r."FileId",\'\')<>\'\' '
+            'ORDER BY r."Id" DESC LIMIT %s',
             (int(limit),),
+        )
+        return cur.fetchall()
+
+
+def list_pending_wallet_card_charges(limit=20):
+    """فقط شارژهای کارت‌به‌کارت که رسید تصویری pending دارند."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id", t."Amount", t."Authority", w."UserId", '
+            'u."TelegramId", u."FirstName", r."FileId" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+            'JOIN "PaymentReceipts" r ON r."WalletTransactionId"=t."Id" '
+            'WHERE t."Kind"=\'charge\' AND t."IsPaid"=false '
+            'AND t."Authority" LIKE %s '
+            'AND r."Status"=\'pending\' '
+            'AND COALESCE(r."FileId",\'\')<>\'\' '
+            'ORDER BY t."Id" DESC LIMIT %s',
+            ('wcard_%', int(limit)),
         )
         return cur.fetchall()
 
@@ -2944,13 +3011,25 @@ def financial_health_snapshot():
     return result
 
 
-def get_payment_receipt(order_id=None, wallet_tx_id=None):
+def get_payment_receipt(order_id=None, wallet_tx_id=None, pending_only=True):
     """آخرین رسید ثبت‌شده برای سفارش یا شارژ کیف پول."""
     field = '"OrderId"' if order_id is not None else '"WalletTransactionId"'
     value = order_id if order_id is not None else wallet_tx_id
     if value is None:
         return None
     with get_conn() as conn, conn.cursor() as cur:
+        pending_clause = ' AND "Status"=\'pending\'' if pending_only else ''
+        cur.execute(
+            f'SELECT "Id","TelegramId","FileId","Text","Status","CreatedAt" '
+            f'FROM "PaymentReceipts" WHERE {field}=%s'
+            f'{pending_clause} '
+            f'AND COALESCE("FileId",\'\')<>\'\' '
+            f'ORDER BY "Id" DESC LIMIT 1',
+            (value,),
+        )
+        row = cur.fetchone()
+        if row or pending_only:
+            return row
         cur.execute(
             f'SELECT "Id","TelegramId","FileId","Text","Status","CreatedAt" '
             f'FROM "PaymentReceipts" WHERE {field}=%s '
@@ -2970,6 +3049,16 @@ def mark_receipt_reviewed(order_id=None, wallet_tx_id=None, status='approved'):
             (status, value),
         )
         conn.commit()
+
+
+def get_gem_admin(pk):
+    """دریافت بسته جم برای پنل ادمین — حتی اگر IsActive=false باشد."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT {_GEM_COLS}, "IsActive" FROM "GemPackages" WHERE "Id"=%s',
+            (int(pk),),
+        )
+        return cur.fetchone()
 
 
 def admin_stats_full():
@@ -3792,21 +3881,6 @@ def mark_wallet_tx_rejected(tx_id):
             (tx_id,),
         )
         conn.commit()
-
-
-def list_pending_wallet_card_charges(limit=20):
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'SELECT t."Id", t."Amount", t."Authority", w."UserId", u."TelegramId", u."FirstName" '
-            'FROM "WalletTransactions" t '
-            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
-            'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
-            'WHERE t."Kind"=\'charge\' AND t."IsPaid"=false '
-            'AND t."Authority" LIKE %s '
-            'ORDER BY t."Id" DESC LIMIT %s',
-            ('wcard_%', limit),
-        )
-        return cur.fetchall()
 
 
 def get_admin_stats():

@@ -487,7 +487,7 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"تراکنش #{tx_id}\n"
         f"مبلغ: {amount:,} ت\n"
         f"کاربر: {user.full_name} ({uname})\n"
-        f"تلگرام: `{user.id}`"
+        f"تلگرام: {user.id}"
     )
     file_id = (update.message.photo[-1].file_id if update.message.photo else
                update.message.document.file_id if update.message.document else '')
@@ -525,26 +525,26 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             for aid in recipients:
                 await ctx.bot.send_photo(
                     chat_id=aid, photo=update.message.photo[-1].file_id,
-                    caption=caption, parse_mode='Markdown',
+                    caption=caption,
+                    reply_markup=admin_wallet_card_keyboard(tx_id),
+                )
+        elif update.message.document:
+            for aid in recipients:
+                await ctx.bot.send_document(
+                    chat_id=aid, document=update.message.document.file_id,
+                    caption=caption,
                     reply_markup=admin_wallet_card_keyboard(tx_id),
                 )
         else:
             text = caption
-            if update.message.document:
-                for aid in recipients:
-                    await ctx.bot.send_document(
-                        chat_id=aid, document=update.message.document.file_id,
-                        caption=caption, parse_mode='Markdown',
-                        reply_markup=admin_wallet_card_keyboard(tx_id),
-                    )
-            else:
-                if update.message.text:
-                    text += f"\n\nپیام کاربر:\n{update.message.text}"
-                await notify_admin(
-                    ctx.bot,
-                    text,
-                    reply_markup=admin_wallet_card_keyboard(tx_id),
-                )
+            if update.message.text:
+                text += f"\n\nپیام کاربر:\n{update.message.text}"
+            await notify_admin(
+                ctx.bot,
+                text,
+                reply_markup=admin_wallet_card_keyboard(tx_id),
+                parse_mode=None,
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ ارسال به ادمین ناموفق: {e}")
         return ConversationHandler.END
@@ -615,7 +615,7 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text(f"✅ شارژ کیف پول #{tx_id} تایید شد — {amt:,} ت")
         except Exception:
-            pass
+            await query.answer(f"تایید شد — {amt:,} ت", show_alert=True)
     if tg_id:
         try:
             await ctx.bot.send_message(
@@ -717,7 +717,7 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text(f"❌ شارژ کیف پول #{tx_id} رد شد.")
         except Exception:
-            pass
+            await query.answer("رسید رد شد", show_alert=True)
     if tg_id:
         try:
             await ctx.bot.send_message(
