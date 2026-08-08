@@ -305,18 +305,15 @@ async def _g2_reconcile_loop(app):
                             await app.bot.send_message(
                                 chat_id=int(telegram_id), text=text,
                             )
-                            await asyncio.to_thread(
-                                mark_delivery_notified, order_id, 'user'
-                            )
                         except Exception:
                             logging.getLogger(__name__).exception(
                                 'Could not notify user for refunded order %s',
                                 order_id,
                             )
-                    else:
-                        await asyncio.to_thread(
-                            mark_delivery_notified, order_id, 'user'
-                        )
+                    # همیشه فلگ را بزن تا اسپم نشود (حتی اگر ارسال شکست بخورد)
+                    await asyncio.to_thread(
+                        mark_delivery_notified, order_id, 'user'
+                    )
                 if not admin_done:
                     try:
                         admin_text = (
@@ -327,18 +324,17 @@ async def _g2_reconcile_loop(app):
                                 f"\n💰 {amount:,} ت به کیف پول کاربر "
                                 f"`{telegram_id or '—'}` واریز شد."
                             )
-                        admin_sent = await notify_admin(
+                        await notify_admin(
                             app.bot, admin_text, parse_mode='Markdown',
                         )
-                        if admin_sent:
-                            await asyncio.to_thread(
-                                mark_delivery_notified, order_id, 'admin'
-                            )
                     except Exception:
                         logging.getLogger(__name__).exception(
                             'Could not notify admin for refunded order %s',
                             order_id,
                         )
+                    await asyncio.to_thread(
+                        mark_delivery_notified, order_id, 'admin'
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -3970,7 +3970,11 @@ def move_catalogue_item(kind, item_id, direction):
 
 
 def mark_delivery_notified(order_id, target):
-    """Atomically persist one successful notification delivery."""
+    """Atomically persist one successful notification delivery.
+
+    برای سفارش‌های delivered/completed (موفق) و cancelled/canceled (ریفاند ناموفق)
+    فلگ نوتیف را می‌زند تا حلقه reconcile اسپم نکند.
+    """
     column = {
         'user': '"DeliveryUserNotifiedAt"',
         'admin': '"DeliveryAdminNotifiedAt"',
@@ -3980,13 +3984,39 @@ def mark_delivery_notified(order_id, target):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f'UPDATE "Orders" SET {column}=COALESCE({column},now()) '
-            'WHERE "Id"=%s AND "Status" IN (\'delivered\',\'completed\') '
+            'WHERE "Id"=%s AND "Status" IN '
+            '(\'delivered\',\'completed\',\'cancelled\',\'canceled\') '
             f'RETURNING {column}',
             (int(order_id),),
         )
         updated = bool(cur.fetchone())
         conn.commit()
         return updated
+
+
+def silence_refund_notifications(order_id=None):
+    """برای توقف فوری اسپم: فلگ نوتیف سفارش‌های لغو‌شده را بزن."""
+    with get_conn() as conn, conn.cursor() as cur:
+        if order_id is not None:
+            cur.execute(
+                'UPDATE "Orders" SET '
+                '"DeliveryUserNotifiedAt"=COALESCE("DeliveryUserNotifiedAt",now()),'
+                '"DeliveryAdminNotifiedAt"=COALESCE("DeliveryAdminNotifiedAt",now()) '
+                'WHERE "Id"=%s AND "Status" IN (\'cancelled\',\'canceled\')',
+                (int(order_id),),
+            )
+        else:
+            cur.execute(
+                'UPDATE "Orders" SET '
+                '"DeliveryUserNotifiedAt"=COALESCE("DeliveryUserNotifiedAt",now()),'
+                '"DeliveryAdminNotifiedAt"=COALESCE("DeliveryAdminNotifiedAt",now()) '
+                'WHERE "Status" IN (\'cancelled\',\'canceled\') '
+                'AND ("DeliveryUserNotifiedAt" IS NULL '
+                'OR "DeliveryAdminNotifiedAt" IS NULL)'
+            )
+        count = cur.rowcount
+        conn.commit()
+        return count
 
 
 def list_open_orders(limit=20):
