@@ -124,6 +124,7 @@ async def _show_home(update, ctx, via_message=False):
         f"کاربران: *{s['users']:,}*  ·  بلاک: {s['blocked']}\n"
         f"سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
         f"تحویل ناموفق: *{s['failed_g2']:,}*\n"
+        f"برگشت کیف پول ۷روز: *{ops.get('wallet_refunds_7d', 0):,}*\n"
         f"تیکت باز: *{s['open_tickets']:,}*\n"
         f"مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
         f"━━━━━━━━━━━━━━━\n"

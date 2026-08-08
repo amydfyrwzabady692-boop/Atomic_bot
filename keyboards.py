@@ -265,6 +265,7 @@ def admin_home_keyboard():
             InlineKeyboardButton('تحویل ناموفق', callback_data='adm_failed'),
             InlineKeyboardButton('سفارش‌های باز', callback_data='adm_open'),
         ],
+        [InlineKeyboardButton('💰 برگشت به کیف پول', callback_data='admx_refunds')],
         [InlineKeyboardButton('تیکت‌ها', callback_data='adm_tickets')],
         [
             InlineKeyboardButton('🛍 مدیریت فروشگاه', callback_data='admx_shop'),

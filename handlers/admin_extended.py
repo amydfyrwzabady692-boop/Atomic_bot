@@ -31,7 +31,7 @@ from db import (
     remove_forced_join_channel,
     financial_health_snapshot, list_admin_actions, log_admin_action,
     admin_operations_snapshot, list_stuck_processing_orders,
-    list_low_stock_items,
+    list_low_stock_items, list_wallet_refunded_orders,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import admin_card_keyboard, admin_home_keyboard
@@ -219,7 +219,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'⏳ سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
             f'❌ خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
             f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
-            f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n\n'
+            f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
+            f'💰 برگشت به کیف پول (۷ روز): *{ops.get("wallet_refunds_7d", 0):,}*\n\n'
             f'فروش امروز: *{ops["sales_today_amount"]:,} تومان* '
             f'از {ops["sales_today_count"]:,} سفارش'
         )
@@ -228,6 +229,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'🧾 رسیدها ({ops["pending_receipts"]})', callback_data='admx_receipts'
             ), InlineKeyboardButton(
                 f'⏳ گیرکرده‌ها ({ops["stuck_processing"]})', callback_data='admx_stuck'
+            )],
+            [InlineKeyboardButton(
+                f'💰 برگشت کیف پول ({ops.get("wallet_refunds_7d", 0)})',
+                callback_data='admx_refunds',
             )],
             [InlineKeyboardButton(
                 f'📦 موجودی کم ({ops["low_gem_stock"] + ops["low_store_stock"]})',
@@ -290,6 +295,41 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append('✅ سفارش گیرکرده‌ای وجود ندارد.')
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_stuck')],
+            _back('admx_ops'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+    elif data == 'admx_refunds':
+        rows = list_wallet_refunded_orders(15)
+        lines = [
+            '💰 *برگشت به کیف پول*',
+            'سفارش‌هایی که پولشان به کیف پول کاربر برگشته',
+            '━━━━━━━━━━━━━━━',
+        ]
+        buttons = []
+        for (
+            oid, tg, total, status, method, refunded, kind, refunded_at, g2_st
+        ) in rows:
+            kind_label = 'لغو ادمین' if kind == 'admin' else 'شکست G2B'
+            when = str(refunded_at)[:16] if refunded_at else '—'
+            safe_method = str(method or '—').replace('_', '-')
+            safe_g2 = str(g2_st or '—').replace('_', '-')
+            lines.append(
+                f'• `#{oid}` · ✅ *{int(refunded or 0):,}* ت برگشت\n'
+                f'  {kind_label} · سفارش {int(total or 0):,} ت · `{status}`\n'
+                f'  کاربر `{tg or "—"}` · {safe_method} · G2:{safe_g2}\n'
+                f'  🕒 {when}'
+            )
+            if tg:
+                buttons.append([InlineKeyboardButton(
+                    f'👤 کاربر #{oid}', callback_data=f'adm_user_{tg}'
+                )])
+            if len('\n'.join(lines)) > 3400:
+                lines.append('…')
+                break
+        if not rows:
+            lines.append('موردی ثبت نشده است.')
+        buttons.extend([
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_refunds')],
             _back('admx_ops'),
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)

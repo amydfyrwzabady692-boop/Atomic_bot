@@ -3110,7 +3110,13 @@ def admin_operations_snapshot(low_stock_threshold=5):
             '(SELECT COUNT(*) FROM "GemPackages" WHERE "IsActive"=true '
             ' AND COALESCE("AutoDeliver",false)=false AND "Stock"<=%s),'
             '(SELECT COUNT(*) FROM "StoreProducts" WHERE "IsActive"=true '
-            ' AND "Stock"<=%s)',
+            ' AND "Stock"<=%s),'
+            '(SELECT COUNT(DISTINCT o."Id") FROM "Orders" o '
+            ' JOIN "WalletTransactions" wt ON wt."Kind"=\'charge\' '
+            ' JOIN "Wallets" wa ON wa."Id"=wt."WalletId" AND wa."UserId"=o."UserId" '
+            ' WHERE (wt."Description"=(\'برگشت تحویل ناموفق سفارش #\' || o."Id") '
+            '     OR wt."Description"=(\'لغو توسط ادمین سفارش #\' || o."Id")) '
+            ' AND wt."CreatedAt">=now()-interval \'7 days\')',
             (threshold, threshold),
         )
         row = cur.fetchone()
@@ -3118,13 +3124,68 @@ def admin_operations_snapshot(low_stock_threshold=5):
         'new_users_today', 'orders_today', 'sales_today_count',
         'sales_today_amount', 'pending_receipts', 'stuck_processing',
         'failed_payments_24h', 'open_tickets', 'low_gem_stock',
-        'low_store_stock',
+        'low_store_stock', 'wallet_refunds_7d',
     )
     result = dict(zip(keys, row, strict=True))
     for key in keys:
         result[key] = int(result[key] or 0)
     result['low_stock_threshold'] = threshold
     return result
+
+
+def list_wallet_refunded_orders(limit=20):
+    """سفارش‌هایی که مبلغشان به کیف پول برگشته (G2B fail یا لغو ادمین).
+
+    خروجی هر ردیف:
+      id, telegram_id, total_amount, status, payment_method,
+      refunded_amount, refund_kind, refunded_at, g2_statuses
+    """
+    limit = max(1, min(int(limit), 50))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT o."Id", o."TelegramId", o."TotalAmount", o."Status",
+                      o."PaymentMethod",
+                      SUM(wt."Amount") AS refunded_amount,
+                      CASE
+                        WHEN bool_or(wt."Description" LIKE 'لغو توسط ادمین%%')
+                          THEN 'admin'
+                        ELSE 'g2b'
+                      END AS refund_kind,
+                      MAX(wt."CreatedAt") AS refunded_at,
+                      COALESCE(
+                        string_agg(DISTINCT COALESCE(g."G2BulkStatus", '-'), ','),
+                        '-'
+                      ) AS g2_statuses
+               FROM "Orders" o
+               JOIN "Wallets" wa ON wa."UserId"=o."UserId"
+               JOIN "WalletTransactions" wt ON wt."WalletId"=wa."Id"
+                 AND wt."Kind"='charge'
+                 AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o."Id")
+                      OR wt."Description"=('لغو توسط ادمین سفارش #' || o."Id"))
+               LEFT JOIN "GemOrderInfo" g ON g."OrderId"=o."Id"
+               GROUP BY o."Id"
+               ORDER BY MAX(wt."CreatedAt") DESC
+               LIMIT %s''',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
+def count_wallet_refunded_orders(days=7):
+    days = max(1, min(int(days), 90))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT COUNT(DISTINCT o."Id")
+               FROM "Orders" o
+               JOIN "Wallets" wa ON wa."UserId"=o."UserId"
+               JOIN "WalletTransactions" wt ON wt."WalletId"=wa."Id"
+                 AND wt."Kind"='charge'
+                 AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o."Id")
+                      OR wt."Description"=('لغو توسط ادمین سفارش #' || o."Id"))
+                 AND wt."CreatedAt">=now()-(%s * interval '1 day')''',
+            (days,),
+        )
+        return int(cur.fetchone()[0] or 0)
 
 
 def list_stuck_processing_orders(limit=30, older_minutes=15):
