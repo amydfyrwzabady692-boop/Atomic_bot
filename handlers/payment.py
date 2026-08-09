@@ -277,15 +277,22 @@ async def _notify_sense_sale(bot, order_id):
     await notify_admin(bot, text)
 
 
-async def _notify_credential_sale(bot, order_id):
+async def _notify_credential_sale(bot, order_id, *, event='paid'):
+    """اعلان ادمین برای سفارش جم با اطلاعات.
+
+    event:
+      created — سفارش ساخته شد، هنوز پرداخت نشده
+      paid — پرداخت تأیید شد؛ ادمین باید تحویل دهد
+    """
     row = await asyncio.to_thread(get_credential_order, order_id)
     if not row:
-        return
+        log.warning('credential notify skipped; order %s not found', order_id)
+        return False
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     method = row[6]
     method_label = {
         'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
-    }.get(method, method)
+    }.get(method, method or '—')
     has_backup = False
     if row[7]:
         try:
@@ -293,24 +300,43 @@ async def _notify_credential_sale(bot, order_id):
             has_backup = bool(str(secret.get('backup_code') or '').strip())
         except Exception:
             has_backup = False
-    await notify_admin(
-        bot,
-        (
-            f'🔐 *سفارش جم با اطلاعات — #{order_id}*\n'
-            f'محصول: {row[4]}\n'
-            f'مبلغ: {row[2]:,} تومان\n'
-            f'روش ورود: `{method_label}`\n'
+    title = str(row[4] or '—')
+    amount = int(row[2] or 0)
+    tg = row[1] or '—'
+    if event == 'created':
+        text = (
+            f'🆕 درخواست جم با اطلاعات — #{order_id}\n'
+            f'محصول: {title}\n'
+            f'مبلغ: {amount:,} تومان\n'
+            f'روش ورود: {method_label}\n'
+            f'کد بک‌آپ: {"ثبت شده" if has_backup else "ثبت نشده"}\n'
+            f'کاربر: {tg}\n'
+            f'وضعیت: در انتظار پرداخت کاربر\n\n'
+            'بعد از پرداخت دوباره خبر می‌دهیم تا تحویل بدهی.'
+        )
+    else:
+        text = (
+            f'💰 پرداخت شد — جم با اطلاعات #{order_id}\n'
+            f'محصول: {title}\n'
+            f'مبلغ: {amount:,} تومان\n'
+            f'روش ورود: {method_label}\n'
             f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else "ثبت نشده ⚠️"}\n'
-            f'کاربر: `{row[1]}`\n\n'
-            'پرداخت تأیید شد. از پنل امن سفارش، اطلاعات را ببین و '
-            '«انجام شد» یا «اطلاعات ناقص» را بزن.'
-        ),
+            f'کاربر: {tg}\n\n'
+            'الان اطلاعات را باز کن، وارد اکانت شو و «انجام شد» بزن.'
+        )
+    ok = await notify_admin(
+        bot,
+        text,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 '🔐 باز کردن سفارش', callback_data=f'admx_credential_{order_id}'
             )
         ]]),
+        parse_mode=None,
     )
+    if not ok:
+        log.error('credential admin notify failed for order %s event=%s', order_id, event)
+    return ok
 
 
 def _parse_refunded_amount(status):
@@ -410,7 +436,12 @@ async def _handle_fulfill_result(
         if status == 'sense_manual':
             await _notify_sense_sale(bot, order_id)
         elif await asyncio.to_thread(get_credential_order, order_id):
-            await _notify_credential_sale(bot, order_id)
+            try:
+                await _notify_credential_sale(bot, order_id, event='paid')
+            except Exception:
+                log.exception(
+                    'credential paid notify crashed for order %s', order_id
+                )
         text = _success_user_text(order_id, status, ref_id)
         if edit_message:
             await edit_message(text)
@@ -1194,26 +1225,68 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
         await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
     elif success and status == 'paid':
-        await _edit_review_message(
-            query, f"✅ سفارش #{order_id} تایید و پردازش شد ({status})."
-        )
-        await _notify_user(
-            ctx.bot,
-            tg_id,
-            f"✅ سفارش #{order_id} تایید شد.\nسفارش ثبت شد.",
-        )
+        is_cred = await asyncio.to_thread(get_credential_order, order_id)
+        if is_cred:
+            try:
+                await _notify_credential_sale(ctx.bot, order_id, event='paid')
+            except Exception:
+                log.exception(
+                    'credential paid notify crashed for card order %s', order_id
+                )
+            await _edit_review_message(
+                query,
+                f"✅ سفارش #{order_id} تایید شد (جم با اطلاعات).\n"
+                "اعلان تحویل برای ادمین ارسال شد.",
+            )
+            await _notify_user(
+                ctx.bot,
+                tg_id,
+                f"✅ سفارش #{order_id} تایید شد.\n"
+                "سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n"
+                "شماره سفارش را نگه دار.",
+            )
+        else:
+            await _edit_review_message(
+                query, f"✅ سفارش #{order_id} تایید و پردازش شد ({status})."
+            )
+            await _notify_user(
+                ctx.bot,
+                tg_id,
+                f"✅ سفارش #{order_id} تایید شد.\nسفارش ثبت شد.",
+            )
     elif success and status == 'processing':
-        await _edit_review_message(
-            query,
-            f"⏳ سفارش #{order_id} به G2Bulk ارسال شد و در حال انجام است.\n"
-            "نتیجه نهایی به‌صورت خودکار بررسی و برای کاربر ارسال می‌شود.",
-        )
-        await _notify_user(
-            ctx.bot,
-            tg_id,
-            f"⏳ سفارش #{order_id} در حال انجام است.\n"
-            "پس از تکمیل، نتیجه خودکار برایت ارسال می‌شود.",
-        )
+        is_cred = await asyncio.to_thread(get_credential_order, order_id)
+        if is_cred:
+            try:
+                await _notify_credential_sale(ctx.bot, order_id, event='paid')
+            except Exception:
+                log.exception(
+                    'credential processing notify crashed for card order %s',
+                    order_id,
+                )
+            await _edit_review_message(
+                query,
+                f"✅ سفارش #{order_id} تایید شد (جم با اطلاعات).\n"
+                "اعلان تحویل برای ادمین ارسال شد.",
+            )
+            await _notify_user(
+                ctx.bot,
+                tg_id,
+                f"✅ سفارش #{order_id} تایید شد.\n"
+                "سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.",
+            )
+        else:
+            await _edit_review_message(
+                query,
+                f"⏳ سفارش #{order_id} به G2Bulk ارسال شد و در حال انجام است.\n"
+                "نتیجه نهایی به‌صورت خودکار بررسی و برای کاربر ارسال می‌شود.",
+            )
+            await _notify_user(
+                ctx.bot,
+                tg_id,
+                f"⏳ سفارش #{order_id} در حال انجام است.\n"
+                "پس از تکمیل، نتیجه خودکار برایت ارسال می‌شود.",
+            )
     else:
         await _alert_fulfill_issue(
             ctx.bot, order_id, status, 'card_transfer', refunded=refunded,

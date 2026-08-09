@@ -366,6 +366,11 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'order_id': order_id, 'total': price, 'title': title, 'tg_id': user.id,
     }
     ctx.user_data.pop('credential_buy', None)
+    try:
+        from handlers.payment import _notify_credential_sale
+        await _notify_credential_sale(ctx.bot, order_id, event='created')
+    except Exception:
+        pass
     await query.edit_message_text(
         f'✦ *انتخاب روش پرداخت*\n'
         f'سفارش `#{order_id}`\n'
