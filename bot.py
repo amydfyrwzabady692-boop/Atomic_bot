@@ -500,12 +500,10 @@ def _log_startup_checks():
     try:
         from credential_vault import is_configured as credential_vault_configured
         if credential_vault_configured():
-            log.info('Account credential vault configured')
-        else:
-            log.error(
-                'ACCOUNT_CREDENTIALS_KEY missing/invalid — جم با اطلاعات غیرفعال است'
-            )
-            ok = False
+            if (os.getenv('ACCOUNT_CREDENTIALS_KEY') or '').strip():
+                log.info('Account credentials: available (optional encryption key set)')
+            else:
+                log.info('Account credentials: available (plain storage)')
     except Exception as exc:
         log.error('Credential vault check failed: %s', exc)
         ok = False

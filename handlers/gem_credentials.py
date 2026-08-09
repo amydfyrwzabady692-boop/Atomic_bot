@@ -176,7 +176,7 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     if not is_configured():
         await query.edit_message_text(
-            '❌ بخش امن اطلاعات روی سرور هنوز پیکربندی نشده است. با پشتیبانی تماس بگیر.'
+            '❌ بخش ثبت اطلاعات اکانت موقتاً در دسترس نیست. با پشتیبانی تماس بگیر.'
         )
         return ConversationHandler.END
     ctx.user_data['credential_buy'] = {
