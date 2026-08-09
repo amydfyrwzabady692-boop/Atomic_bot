@@ -28,8 +28,12 @@ def updating_keyboard(back='home'):
 
 def freefire_products_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🆔 جم با آیدی', callback_data='gems_by_id')],
-        [InlineKeyboardButton('🔐 جم با اطلاعات', callback_data='gems_credentials')],
+        [InlineKeyboardButton(
+            '🆔 جم با آیدی · تحویل لحظه‌ای', callback_data='gems_by_id'
+        )],
+        [InlineKeyboardButton(
+            '🔐 جم با اطلاعات · هفتگی / ماهانه', callback_data='gems_credentials'
+        )],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
     ])
 

@@ -29,9 +29,14 @@ CRED_IDENTIFIER, CRED_PASSWORD, CRED_2FA, CRED_CONFIRM = range(20, 24)
 async def freefire_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         '🎮 *محصولات فری‌فایر*\n'
+        '━━━━━━━━━━━━━━━\n'
         'روش خرید را انتخاب کن:\n\n'
-        '🆔 *جم با آیدی* — همان بسته‌ها و تحویل خودکار فعلی\n'
-        '🔐 *جم با اطلاعات* — عضویت هفتگی و ماهانه با انجام دستی امن'
+        '🆔 *جم با آیدی*\n'
+        '⚡ تحویل لحظه‌ای · قیمت پایین\n'
+        'فقط آیدی بازی را می‌فرستی و جم خودکار واریز می‌شود.\n\n'
+        '🔐 *جم با اطلاعات*\n'
+        '📅 عضویت هفتگی و ماهانه\n'
+        'با اطلاعات ورود اکانت، توسط پشتیبانی انجام می‌شود.'
     )
     if update.callback_query:
         await update.callback_query.answer()
