@@ -58,14 +58,25 @@ def credential_method_keyboard():
     ])
 
 
-def credential_backup_keyboard(support_username='lookurback'):
+def credential_backup_keyboard():
+    """قبل از پرداخت: راهنما در متن؛ اگر بلد نیست رد کند. پشتیبانی بعد از پرداخت."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            '🆘 نیاز به راهنمایی — بک‌آپ بلد نیستم',
+            callback_data='cred_backup_skip',
+        )],
+        [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
+    ])
+
+
+def credential_post_pay_support_keyboard(order_id, support_username='lookurback'):
+    """بعد از پرداخت: پیام به پشتیبانی با شماره سفارش."""
     username = str(support_username or 'lookurback').lstrip('@').strip() or 'lookurback'
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            '🆘 مشکل بک‌آپ کد؟ پیام به پشتیبانی',
+            f'🆘 نیاز به راهنمایی بک‌آپ — پشتیبانی (#{order_id})',
             url=f'https://t.me/{username}',
         )],
-        [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
     ])
 
 

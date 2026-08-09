@@ -3,7 +3,7 @@ import time
 import uuid
 from urllib.parse import urlparse
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
     MessageHandler, filters,
@@ -163,6 +163,103 @@ def _md_safe(value, limit=80):
     for char in ('_', '*', '`', '['):
         text = text.replace(char, ' ')
     return text
+
+
+def _html_esc(value):
+    return (
+        str(value or '')
+        .replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+    )
+
+
+def _copy_btn(label, value):
+    """دکمه کپی سریع (حداکثر ۲۵۶ کاراکتر طبق محدودیت تلگرام)."""
+    text = str(value or '').strip()
+    if not text or len(text) > 256:
+        return None
+    return InlineKeyboardButton(label, copy_text=CopyTextButton(text=text))
+
+
+def _split_backup_codes(backup):
+    raw = str(backup or '').strip()
+    if not raw:
+        return []
+    codes = []
+    for line in raw.replace(',', '\n').replace(';', '\n').splitlines():
+        part = line.strip()
+        if part:
+            codes.append(part)
+    return codes
+
+
+def _credential_reveal_html(order_id, product_title, method_label, secret):
+    """متن ورود برای ادمین — هر مقدار داخل <code> برای کپی آسان."""
+    identifier = str(secret.get('identifier') or '').strip()
+    password = str(secret.get('password') or '').strip()
+    codes = _split_backup_codes(secret.get('backup_code'))
+
+    lines = [
+        f'🔐 <b>ورود سریع — سفارش #{order_id}</b>',
+        f'محصول: {_html_esc(product_title)}',
+        f'روش: {_html_esc(method_label)}',
+        '',
+        '👇 روی کادر بزن / دکمه کپی را بزن، بعد در صفحه ورود paste کن',
+        '',
+        '📧 <b>شناسه</b>',
+        f'<code>{_html_esc(identifier)}</code>',
+        '',
+        '🔑 <b>رمز</b>',
+        f'<code>{_html_esc(password)}</code>',
+        '',
+        '🛡 <b>بک‌آپ / بازیابی</b>',
+    ]
+    if codes:
+        for i, code in enumerate(codes, 1):
+            lines.append(f'{i}) <code>{_html_esc(code)}</code>')
+    else:
+        lines.append('<i>— ثبت نشده —</i>')
+    lines.extend([
+        '',
+        'این اطلاعات تا زدن «انجام شد» همین‌جا می‌ماند؛',
+        'بعد از تحویل از سرور پاک می‌شود.',
+    ])
+    return '\n'.join(lines)
+
+
+def _credential_reveal_copy_rows(secret):
+    """ردیف دکمه‌های کپی شناسه / رمز / بک‌آپ."""
+    identifier = str(secret.get('identifier') or '').strip()
+    password = str(secret.get('password') or '').strip()
+    codes = _split_backup_codes(secret.get('backup_code'))
+    backup_joined = '\n'.join(codes)
+
+    row1 = []
+    id_btn = _copy_btn('📋 کپی شناسه', identifier)
+    pass_btn = _copy_btn('📋 کپی رمز', password)
+    if id_btn:
+        row1.append(id_btn)
+    if pass_btn:
+        row1.append(pass_btn)
+
+    rows = []
+    if row1:
+        rows.append(row1)
+
+    backup_btns = []
+    all_btn = _copy_btn('📋 کپی همه بک‌آپ‌ها', backup_joined)
+    if all_btn:
+        backup_btns.append(all_btn)
+    elif codes:
+        # اگر همه با هم طولانی بود، تک‌تک (حداکثر ۳ تا)
+        for i, code in enumerate(codes[:3], 1):
+            btn = _copy_btn(f'📋 بک‌آپ {i}', code)
+            if btn:
+                backup_btns.append(btn)
+    if backup_btns:
+        rows.append(backup_btns)
+    return rows
 
 
 def _low_stock_threshold():
@@ -443,21 +540,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         method_label = {
             'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
         }.get(row[6], row[6])
-        backup = str(secret.get('backup_code') or '').strip()
-        backup_block = backup if backup else '— ثبت نشده —'
-        # بدون Markdown تا کاراکترهای رمز (_ * `) پیام را خراب نکنند
-        text = (
-            f'🔐 اطلاعات ورود سفارش #{order_id}\n'
-            f'━━━━━━━━━━━━━━━\n'
-            f'محصول: {row[4]}\n'
-            f'روش: {method_label}\n'
-            f'شناسه: {secret["identifier"]}\n'
-            f'رمز: {secret["password"]}\n'
-            f'کد بک‌آپ / بازیابی:\n{backup_block}\n\n'
-            'این اطلاعات همین‌جا می‌ماند تا وقتی «انجام شد» بزنی؛\n'
-            'بعد از تحویل و خبر به مشتری، اطلاعات از سرور پاک می‌شود.'
+        text = _credential_reveal_html(
+            order_id, row[4], method_label, secret,
         )
-        buttons = [
+        buttons = _credential_reveal_copy_rows(secret)
+        buttons.extend([
             [
                 InlineKeyboardButton(
                     '✅ انجام شد — خبر به مشتری',
@@ -477,8 +564,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 callback_data=f'admx_credential_{order_id}',
             )],
             _back('admx_credentials'),
-        ]
-        await query.edit_message_text(text, reply_markup=_kb(buttons))
+        ])
+        await query.edit_message_text(
+            text, parse_mode='HTML', reply_markup=_kb(buttons),
+        )
         return
 
     if data == 'admx_secretdelete':

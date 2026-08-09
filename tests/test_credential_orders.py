@@ -175,8 +175,47 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertNotIn(note, inspect.getsource(gem_credentials))
         self.assertIn('CRED_BACKUP', inspect.getsource(gem_credentials))
         self.assertIn('backup_code', inspect.getsource(gem_credentials))
-        self.assertNotIn('cred_backup_skip', inspect.getsource(gem_credentials))
+        self.assertIn('cred_backup_skip', inspect.getsource(gem_credentials))
         self.assertIn('get_credential_support_contact', inspect.getsource(gem_credentials))
+        self.assertIn('_backup_footer_text', inspect.getsource(gem_credentials))
+        self.assertIn('myaccount.google.com', inspect.getsource(gem_credentials))
+        from keyboards import (
+            credential_backup_keyboard,
+            credential_post_pay_support_keyboard,
+        )
+        pre_pay = credential_backup_keyboard()
+        pre_callbacks = [
+            getattr(btn, 'callback_data', None)
+            for row in pre_pay.inline_keyboard
+            for btn in row
+        ]
+        pre_urls = [
+            getattr(btn, 'url', None)
+            for row in pre_pay.inline_keyboard
+            for btn in row
+        ]
+        self.assertIn('cred_backup_skip', pre_callbacks)
+        self.assertTrue(all(url is None for url in pre_urls))
+        labels = [
+            getattr(btn, 'text', '')
+            for row in pre_pay.inline_keyboard
+            for btn in row
+        ]
+        self.assertTrue(any('نیاز به راهنمایی' in str(t) for t in labels))
+        self.assertIn('https://myaccount.google.com', inspect.getsource(gem_credentials))
+        self.assertIn('Accounts Center', inspect.getsource(gem_credentials))
+        self.assertIn('Настройки', inspect.getsource(gem_credentials))
+        post_pay = credential_post_pay_support_keyboard(42, 'lookurback')
+        post_urls = [
+            getattr(btn, 'url', None)
+            for row in post_pay.inline_keyboard
+            for btn in row
+        ]
+        self.assertIn('https://t.me/lookurback', post_urls)
+        self.assertIn(
+            '_send_credential_post_pay_support',
+            inspect.getsource(__import__('handlers.payment', fromlist=['payment'])),
+        )
 
 
 class CredentialAdminActionTests(unittest.TestCase):
@@ -188,6 +227,8 @@ class CredentialAdminActionTests(unittest.TestCase):
         self.assertIn("admx_credbad_", source)
         self.assertIn("admx_credrefundask_", source)
         self.assertIn("admx_credrefundok_", source)
+        self.assertIn("_credential_reveal_html", source)
+        self.assertIn("CopyTextButton", source)
         self.assertIn("admin_cancel_stuck_order", source)
         self.assertIn("admx_pricing", source)
         self.assertIn("admi_credprofit_weekly", source)

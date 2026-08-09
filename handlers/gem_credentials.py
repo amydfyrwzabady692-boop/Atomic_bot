@@ -39,11 +39,22 @@ METHOD_META = {
             'بعد از تحویل حتماً رمز را عوض کن. این پیام از گفت‌وگو حذف می‌شود.'
         ),
         'backup_prompt': (
-            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Gmail*\n'
-            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
-            'یک یا چند *Backup / Recovery code* گوگل را بفرست '
-            '(Security ← 2-Step Verification ← Backup codes).\n'
-            'اگر چند کد داری، هر خط یکی بفرست.'
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ Gmail*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'این کد برای ورود ادمین به اکانت لازم است.\n'
+            'اول طبق راهنما کد را پیدا کن و اینجا بفرست.\n\n'
+            '*راهنمای گرفتن کد بک‌آپ گوگل:*\n'
+            '۱) گوشی یا کامپیوتر → برو به\n'
+            '`https://myaccount.google.com`\n'
+            '۲) با همان ایمیلی که به فری‌فایر وصل است وارد شو\n'
+            '۳) از سمت چپ بزن: *Security* یا *امنیت*\n'
+            '۴) پیدا کن: *2-Step Verification* / *تأیید دو مرحله‌ای*\n'
+            '   (اگر خاموش بود اول روشن کن)\n'
+            '۵) پایین صفحه بزن: *Backup codes* / *کدهای پشتیبان*\n'
+            '۶) بزن: *Get backup codes* / *دریافت کدها*\n'
+            '۷) چند کد چندرقمی می‌بینی — همه‌شان یا چند تا را اینجا بفرست\n'
+            '   (هر خط یک کد)\n\n'
+            '⚠️ کدهای استفاده‌شده را نفرست؛ کد تازه بفرست.'
         ),
     },
     'facebook': {
@@ -58,11 +69,20 @@ METHOD_META = {
             'بعد از تحویل رمز را عوض کن. این پیام حذف می‌شود.'
         ),
         'backup_prompt': (
-            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Facebook*\n'
-            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
-            'کدهای Recovery / Backup فیسبوک را بفرست '
-            '(Settings ← Password and security ← Two-factor authentication).\n'
-            'اگر چند کد داری، هر خط یکی بفرست.'
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ Facebook*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'این کد برای ورود ادمین به اکانت لازم است.\n'
+            'اول طبق راهنما کد را پیدا کن و اینجا بفرست.\n\n'
+            '*راهنمای گرفتن کد بک‌آپ فیسبوک:*\n'
+            '۱) اپ یا سایت فیسبوک را باز کن و وارد همان حساب شو\n'
+            '۲) برو به *Settings / تنظیمات*\n'
+            '   یا *Accounts Center / مرکز حساب‌ها*\n'
+            '۳) بزن: *Password and security* / *رمز عبور و امنیت*\n'
+            '۴) بزن: *Two-factor authentication* / *تأیید دو مرحله‌ای*\n'
+            '   (اگر خاموش بود اول روشن کن)\n'
+            '۵) باز کن: *Recovery codes* یا *Backup codes*\n'
+            '   / *کدهای بازیابی*\n'
+            '۶) کدها را کپی کن و همین‌جا بفرست (هر خط یک کد)'
         ),
     },
     'vk': {
@@ -77,21 +97,30 @@ METHOD_META = {
             'بعد از تحویل رمز را عوض کن. این پیام حذف می‌شود.'
         ),
         'backup_prompt': (
-            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی VK*\n'
-            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
-            'کدهای Backup / Recovery VK را بفرست '
-            '(Settings ← Security ← Two-step verification).\n'
-            'اگر چند کد داری، هر خط یکی بفرست.'
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ VK*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'این کد برای ورود ادمین به اکانت لازم است.\n'
+            'اول طبق راهنما کد را پیدا کن و اینجا بفرست.\n\n'
+            '*راهنمای گرفتن کد بک‌آپ VK:*\n'
+            '۱) اپ یا سایت VK را باز کن و وارد همان حساب شو\n'
+            '۲) برو به *Settings* / *Настройки* / *تنظیمات*\n'
+            '۳) باز کن: *Security* / *Безопасность* / *امنیت*\n'
+            '۴) بزن: *Two-step verification* / *تأیید دو مرحله‌ای*\n'
+            '   (اگر خاموش بود اول روشن کن)\n'
+            '۵) باز کن: *Backup codes* / *کدهای پشتیبان*\n'
+            '۶) کدها را کپی کن و همین‌جا بفرست (هر خط یک کد)'
         ),
     },
 }
 
 
-def _backup_help_text(support_handle):
+def _backup_footer_text():
     return (
-        f'\n\n⚠️ اگر در پیدا کردن یا ارسال بک‌آپ کد مشکل داری، '
-        f'بعد از پرداخت به پیوی پشتیبانی ({support_handle}) پیام بده '
-        f'تا کمکت کند و سفارش انجام شود.'
+        '\n\n━━━━━━━━━━━━━━━\n'
+        '✅ اگر کد را پیدا کردی → همین‌جا بفرست\n'
+        '🆘 اگر بلد نیستی / پیدا نکردی → دکمه زیر را بزن:\n'
+        '*«نیاز به راهنمایی — بک‌آپ بلد نیستم»*\n'
+        'بعد پرداخت کن؛ *پس از پرداخت موفق* پشتیبانی با شماره سفارش کمکت می‌کند.'
     )
 
 
@@ -132,8 +161,10 @@ async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYP
         '🔐 *جم با اطلاعات اکانت*\n'
         '━━━━━━━━━━━━━━━\n'
         'عضویت *هفتگی* یا *ماهانه* را انتخاب کن.\n'
-        'بعد از انتخاب: روش ورود ← شناسه ← رمز ← *کد بک‌آپ (الزامی)*.\n\n'
-        f'پشتیبانی این بخش: {support["handle"]}'
+        'بعد از انتخاب: روش ورود ← شناسه ← رمز ← راهنمای بک‌آپ '
+        '(اگر بلد نیستی دکمه راهنمایی را بزن).\n\n'
+        'راهنمای گرفتن بک‌آپ برای Gmail / Facebook / VK داخل چت می‌آید.\n'
+        f'اگر *بعد از پرداخت* هنوز مشکل داشتی، به {support["handle"]} پیام بده.'
     )
     if not products:
         text += '\n\n❌ فعلاً محصول فعالی وجود ندارد.'
@@ -166,10 +197,10 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         '۱) انتخاب روش ورود (Gmail / Facebook / VK)\n'
         '۲) شناسه ورود\n'
         '۳) رمز عبور\n'
-        '۴) کد بک‌آپ / بازیابی (*الزامی*)\n'
+        '۴) راهنمای بک‌آپ (اگر بلد نیستی: نیاز به راهنمایی)\n'
         '۵) پرداخت\n\n'
-        f'اگر بعد از پرداخت در بک‌آپ کد مشکل داشتی، به پیوی '
-        f'{support["handle"]} پیام بده تا کمکت کند.\n'
+        f'اگر *بعد از پرداخت* بک‌آپ نداشتی یا کار نکرد، دکمه پشتیبانی باز می‌شود '
+        f'({support["handle"]}) — شماره سفارش را بفرست.\n'
         'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -266,12 +297,10 @@ async def credential_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.delete()
     except Exception:
         pass
-    support = await asyncio.to_thread(get_credential_support_contact)
     await update.effective_chat.send_message(
-        METHOD_META[info['method']]['backup_prompt']
-        + _backup_help_text(support['handle']),
+        METHOD_META[info['method']]['backup_prompt'] + _backup_footer_text(),
         parse_mode='Markdown',
-        reply_markup=credential_backup_keyboard(support['username']),
+        reply_markup=credential_backup_keyboard(),
         protect_content=True,
     )
     return CRED_BACKUP
@@ -283,7 +312,9 @@ async def _show_confirm(update, ctx, *, via_callback=False):
         return ConversationHandler.END
     method_label = METHOD_META[info['method']]['label']
     has_backup = bool(str(info.get('backup_code') or '').strip())
-    support = await asyncio.to_thread(get_credential_support_contact)
+    backup_line = (
+        'ثبت شد ✅' if has_backup else 'نیاز به راهنمایی / ارسال نشده 🆘'
+    )
     text = (
         f'✅ *بازبینی اطلاعات*\n'
         f'━━━━━━━━━━━━━━━\n'
@@ -291,23 +322,20 @@ async def _show_confirm(update, ctx, *, via_callback=False):
         f'روش ورود: {method_label}\n'
         f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
         f'رمز: ثبت شد ✅\n'
-        f'کد بک‌آپ: ثبت شد ✅\n'
+        f'کد بک‌آپ: {backup_line}\n'
         f'مبلغ: *{info["price"]:,} تومان*\n\n'
         f'با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.\n'
-        f'اگر بعداً در بک‌آپ کد مشکل بود، به {support["handle"]} پیام بده.'
     )
     if not has_backup:
-        # Should not happen; backup is required.
-        text = '❌ کد بک‌آپ الزامی است. دوباره آن را بفرست.'
-        if via_callback:
-            await update.callback_query.edit_message_text(
-                text, reply_markup=credential_backup_keyboard(support['username']),
-            )
-        else:
-            await update.effective_chat.send_message(
-                text, reply_markup=credential_backup_keyboard(support['username']),
-            )
-        return CRED_BACKUP
+        text += (
+            '🆘 بک‌آپ نفرستادی / نیاز به راهنمایی زدی.\n'
+            'الان پرداخت کن؛ *بعد از پرداخت موفق* دکمه پشتیبانی باز می‌شود.\n'
+            'همان‌جا شماره سفارش را بفرست تا کمکت کنند بک‌آپ را درست کنند.\n'
+        )
+    else:
+        text += (
+            'اگر بعد از پرداخت بک‌آپ کار نکرد، دکمه پشتیبانی با شماره سفارش برایت می‌آید.\n'
+        )
     if via_callback:
         await update.callback_query.edit_message_text(
             text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
@@ -325,11 +353,12 @@ async def credential_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     backup = (update.message.text or '').strip()
     if len(backup) < 4 or len(backup) > 800:
-        support = await asyncio.to_thread(get_credential_support_contact)
         await update.message.reply_text(
-            'کد بک‌آپ الزامی است و باید بین ۴ تا ۸۰۰ کاراکتر باشد.\n'
-            f'اگر پیدا کردن کد سخت است، بعد از پرداخت به {support["handle"]} پیام بده.',
-            reply_markup=credential_backup_keyboard(support['username']),
+            'اگر کد بک‌آپ داری بین ۴ تا ۸۰۰ کاراکتر بفرست.\n'
+            'اگر بلد نیستی پیدا کنی، دکمه *«نیاز به راهنمایی»* را بزن '
+            'و بعد از پرداخت پشتیبانی کمکت می‌کند.',
+            parse_mode='Markdown',
+            reply_markup=credential_backup_keyboard(),
         )
         return CRED_BACKUP
     info['backup_code'] = backup
@@ -341,13 +370,29 @@ async def credential_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await _show_confirm(update, ctx, via_callback=False)
 
 
+async def credential_backup_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """بلد نیست / بک‌آپ ندارد → برو پرداخت؛ راهنمایی واقعی بعد از پرداخت."""
+    query = update.callback_query
+    await query.answer(
+        'باشه — بعد از پرداخت، پشتیبانی کمکت می‌کند.',
+        show_alert=False,
+    )
+    info = ctx.user_data.get('credential_buy')
+    if not info:
+        return ConversationHandler.END
+    info['backup_code'] = ''
+    info['two_factor'] = False
+    info['backup_skipped'] = True
+    return await _show_confirm(update, ctx, via_callback=True)
+
+
 async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     info = ctx.user_data.get('credential_buy')
-    if not info or not info.get('password') or not str(info.get('backup_code') or '').strip():
+    if not info or not info.get('password'):
         await query.edit_message_text(
-            '❌ اطلاعات ناقص است. کد بک‌آپ الزامی است؛ دوباره از اول ثبت کن.'
+            '❌ اطلاعات ناقص است. دوباره از اول ثبت کن.'
         )
         return ConversationHandler.END
     current = await asyncio.to_thread(get_gem, info['pk'])
@@ -403,7 +448,7 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'مبلغ: *{price:,} تومان*\n'
         f'موجودی کیف پول: *{balance:,} تومان*\n\n'
         'بعد از پرداخت موفق، سفارش برای ادمین ارسال می‌شود.\n'
-        'شماره سفارش را برای پیگیری نگه دار.',
+        'اگر بک‌آپ بلد نبودی، *بعد از پرداخت* دکمه پیام به پشتیبانی با شماره سفارش برایت باز می‌شود.',
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
             order_id, can_wallet=True, wallet_balance=balance, remaining=price
@@ -443,6 +488,7 @@ def credential_conversation_handler():
             ],
             CRED_BACKUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_backup),
+                CallbackQueryHandler(credential_backup_skip, pattern='^cred_backup_skip$'),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
             CRED_CONFIRM: [

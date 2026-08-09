@@ -16,6 +16,7 @@ from keyboards import (
     zarinpal_pay_keyboard, card_payment_keyboard, receipt_skip_keyboard,
     admin_card_keyboard, admin_card_confirm_keyboard, main_menu,
     pay_method_keyboard, admin_failed_order_keyboard,
+    credential_post_pay_support_keyboard,
 )
 from db import (
     get_order, fulfill_order, get_or_create_user,
@@ -371,10 +372,11 @@ def _success_user_text(order_id, status, ref_id=None):
         from db import get_credential_support_contact
         support = get_credential_support_contact()
         msg += (
-            'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n'
-            f'اگر در بک‌آپ کد یا ورود مشکلی بود، به پیوی پشتیبانی '
-            f'({support["handle"]}) پیام بده تا کمکت کند.\n'
-            'شماره سفارش را نگه دار.'
+            'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n\n'
+            '🆘 اگر بک‌آپ بلد نبودی، پیدا نکردی، یا کد کار نکرد:\n'
+            f'به پشتیبانی ({support["handle"]}) پیام بده و بنویس:\n'
+            f'`سفارش #{order_id}`\n'
+            'از دکمه زیر هم می‌توانی مستقیم پیوی پشتیبانی را باز کنی.'
         )
     elif status == 'paid':
         msg += "سفارش ثبت شد."
@@ -446,10 +448,16 @@ async def _handle_fulfill_result(
                     'credential paid notify crashed for order %s', order_id
                 )
         text = _success_user_text(order_id, status, ref_id)
+        is_cred = (
+            status != 'sense_manual'
+            and await asyncio.to_thread(get_credential_order, order_id)
+        )
         if edit_message:
             await edit_message(text)
         elif tg_id:
             await _notify_user(bot, tg_id, text)
+        if is_cred and tg_id:
+            await _send_credential_post_pay_support(bot, tg_id, order_id)
         return status
 
     # ناموفق / ریفاند
@@ -503,14 +511,47 @@ def _pending(ctx, order_id=None):
     return p
 
 
-async def _notify_user(bot, tg_id, text):
+async def _notify_user(bot, tg_id, text, reply_markup=None):
     if not tg_id:
         return
     try:
-        await bot.send_message(chat_id=int(tg_id), text=text, parse_mode='Markdown',
-                               reply_markup=main_menu())
+        await bot.send_message(
+            chat_id=int(tg_id),
+            text=text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup if reply_markup is not None else main_menu(),
+        )
     except Exception:
         log.exception('Could not notify Telegram user %s', tg_id)
+
+
+async def _send_credential_post_pay_support(bot, tg_id, order_id):
+    """بعد از پرداخت موفق: گزینه پیام به پشتیبانی با شماره سفارش."""
+    if not tg_id or not order_id:
+        return
+    from db import get_credential_support_contact
+    support = await asyncio.to_thread(get_credential_support_contact)
+    text = (
+        f'🆘 *نیاز به راهنمایی بک‌آپ کد؟*\n'
+        f'پرداختت ثبت شد — حالا پشتیبانی می‌تواند کمکت کند.\n\n'
+        f'روی دکمه بزن و در پیوی حتماً بنویس:\n'
+        f'`سفارش #{order_id}`\n'
+        f'و بگو بک‌آپ بلد نیستی یا کد کار نمی‌کند.\n\n'
+        f'پشتیبانی: {support["handle"]}'
+    )
+    try:
+        await bot.send_message(
+            chat_id=int(tg_id),
+            text=text,
+            parse_mode='Markdown',
+            reply_markup=credential_post_pay_support_keyboard(
+                order_id, support['username'],
+            ),
+        )
+    except Exception:
+        log.exception(
+            'Could not send credential post-pay support for order %s', order_id
+        )
 
 
 async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1241,13 +1282,9 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ سفارش #{order_id} تایید شد (جم با اطلاعات).\n"
                 "اعلان تحویل برای ادمین ارسال شد.",
             )
-            await _notify_user(
-                ctx.bot,
-                tg_id,
-                f"✅ سفارش #{order_id} تایید شد.\n"
-                "سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n"
-                "شماره سفارش را نگه دار.",
-            )
+            paid_text = _success_user_text(order_id, 'paid')
+            await _notify_user(ctx.bot, tg_id, paid_text)
+            await _send_credential_post_pay_support(ctx.bot, tg_id, order_id)
         else:
             await _edit_review_message(
                 query, f"✅ سفارش #{order_id} تایید و پردازش شد ({status})."
@@ -1272,12 +1309,9 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"✅ سفارش #{order_id} تایید شد (جم با اطلاعات).\n"
                 "اعلان تحویل برای ادمین ارسال شد.",
             )
-            await _notify_user(
-                ctx.bot,
-                tg_id,
-                f"✅ سفارش #{order_id} تایید شد.\n"
-                "سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.",
-            )
+            paid_text = _success_user_text(order_id, 'paid')
+            await _notify_user(ctx.bot, tg_id, paid_text)
+            await _send_credential_post_pay_support(ctx.bot, tg_id, order_id)
         else:
             await _edit_review_message(
                 query,
