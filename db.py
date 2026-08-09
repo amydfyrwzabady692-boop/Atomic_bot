@@ -1591,8 +1591,7 @@ def fulfill_order(order_id):
                     total_manual += 1
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
                     if manual_ok and str(catalogue or '').startswith('itunes_try:'):
-                        turkey = g2bulk.get_itunes_turkey_costs(force=False)
-                        supplier_cost = (turkey.get('costs') or {}).get(int(amount or 0))
+                        supplier_cost = CREDENTIAL_COST_USD.get(int(amount or 0))
                         if supplier_cost:
                             record_gem_profit_snapshot(
                                 info_id, order_id, supplier_cost,
@@ -2307,6 +2306,9 @@ def ensure_admin_schema():
             "Value" TEXT NOT NULL DEFAULT '',
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('credential_profit_percent','40',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''DO $migration$
            BEGIN
              IF NOT EXISTS (
@@ -3802,8 +3804,14 @@ def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=7):
     return (int(raw) // 1000 + (1 if int(raw) % 1000 else 0)) * 1000
 
 
+CREDENTIAL_COST_USD = {
+    60: Decimal('1.328'),
+    300: Decimal('6.64'),
+}
+
+
 def sync_gem_prices_daily(_force=False):
-    """به‌روزرسانی روزانه قیمت بسته‌های جم از نرخ دلار + کاتالوگ G2Bulk + ۷٪ سود.
+    """همگام‌سازی قیمت با نرخ دلار و درصد سود مستقل هر روش خرید.
 
     اگر کمتر از ۲۴ ساعت از آخرین اجرا گذشته باشد و _force نباشد، چیزی
     انجام نمی‌دهد. تعداد آیتم‌های به‌روزرسانی‌شده را برمی‌گرداند.
@@ -3854,32 +3862,32 @@ def sync_gem_prices_daily(_force=False):
         snapshot = g2.get_inventory_snapshot(force=True)
         if not snapshot.get("ok"):
             _LOG.warning("gem price sync: G2Bulk snapshot failed: %s", snapshot.get("error"))
-            return 0
-        prices_by_name = snapshot.get("prices_by_name") or {}
-        credential_snapshot = g2.get_itunes_turkey_costs(force=True)
-        credential_costs = (
-            credential_snapshot.get('costs') or {}
-            if credential_snapshot.get('ok') else {}
-        )
-        if not credential_snapshot.get('ok'):
-            _LOG.warning(
-                "credential price sync: %s", credential_snapshot.get('error')
-            )
+            prices_by_name = {}
+        else:
+            prices_by_name = snapshot.get("prices_by_name") or {}
     except Exception:
         _LOG.warning("gem price sync: G2Bulk error", exc_info=True)
         return 0
 
-    # درصد سود از تنظیمات خوانده می‌شود (پیش‌فرض ۷)
+    # سود جم با آیدی و جم با اطلاعات مستقل هستند.
     profit_percent = 7
+    credential_profit_percent = 40
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                'SELECT "Value" FROM "BotSettings" WHERE "Key"=%s',
-                ("gem_profit_percent",),
+                'SELECT "Key","Value" FROM "BotSettings" '
+                'WHERE "Key" IN (%s,%s)',
+                ("gem_profit_percent", "credential_profit_percent"),
             )
-            profit_row = cur.fetchone()
-        if profit_row and profit_row[0]:
-            profit_percent = max(1, min(200, int(profit_row[0])))
+            profit_settings = dict(cur.fetchall())
+        if profit_settings.get('gem_profit_percent'):
+            profit_percent = max(
+                1, min(200, int(profit_settings['gem_profit_percent']))
+            )
+        if profit_settings.get('credential_profit_percent'):
+            credential_profit_percent = max(
+                1, min(200, int(profit_settings['credential_profit_percent']))
+            )
     except Exception:
         _LOG.warning("gem price sync: profit setting read failed", exc_info=True)
 
@@ -3895,17 +3903,20 @@ def sync_gem_prices_daily(_force=False):
                    AND "G2BulkCatalogueName"<>''"""
             )
             for (gem_id, current_price, catalogue_name,
-                 purchase_type, amount) in cur.fetchall():
+                purchase_type, amount) in cur.fetchall():
                 if purchase_type == 'by_credentials':
-                    cost_usd = credential_costs.get(int(amount or 0))
+                    cost_usd = CREDENTIAL_COST_USD.get(int(amount or 0))
+                    package_profit_percent = credential_profit_percent
                 else:
                     name_key = g2bulk._normalise_catalogue_name(catalogue_name)
                     cost_usd = prices_by_name.get(name_key)
+                    package_profit_percent = profit_percent
                 if cost_usd is None:
                     continue
                 matched += 1
                 new_price = compute_gem_sale_price(
-                    cost_usd, rate_value, profit_percent=profit_percent
+                    cost_usd, rate_value,
+                    profit_percent=package_profit_percent,
                 )
                 if int(new_price) != int(current_price):
                     cur.execute(
@@ -3924,19 +3935,21 @@ def sync_gem_prices_daily(_force=False):
         return updated
 
     _LOG.info(
-        "Gem price sync: matched=%d updated=%d rate=%d profit=%d%% source=%s",
+        "Gem price sync: matched=%d updated=%d rate=%d id_profit=%d%% credential_profit=%d%% source=%s",
         matched,
         updated,
         rate_value,
         profit_percent,
+        credential_profit_percent,
         rate_result.get("source", "unknown"),
     )
 
     _LOG.info(
-        "Gem price sync done: %d updated, rate=%d, profit=%d%%, source=%s",
+        "Gem price sync done: %d updated, rate=%d, id_profit=%d%%, credential_profit=%d%%, source=%s",
         updated,
         rate_value,
         profit_percent,
+        credential_profit_percent,
         rate_result.get("source", "unknown"),
     )
     return updated

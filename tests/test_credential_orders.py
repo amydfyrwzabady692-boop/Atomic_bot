@@ -5,6 +5,7 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 
 import g2bulk
+import db
 from credential_vault import (
     CredentialVaultError, decrypt_credentials, encrypt_credentials,
     mask_identifier,
@@ -67,6 +68,29 @@ class G2BulkTurkeyPricingTests(unittest.TestCase):
         self.assertEqual(str(result['costs'][300]), '6.640000')
         self.assertEqual(str(result['costs'][60]), '1.328000')
         self.assertEqual(result['source_product_id'], 686)
+
+    def test_credential_prices_use_exact_costs_and_default_40_percent_profit(self):
+        self.assertEqual(str(db.CREDENTIAL_COST_USD[300]), '6.64')
+        self.assertEqual(str(db.CREDENTIAL_COST_USD[60]), '1.328')
+        self.assertEqual(
+            db.compute_gem_sale_price(
+                db.CREDENTIAL_COST_USD[300], 100_000, profit_percent=40
+            ),
+            930_000,
+        )
+        self.assertEqual(
+            db.compute_gem_sale_price(
+                db.CREDENTIAL_COST_USD[60], 100_000, profit_percent=40
+            ),
+            186_000,
+        )
+
+    def test_credential_profit_setting_is_independent_from_id_gem_profit(self):
+        source = __import__('inspect').getsource(db.sync_gem_prices_daily)
+        self.assertIn("credential_profit_percent = 40", source)
+        self.assertIn("CREDENTIAL_COST_USD.get", source)
+        self.assertIn("package_profit_percent = credential_profit_percent", source)
+        self.assertIn("package_profit_percent = profit_percent", source)
 
 
 class CredentialMenuTests(unittest.TestCase):
