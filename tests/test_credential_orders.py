@@ -87,6 +87,7 @@ class G2BulkTurkeyPricingTests(unittest.TestCase):
 
     def test_credential_profit_setting_is_independent_from_id_gem_profit(self):
         source = __import__('inspect').getsource(db.sync_gem_prices_daily)
+        self.assertIn("profit_percent = 10", source)
         self.assertIn("credential_profit_percent = 40", source)
         self.assertIn("CREDENTIAL_COST_USD.get", source)
         self.assertIn("package_profit_percent = credential_profit_percent", source)

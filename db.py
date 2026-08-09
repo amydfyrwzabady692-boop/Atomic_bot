@@ -2309,6 +2309,9 @@ def ensure_admin_schema():
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('credential_profit_percent','40',now())
            ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('gem_profit_percent','10',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''DO $migration$
            BEGIN
              IF NOT EXISTS (
@@ -3793,7 +3796,7 @@ def sync_gem_prices():
         conn.commit()
 
 
-def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=7):
+def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=10):
     """قیمت فروش هر بسته جم با سود مشخص — گرد شده به نزدیک‌ترین هزار تومان."""
     from decimal import Decimal, ROUND_HALF_UP
 
@@ -3870,7 +3873,7 @@ def sync_gem_prices_daily(_force=False):
         return 0
 
     # سود جم با آیدی و جم با اطلاعات مستقل هستند.
-    profit_percent = 7
+    profit_percent = 10
     credential_profit_percent = 40
     try:
         with get_conn() as conn, conn.cursor() as cur:

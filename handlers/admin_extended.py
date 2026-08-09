@@ -592,7 +592,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sales = get_setting('sales_enabled', '1') != '0'
         number = get_setting('card_number', '') or 'تنظیم نشده'
         merchant = get_setting('zarinpal_merchant_id', '')
-        gem_profit = int(get_setting('gem_profit_percent', '7') or '7')
+        gem_profit = int(get_setting('gem_profit_percent', '10') or '10')
         credential_profit = int(
             get_setting('credential_profit_percent', '40') or '40'
         )
@@ -795,7 +795,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ], markdown=snapshot.get('ok', False))
     elif data == 'admx_pricesync':
         await query.answer('در حال بروزرسانی قیمت جم…')
-        profit = int(get_setting('gem_profit_percent', '7') or '7')
+        profit = int(get_setting('gem_profit_percent', '10') or '10')
         credential_profit = int(
             get_setting('credential_profit_percent', '40') or '40'
         )
@@ -1506,7 +1506,7 @@ INPUT_ACTIONS = {
     ),
     'admi_gemprofit': (
         'setting:gem_profit_percent',
-        'درصد سود بسته‌های جم را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 7',
+        'درصد سود بسته‌های جم را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
     ),
     'admi_credentialprofit': (
         'setting:credential_profit_percent',
