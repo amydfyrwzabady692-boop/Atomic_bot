@@ -368,10 +368,13 @@ def _success_user_text(order_id, status, ref_id=None):
     if status == 'delivered':
         msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
     elif status == 'paid' and credential_order:
+        from db import get_credential_support_contact
+        support = get_credential_support_contact()
         msg += (
             'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n'
-            'اگر ورود نیاز به کد یک‌بارمصرف داشته باشد، پشتیبانی در لحظه ورود '
-            'با تو هماهنگ می‌کند. شماره سفارش را نگه دار.'
+            f'اگر در بک‌آپ کد یا ورود مشکلی بود، به پیوی پشتیبانی '
+            f'({support["handle"]}) پیام بده تا کمکت کند.\n'
+            'شماره سفارش را نگه دار.'
         )
     elif status == 'paid':
         msg += "سفارش ثبت شد."

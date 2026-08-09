@@ -11,7 +11,7 @@ from credential_vault import (
 )
 from db import (
     create_credential_gem_order_atomic, get_gem, get_gems_by_credentials,
-    get_or_create_user, get_wallet_balance,
+    get_or_create_user, get_wallet_balance, get_credential_support_contact,
 )
 from keyboards import (
     credential_backup_keyboard, credential_cancel_keyboard,
@@ -40,9 +40,10 @@ METHOD_META = {
         ),
         'backup_prompt': (
             '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Gmail*\n'
+            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
             'یک یا چند *Backup / Recovery code* گوگل را بفرست '
-            '(از Security ← 2-Step Verification ← Backup codes).\n'
-            'اگر چند کد داری می‌توانی هر خط یکی بفرستی.'
+            '(Security ← 2-Step Verification ← Backup codes).\n'
+            'اگر چند کد داری، هر خط یکی بفرست.'
         ),
     },
     'facebook': {
@@ -58,9 +59,10 @@ METHOD_META = {
         ),
         'backup_prompt': (
             '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Facebook*\n'
+            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
             'کدهای Recovery / Backup فیسبوک را بفرست '
             '(Settings ← Password and security ← Two-factor authentication).\n'
-            'اگر چند کد داری هر خط یکی بفرست.'
+            'اگر چند کد داری، هر خط یکی بفرست.'
         ),
     },
     'vk': {
@@ -76,12 +78,21 @@ METHOD_META = {
         ),
         'backup_prompt': (
             '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی VK*\n'
+            'ارسال کد بک‌آپ *الزامی* است؛ بدون آن امکان ورود به اکانت وجود ندارد.\n'
             'کدهای Backup / Recovery VK را بفرست '
             '(Settings ← Security ← Two-step verification).\n'
-            'اگر چند کد داری هر خط یکی بفرست.'
+            'اگر چند کد داری، هر خط یکی بفرست.'
         ),
     },
 }
+
+
+def _backup_help_text(support_handle):
+    return (
+        f'\n\n⚠️ اگر در پیدا کردن یا ارسال بک‌آپ کد مشکل داری، '
+        f'بعد از پرداخت به پیوی پشتیبانی ({support_handle}) پیام بده '
+        f'تا کمکت کند و سفارش انجام شود.'
+    )
 
 
 def _clear_secrets(info):
@@ -116,12 +127,13 @@ async def freefire_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     products = await asyncio.to_thread(get_gems_by_credentials)
+    support = await asyncio.to_thread(get_credential_support_contact)
     text = (
         '🔐 *جم با اطلاعات اکانت*\n'
         '━━━━━━━━━━━━━━━\n'
         'عضویت *هفتگی* یا *ماهانه* را انتخاب کن.\n'
-        'بعد از انتخاب، روش ورود (Gmail / Facebook / VK) و اطلاعات اکانت را '
-        'قدم‌به‌قدم می‌گیری؛ اطلاعات رمزگذاری می‌شود و پس از تکمیل یا لغو حذف می‌شود.'
+        'بعد از انتخاب: روش ورود ← شناسه ← رمز ← *کد بک‌آپ (الزامی)*.\n\n'
+        f'پشتیبانی این بخش: {support["handle"]}'
     )
     if not products:
         text += '\n\n❌ فعلاً محصول فعالی وجود ندارد.'
@@ -142,6 +154,7 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         return
     plan = 'هفتگی' if product[6] == 'weekly' else 'ماهانه'
     base_try = 60 if product[6] == 'weekly' else 300
+    support = await asyncio.to_thread(get_credential_support_contact)
     text = (
         f'🔐 *{markdown_safe(product[1], 120)}*\n'
         '━━━━━━━━━━━━━━━\n'
@@ -153,8 +166,10 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         '۱) انتخاب روش ورود (Gmail / Facebook / VK)\n'
         '۲) شناسه ورود\n'
         '۳) رمز عبور\n'
-        '۴) کد بک‌آپ / بازیابی\n'
+        '۴) کد بک‌آپ / بازیابی (*الزامی*)\n'
         '۵) پرداخت\n\n'
+        f'اگر بعد از پرداخت در بک‌آپ کد مشکل داشتی، به پیوی '
+        f'{support["handle"]} پیام بده تا کمکت کند.\n'
         'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -251,10 +266,12 @@ async def credential_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.delete()
     except Exception:
         pass
+    support = await asyncio.to_thread(get_credential_support_contact)
     await update.effective_chat.send_message(
-        METHOD_META[info['method']]['backup_prompt'],
+        METHOD_META[info['method']]['backup_prompt']
+        + _backup_help_text(support['handle']),
         parse_mode='Markdown',
-        reply_markup=credential_backup_keyboard(),
+        reply_markup=credential_backup_keyboard(support['username']),
         protect_content=True,
     )
     return CRED_BACKUP
@@ -266,6 +283,7 @@ async def _show_confirm(update, ctx, *, via_callback=False):
         return ConversationHandler.END
     method_label = METHOD_META[info['method']]['label']
     has_backup = bool(str(info.get('backup_code') or '').strip())
+    support = await asyncio.to_thread(get_credential_support_contact)
     text = (
         f'✅ *بازبینی اطلاعات*\n'
         f'━━━━━━━━━━━━━━━\n'
@@ -273,10 +291,23 @@ async def _show_confirm(update, ctx, *, via_callback=False):
         f'روش ورود: {method_label}\n'
         f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
         f'رمز: ثبت شد ✅\n'
-        f'کد بک‌آپ: {"ثبت شد ✅" if has_backup else "ثبت نشد ⚠️"}\n'
+        f'کد بک‌آپ: ثبت شد ✅\n'
         f'مبلغ: *{info["price"]:,} تومان*\n\n'
-        'با تأیید، اطلاعات رمزگذاری و سفارش ساخته می‌شود؛ سپس صفحه پرداخت باز می‌شود.'
+        f'با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.\n'
+        f'اگر بعداً در بک‌آپ کد مشکل بود، به {support["handle"]} پیام بده.'
     )
+    if not has_backup:
+        # Should not happen; backup is required.
+        text = '❌ کد بک‌آپ الزامی است. دوباره آن را بفرست.'
+        if via_callback:
+            await update.callback_query.edit_message_text(
+                text, reply_markup=credential_backup_keyboard(support['username']),
+            )
+        else:
+            await update.effective_chat.send_message(
+                text, reply_markup=credential_backup_keyboard(support['username']),
+            )
+        return CRED_BACKUP
     if via_callback:
         await update.callback_query.edit_message_text(
             text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
@@ -294,8 +325,11 @@ async def credential_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     backup = (update.message.text or '').strip()
     if len(backup) < 4 or len(backup) > 800:
+        support = await asyncio.to_thread(get_credential_support_contact)
         await update.message.reply_text(
-            'کد بک‌آپ معتبر نیست (بین ۴ تا ۸۰۰ کاراکتر). دوباره بفرست یا «فعلاً ندارم» را بزن.'
+            'کد بک‌آپ الزامی است و باید بین ۴ تا ۸۰۰ کاراکتر باشد.\n'
+            f'اگر پیدا کردن کد سخت است، بعد از پرداخت به {support["handle"]} پیام بده.',
+            reply_markup=credential_backup_keyboard(support['username']),
         )
         return CRED_BACKUP
     info['backup_code'] = backup
@@ -307,23 +341,14 @@ async def credential_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await _show_confirm(update, ctx, via_callback=False)
 
 
-async def credential_backup_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    info = ctx.user_data.get('credential_buy')
-    if not info:
-        return ConversationHandler.END
-    info['backup_code'] = ''
-    info['two_factor'] = False
-    return await _show_confirm(update, ctx, via_callback=True)
-
-
 async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     info = ctx.user_data.get('credential_buy')
-    if not info or not info.get('password'):
-        await query.edit_message_text('❌ اطلاعات ناقص یا جلسه منقضی شده است.')
+    if not info or not info.get('password') or not str(info.get('backup_code') or '').strip():
+        await query.edit_message_text(
+            '❌ اطلاعات ناقص است. کد بک‌آپ الزامی است؛ دوباره از اول ثبت کن.'
+        )
         return ConversationHandler.END
     current = await asyncio.to_thread(get_gem, info['pk'])
     if not current or current[7] != 'by_credentials':
@@ -418,7 +443,6 @@ def credential_conversation_handler():
             ],
             CRED_BACKUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_backup),
-                CallbackQueryHandler(credential_backup_skip, pattern='^cred_backup_skip$'),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
             CRED_CONFIRM: [

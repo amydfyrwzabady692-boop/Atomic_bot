@@ -38,6 +38,7 @@ from db import (
     count_ready_credential_orders, get_admin_stats,
     admin_cancel_stuck_order, mark_delivery_notified,
     get_credential_pricing_config, compute_gem_sale_price,
+    get_credential_support_contact,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -497,14 +498,16 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.answer(str(result), show_alert=True)
             return
         support_raw = (
-            get_setting('credential_support_id', '') or get_setting('support_id', '')
+            get_setting('credential_support_id', '@lookurback')
+            or get_setting('support_id', '')
+            or '@lookurback'
         ).strip().lstrip('@')
         if support_raw.isdigit():
             support_text = f'آیدی عددی `{support_raw}`'
         elif support_raw:
             support_text = f'@{support_raw}'
         else:
-            support_text = 'پشتیبانی فروشگاه'
+            support_text = '@lookurback'
         if tg_id:
             try:
                 if is_done:
@@ -1030,10 +1033,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     elif data == 'admx_support':
         support_id = get_setting('support_id', '') or 'تنظیم نشده'
-        credential_support = get_setting('credential_support_id', '') or 'تنظیم نشده'
+        cred_support = get_credential_support_contact()
         await _edit(query, (
-            f'🎧 تنظیمات پشتیبانی\n\nآیدی عمومی: {support_id}\n'
-            f'پشتیبان جم با اطلاعات: {credential_support}'
+            '🎧 تنظیمات پشتیبانی\n\n'
+            f'آیدی عمومی: {support_id}\n'
+            f'پشتیبان جم با اطلاعات: {cred_support["handle"]}\n\n'
+            'آیدی پشتیبان جم با اطلاعات را هر وقت خواستی از دکمه زیر عوض کن.'
         ), [
             [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی', callback_data='admi_supportid')],
             [InlineKeyboardButton(
@@ -1641,7 +1646,8 @@ INPUT_ACTIONS = {
     'admi_supportid': ('setting:support_id', 'آیدی پشتیبانی را با @ بفرست.'),
     'admi_credentialsupportid': (
         'setting:credential_support_id',
-        'آیدی پشتیبان سفارش‌های جم با اطلاعات را با @ بفرست.',
+        'آیدی پشتیبان سفارش‌های جم با اطلاعات را با @ بفرست.\n'
+        'مثال: @lookurback',
     ),
     'admi_shopname': ('setting:shop_name', 'نام فروشگاه را بفرست.'),
     'admi_welcome': ('setting:welcome_text', 'متن کامل خوش‌آمد را بفرست. Markdown مجاز است.'),

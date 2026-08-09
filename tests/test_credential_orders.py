@@ -175,7 +175,8 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertNotIn(note, inspect.getsource(gem_credentials))
         self.assertIn('CRED_BACKUP', inspect.getsource(gem_credentials))
         self.assertIn('backup_code', inspect.getsource(gem_credentials))
-        self.assertIn('cred_backup_skip', inspect.getsource(gem_credentials))
+        self.assertNotIn('cred_backup_skip', inspect.getsource(gem_credentials))
+        self.assertIn('get_credential_support_contact', inspect.getsource(gem_credentials))
 
 
 class CredentialAdminActionTests(unittest.TestCase):

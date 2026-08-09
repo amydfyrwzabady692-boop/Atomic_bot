@@ -2307,8 +2307,12 @@ def ensure_admin_schema():
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('credential_profit_percent','40',now())
+           VALUES ('credential_support_id','@lookurback',now())
            ON CONFLICT ("Key") DO NOTHING''',
+        '''UPDATE "BotSettings"
+           SET "Value"='@lookurback',"UpdatedAt"=now()
+           WHERE "Key"='credential_support_id'
+             AND COALESCE(TRIM("Value"),'')='' ''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
@@ -2581,6 +2585,22 @@ def get_setting(key, default=''):
             return row[0] if row else default
     except Exception:
         return default
+
+
+def get_credential_support_contact():
+    """آیدی پشتیبان جم با اطلاعات — پیش‌فرض @lookurback."""
+    raw = str(get_setting('credential_support_id', '@lookurback') or '@lookurback').strip()
+    if not raw:
+        raw = '@lookurback'
+    if not raw.startswith('@'):
+        raw = '@' + raw.lstrip('@')
+    username = raw[1:]
+    return {
+        'handle': raw,
+        'username': username,
+        'url': f'https://t.me/{username}',
+        'display': raw,
+    }
 
 
 def set_setting(key, value):

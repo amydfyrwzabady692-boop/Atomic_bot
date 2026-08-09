@@ -58,9 +58,13 @@ def credential_method_keyboard():
     ])
 
 
-def credential_backup_keyboard():
+def credential_backup_keyboard(support_username='lookurback'):
+    username = str(support_username or 'lookurback').lstrip('@').strip() or 'lookurback'
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('⏭ فعلاً کد بک‌آپ ندارم', callback_data='cred_backup_skip')],
+        [InlineKeyboardButton(
+            '🆘 مشکل بک‌آپ کد؟ پیام به پشتیبانی',
+            url=f'https://t.me/{username}',
+        )],
         [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
     ])
 
@@ -397,6 +401,9 @@ def admin_hub_support_keyboard(counts=None):
         [InlineKeyboardButton(ticket_label, callback_data='adm_tickets')],
         [InlineKeyboardButton('🏢 دپارتمان‌ها', callback_data='admx_departments')],
         [InlineKeyboardButton('👤 پشتیبان‌ها و متن‌ها', callback_data='admx_support')],
+        [InlineKeyboardButton(
+            '🔐 پشتیبان جم با اطلاعات', callback_data='admi_credentialsupportid'
+        )],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 
