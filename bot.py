@@ -17,7 +17,11 @@ from telegram.ext import (
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
 from handlers.store import store_menu, show_category, show_product
-from handlers.gems import gems_menu, show_gem, gem_conversation_handler
+from handlers.gems import gems_by_id_menu, show_gem, gem_conversation_handler
+from handlers.gem_credentials import (
+    credential_conversation_handler, credential_products_menu,
+    freefire_products_menu, show_credential_product,
+)
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
 from handlers.payment import (
@@ -76,8 +80,8 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 ADMIN_ALERT_INTERVAL_SECONDS = 8 * 60 * 60
 
 MENU_TEXTS = {
-    '💎 جم فری‌فایر': gems_menu,
-    '🎮 محصولات فری‌فایر': gems_menu,
+    '💎 جم فری‌فایر': freefire_products_menu,
+    '🎮 محصولات فری‌فایر': freefire_products_menu,
     '💰 کیف پول': wallet_menu,
     '📦 سفارش‌های من': my_orders,
     '👤 حساب من': my_account,
@@ -493,6 +497,18 @@ def _log_startup_checks():
         ok = False
     else:
         log.info('G2Bulk configured')
+    try:
+        from credential_vault import is_configured as credential_vault_configured
+        if credential_vault_configured():
+            log.info('Account credential vault configured')
+        else:
+            log.error(
+                'ACCOUNT_CREDENTIALS_KEY missing/invalid — جم با اطلاعات غیرفعال است'
+            )
+            ok = False
+    except Exception as exc:
+        log.error('Credential vault check failed: %s', exc)
+        ok = False
     cb = os.getenv('PAYMENT_CALLBACK_BASE') or ''
     log.info('Payment callback base: %s', cb or '(empty)')
     if not os.getenv('ADMIN_CHAT_ID'):
@@ -543,6 +559,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r'^/u_\d+$'), admin_user_cmd))
 
     app.add_handler(gem_conversation_handler())
+    app.add_handler(credential_conversation_handler())
     app.add_handler(payment_conversation_handler())
     app.add_handler(wallet_conversation_handler())
     app.add_handler(support_conversation_handler())
@@ -552,7 +569,16 @@ def main():
     app.add_handler(premium_admin_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
-    app.add_handler(CallbackQueryHandler(gems_menu, pattern=r'^gems(?:_page_\d+)?$'))
+    app.add_handler(CallbackQueryHandler(freefire_products_menu, pattern=r'^gems$'))
+    app.add_handler(CallbackQueryHandler(
+        gems_by_id_menu, pattern=r'^(?:gems_by_id|gems_page_\d+)$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        credential_products_menu, pattern=r'^gems_credentials$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        show_credential_product, pattern=r'^cred_product_\d+$'
+    ))
     app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
 

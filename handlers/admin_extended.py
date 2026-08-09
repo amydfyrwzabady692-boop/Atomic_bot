@@ -12,6 +12,7 @@ from telegram.ext import (
 from admin_notify import admin_id, invalidate_role_cache, is_admin
 import g2bulk
 import profitability
+from credential_vault import CredentialVaultError, decrypt_credentials, mask_identifier
 from forced_join_logic import (
     valid_forced_join_chat_id, valid_telegram_invite_url,
 )
@@ -32,6 +33,8 @@ from db import (
     financial_health_snapshot, list_admin_actions, log_admin_action,
     admin_operations_snapshot, list_stuck_processing_orders,
     list_low_stock_items, list_wallet_refunded_orders,
+    list_credential_orders, get_credential_order, mark_credential_viewed,
+    admin_complete_credential_order, admin_reject_credential_info,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -240,6 +243,172 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'عمومی · جوین · مدیران · ظاهر',
             parse_mode='Markdown',
             reply_markup=admin_hub_system_keyboard(),
+        )
+        return
+
+    if data == 'admx_credentials':
+        rows = await asyncio.to_thread(list_credential_orders, 30)
+        lines = ['🔐 *سفارش‌های جم با اطلاعات*', '━━━━━━━━━━━━━━━']
+        buttons = []
+        status_labels = {
+            'ready': '🟢 آماده بررسی', 'needs_info': '🟠 اطلاعات ناقص',
+            'awaiting_payment': '⏳ در انتظار پرداخت',
+            'completed': '✅ تکمیل', 'deleted': '🗑 حذف‌شده',
+        }
+        for row in rows:
+            oid, _tg, amount, order_status, title, method, cred_status = row[:7]
+            label = status_labels.get(cred_status, cred_status or order_status)
+            lines.append(
+                f'#{oid} · {_md_safe(title, 40)} · {amount:,} ت · {label}'
+            )
+            buttons.append([InlineKeyboardButton(
+                f'{label} · #{oid}', callback_data=f'admx_credential_{oid}'
+            )])
+            if len('\n'.join(lines)) > 3400:
+                lines.append('…')
+                break
+        if not rows:
+            lines.append('سفارشی ثبت نشده است.')
+        buttons.extend([
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_credentials')],
+            _back('admx_hub_orders'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+        return
+
+    if data.startswith('admx_credential_'):
+        order_id = int(data.rsplit('_', 1)[1])
+        row = await asyncio.to_thread(get_credential_order, order_id)
+        if not row:
+            await _edit(query, 'سفارش اطلاعاتی پیدا نشد.', [_back('admx_credentials')])
+            return
+        (oid, tg, amount, order_status, title, plan, method, ciphertext,
+         cred_status, two_factor, note, viewed_at, deleted_at, username,
+         first_name, last_name, _info_id) = row
+        method_label = {'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK'}.get(method, method)
+        status_label = {
+            'ready': 'آماده بررسی', 'needs_info': 'اطلاعات ناقص',
+            'awaiting_payment': 'در انتظار پرداخت', 'completed': 'تکمیل‌شده',
+            'deleted': 'حذف‌شده',
+        }.get(cred_status, cred_status or '—')
+        masked = '—'
+        if ciphertext:
+            try:
+                masked = mask_identifier(decrypt_credentials(ciphertext)['identifier'])
+            except CredentialVaultError:
+                masked = 'خطای رمزگشایی'
+        text = (
+            f'🔐 *سفارش #{oid}*\n'
+            f'━━━━━━━━━━━━━━━\n'
+            f'محصول: {_md_safe(title, 100)}\n'
+            f'مبلغ: {amount:,} تومان\n'
+            f'وضعیت سفارش: `{order_status}`\n'
+            f'وضعیت اطلاعات: *{status_label}*\n'
+            f'روش ورود: {method_label}\n'
+            f'شناسه ماسک‌شده: `{_md_safe(masked, 120)}`\n'
+            f'تأیید دومرحله‌ای: {"فعال" if two_factor else "غیرفعال"}\n'
+            f'کاربر: {_md_safe(first_name)} {_md_safe(last_name)} '
+            f'@{_md_safe(username)} · `{tg}`\n'
+            f'آخرین مشاهده: {str(viewed_at)[:19] if viewed_at else "هرگز"}\n'
+            f'حذف رمز: {str(deleted_at)[:19] if deleted_at else "هنوز نگهداری می‌شود"}'
+        )
+        if note:
+            text += f'\nیادداشت: {_md_safe(note, 300)}'
+        buttons = []
+        if ciphertext and order_status in ('paid', 'processing'):
+            buttons.append([InlineKeyboardButton(
+                '👁 نمایش امن اطلاعات (۶۰ ثانیه)', callback_data=f'admx_credreveal_{oid}'
+            )])
+        if order_status in ('paid', 'processing'):
+            buttons.append([
+                InlineKeyboardButton('✅ انجام شد', callback_data=f'admx_creddone_{oid}'),
+                InlineKeyboardButton('⚠️ اطلاعات ناقص', callback_data=f'admx_credbad_{oid}'),
+            ])
+        buttons.extend([_back('admx_credentials'), _back('admx_hub_orders')])
+        await _edit(query, text, buttons, markdown=True)
+        return
+
+    if data.startswith('admx_credreveal_'):
+        order_id = int(data.rsplit('_', 1)[1])
+        row = await asyncio.to_thread(get_credential_order, order_id)
+        if not row or row[3] not in ('paid', 'processing') or not row[7]:
+            await query.answer('اطلاعات قابل نمایش نیست.', show_alert=True)
+            return
+        try:
+            secret = decrypt_credentials(row[7])
+        except CredentialVaultError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+        await asyncio.to_thread(mark_credential_viewed, order_id)
+        await asyncio.to_thread(
+            log_admin_action, update.effective_user.id, 'credential_revealed',
+            'order', order_id, 'temporary reveal',
+        )
+        message = await query.message.reply_text(
+            f'🔐 اطلاعات موقت سفارش #{order_id}\n'
+            f'روش: {row[6]}\n'
+            f'شناسه: {secret["identifier"]}\n'
+            f'رمز موقت: {secret["password"]}\n\n'
+            'این پیام حداکثر تا ۶۰ ثانیه دیگر حذف می‌شود. کد OTP را از کاربر '
+            'در لحظه ورود بگیر و جایی ذخیره نکن.',
+            protect_content=True,
+            reply_markup=_kb([[InlineKeyboardButton(
+                '🗑 همین حالا حذف کن', callback_data='admx_secretdelete'
+            )]]),
+        )
+        async def delete_later():
+            await asyncio.sleep(60)
+            try:
+                await message.delete()
+            except Exception:
+                pass
+        asyncio.create_task(delete_later())
+        return
+
+    if data == 'admx_secretdelete':
+        try:
+            await query.message.delete()
+        except Exception:
+            await query.answer('حذف پیام ممکن نشد.', show_alert=True)
+        return
+
+    if data.startswith(('admx_creddone_', 'admx_credbad_')):
+        order_id = int(data.rsplit('_', 1)[1])
+        is_done = data.startswith('admx_creddone_')
+        fn = admin_complete_credential_order if is_done else admin_reject_credential_info
+        ok, tg_id, result = await asyncio.to_thread(fn, order_id)
+        if not ok:
+            await query.answer(str(result), show_alert=True)
+            return
+        support_id = get_setting('credential_support_id', '') or get_setting('support_id', '')
+        support_id = support_id.strip()
+        if support_id and not support_id.startswith('@'):
+            support_id = '@' + support_id
+        if tg_id:
+            try:
+                if is_done:
+                    user_text = (
+                        f'✅ سفارش #{order_id} با موفقیت انجام شد.\n'
+                        'اطلاعات ورود ذخیره‌شده حذف شد. برای امنیت، رمز اکانت را تغییر بده.'
+                    )
+                else:
+                    user_text = (
+                        f'⚠️ اطلاعات سفارش #{order_id} صحیح یا کامل نیست.\n'
+                        f'برای اصلاح اطلاعات با پشتیبانی {support_id or "فروشگاه"} در ارتباط باش '
+                        f'و حتماً شماره سفارش #{order_id} را ارسال کن.'
+                    )
+                await ctx.bot.send_message(chat_id=int(tg_id), text=user_text)
+            except Exception:
+                pass
+        await asyncio.to_thread(
+            log_admin_action, update.effective_user.id,
+            'credential_completed' if is_done else 'credential_needs_info',
+            'order', order_id, 'secret erased',
+        )
+        await query.edit_message_text(
+            ('✅ سفارش تکمیل و اطلاعات ورود حذف شد.' if is_done else
+             '⚠️ اطلاعات ناقص ثبت، اطلاعات قبلی حذف و کاربر مطلع شد.'),
+            reply_markup=_kb([_back('admx_credentials')]),
         )
         return
 
@@ -699,8 +868,15 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     elif data == 'admx_support':
         support_id = get_setting('support_id', '') or 'تنظیم نشده'
-        await _edit(query, f'🎧 تنظیمات پشتیبانی\n\nآیدی پشتیبانی: {support_id}', [
+        credential_support = get_setting('credential_support_id', '') or 'تنظیم نشده'
+        await _edit(query, (
+            f'🎧 تنظیمات پشتیبانی\n\nآیدی عمومی: {support_id}\n'
+            f'پشتیبان جم با اطلاعات: {credential_support}'
+        ), [
             [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی', callback_data='admi_supportid')],
+            [InlineKeyboardButton(
+                '🔐 پشتیبان جم با اطلاعات', callback_data='admi_credentialsupportid'
+            )],
             [InlineKeyboardButton('➕ افزودن دپارتمان', callback_data='admi_department')],
             [InlineKeyboardButton('📋 دپارتمان‌ها', callback_data='admx_departments')],
             [InlineKeyboardButton('💬 تیکت‌های باز', callback_data='adm_tickets')],
@@ -1301,6 +1477,10 @@ INPUT_ACTIONS = {
     'admi_cardholder': ('setting:card_holder', 'نام صاحب کارت را بفرست.'),
     'admi_cardbank': ('setting:card_bank', 'نام بانک را بفرست.'),
     'admi_supportid': ('setting:support_id', 'آیدی پشتیبانی را با @ بفرست.'),
+    'admi_credentialsupportid': (
+        'setting:credential_support_id',
+        'آیدی پشتیبان سفارش‌های جم با اطلاعات را با @ بفرست.',
+    ),
     'admi_shopname': ('setting:shop_name', 'نام فروشگاه را بفرست.'),
     'admi_welcome': ('setting:welcome_text', 'متن کامل خوش‌آمد را بفرست. Markdown مجاز است.'),
     'admi_supporttext': ('setting:support_text', 'متن کامل بخش پشتیبانی را بفرست.'),
@@ -1477,6 +1657,10 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 raw = str(profit)
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
+            if key in ('support_id', 'credential_support_id'):
+                raw = raw.strip()
+                if not raw.startswith('@') or not raw[1:].replace('_', '').isalnum():
+                    raise ValueError('آیدی پشتیبانی باید با @ و به‌شکل معتبر وارد شود.')
             set_setting(key, raw)
             log_admin_action(
                 update.effective_user.id, 'setting_updated', 'setting', key,

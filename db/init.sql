@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS "GemOrderInfo" (
     "LoginEmail" VARCHAR(255),
     "LoginPassword" VARCHAR(255),
     "BackupCode" TEXT,
+    "CredentialCiphertext" TEXT,
+    "CredentialStatus" VARCHAR(30) NOT NULL DEFAULT '',
+    "CredentialTwoFactorEnabled" BOOLEAN,
+    "CredentialAdminNote" VARCHAR(500) NOT NULL DEFAULT '',
+    "CredentialViewedAt" TIMESTAMPTZ,
+    "CredentialDeletedAt" TIMESTAMPTZ,
+    "CredentialUpdatedAt" TIMESTAMPTZ,
     "G2BulkOrderId" VARCHAR(50),
     "G2BulkStatus" VARCHAR(30),
     "G2BulkSubmittedAt" TIMESTAMPTZ
@@ -244,3 +251,17 @@ VALUES
 ('📆 بسته ماهانه', 90003, 0, 2106000, NULL, 'once', 'by_id', true, 'Monthly Membership', 9999, true, true),
 ('💎 2420 جم', 2420, 0, 3824000, NULL, 'once', 'by_id', true, '2420', 9999, true, true)
 ON CONFLICT DO NOTHING;
+
+INSERT INTO "GemPackages"
+("Title", "Amount", "BonusAmount", "Price", "OldPrice", "PlanType", "PurchaseType",
+ "AutoDeliver", "G2BulkCatalogueName", "Stock", "IsAvailable", "IsActive", "SortOrder")
+SELECT title, amount, 0, price, NULL, plan_type, 'by_credentials', false,
+       catalogue, 9999, true, true, sort_order
+FROM (VALUES
+    ('📅 عضویت هفتگی فری‌فایر', 60, 100000, 'weekly', 'itunes_try:60', 10),
+    ('📆 عضویت ماهانه فری‌فایر', 300, 500000, 'monthly', 'itunes_try:300', 20)
+) AS seed(title, amount, price, plan_type, catalogue, sort_order)
+WHERE NOT EXISTS (
+    SELECT 1 FROM "GemPackages" p
+    WHERE p."PurchaseType"='by_credentials' AND p."PlanType"=seed.plan_type
+);

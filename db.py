@@ -154,6 +154,19 @@ def get_gems_by_id():
         return []
 
 
+def get_gems_by_credentials():
+    """Active weekly/monthly packages fulfilled through temporary account access."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT {_GEM_COLS} FROM "GemPackages" '
+            'WHERE "IsActive"=true AND "IsAvailable"=true '
+            'AND "PurchaseType"=\'by_credentials\' '
+            'AND "PlanType" IN (\'weekly\',\'monthly\') '
+            'ORDER BY "SortOrder","Id"'
+        )
+        return cur.fetchall()
+
+
 def get_gem(pk):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -291,6 +304,73 @@ def create_gem_order_atomic(user_db_id, gem_package_id, expected_price, *,
                 (
                     order_id, item_id, int(gem_package_id), str(telegram_id),
                     game_uid, player_name, reservation_status,
+                ),
+            )
+            conn.commit()
+            return order_id, str(title), price
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def create_credential_gem_order_atomic(
+    user_db_id, gem_package_id, expected_price, *, telegram_id='',
+    full_name='', login_method='', credential_ciphertext='', two_factor_enabled=False,
+):
+    """Create a manual membership order without ever persisting plaintext secrets."""
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    login_method = str(login_method or '').strip().lower()
+    if login_method not in ('google', 'facebook', 'vk'):
+        raise ValueError('روش ورود نامعتبر است.')
+    credential_ciphertext = str(credential_ciphertext or '').strip()
+    if not credential_ciphertext or len(credential_ciphertext) > 10_000:
+        raise ValueError('اطلاعات رمزگذاری‌شده نامعتبر است.')
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT "Title","Price","Stock" FROM "GemPackages" '
+                'WHERE "Id"=%s AND "IsActive"=true AND "IsAvailable"=true '
+                'AND "PurchaseType"=\'by_credentials\' '
+                'AND "PlanType" IN (\'weekly\',\'monthly\') FOR UPDATE',
+                (int(gem_package_id),),
+            )
+            package = cur.fetchone()
+            if not package:
+                raise ValueError('این محصول دیگر فعال یا موجود نیست.')
+            title, price, stock = package
+            price = checked_amount(price, label='قیمت محصول')
+            if price != expected_price:
+                raise ValueError('قیمت تغییر کرده است؛ دوباره محصول را انتخاب کن.')
+            if int(stock or 0) < 1:
+                raise ValueError('ظرفیت این محصول فعلاً تکمیل است.')
+            cur.execute(
+                'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
+                'WHERE "Id"=%s AND "Stock">0', (int(gem_package_id),)
+            )
+            if cur.rowcount != 1:
+                raise ValueError('ظرفیت این محصول فعلاً تکمیل است.')
+            order_id = _insert_pending_order(
+                cur, user_db_id, price, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId","ProductId","ProductName","Price","Quantity") '
+                'VALUES (%s,NULL,%s,%s,1) RETURNING "Id"',
+                (order_id, title, price),
+            )
+            item_id = cur.fetchone()[0]
+            cur.execute(
+                'INSERT INTO "GemOrderInfo" '
+                '("OrderId","OrderItemId","GemPackageId","PurchaseType",'
+                '"TelegramId","LoginMethod","CredentialCiphertext",'
+                '"CredentialStatus","CredentialTwoFactorEnabled",'
+                '"CredentialUpdatedAt","G2BulkStatus") '
+                'VALUES (%s,%s,%s,\'by_credentials\',%s,%s,%s,\'awaiting_payment\','
+                '%s,now(),\'MANUAL_RESERVED\')',
+                (
+                    order_id, item_id, int(gem_package_id), str(telegram_id),
+                    login_method, credential_ciphertext, bool(two_factor_enabled),
                 ),
             )
             conn.commit()
@@ -680,7 +760,13 @@ def _release_manual_gem_reservations(cur, order_id):
         if cur.rowcount != 1:
             raise ValueError('بسته رزروشده برای آزادسازی پیدا نشد.')
         cur.execute(
-            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_RELEASED\' '
+            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_RELEASED\','
+            '"CredentialCiphertext"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+            'THEN NULL ELSE "CredentialCiphertext" END,'
+            '"CredentialStatus"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+            'THEN \'deleted\' ELSE "CredentialStatus" END,'
+            '"CredentialDeletedAt"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+            'THEN now() ELSE "CredentialDeletedAt" END '
             'WHERE "Id"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\'',
             (int(info_id),),
         )
@@ -924,15 +1010,19 @@ def add_gem_order_info(order_id, order_item_id, gem_package_id, purchase_type,
                        telegram_id='', game_uid=None, player_name=None,
                        login_method=None, login_email=None,
                        login_password=None, backup_code=None):
+    if login_password or backup_code:
+        raise ValueError(
+            'ذخیره رمز یا کد بازیابی به‌صورت متن ساده ممنوع است؛ از خزانه رمزگذاری استفاده کن.'
+        )
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "GemOrderInfo" '
             '("OrderId", "OrderItemId", "GemPackageId", "PurchaseType", "TelegramId", '
-            '"GameUID", "PlayerName", "LoginMethod", "LoginEmail", "LoginPassword", "BackupCode") '
-            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "Id"',
+            '"GameUID", "PlayerName", "LoginMethod", "LoginEmail") '
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "Id"',
             (
                 order_id, order_item_id, gem_package_id, purchase_type, str(telegram_id),
-                game_uid, player_name, login_method, login_email, login_password, backup_code,
+                game_uid, player_name, login_method, login_email,
             ),
         )
         info_id = cur.fetchone()[0]
@@ -1260,7 +1350,9 @@ def _reserve_manual_gem(info_id, package_id):
             return True
         if row[0] == 'MANUAL_RESERVED':
             cur.execute(
-                'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\' '
+                'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\','
+                '"CredentialStatus"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                'THEN \'ready\' ELSE "CredentialStatus" END '
                 'WHERE "Id"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\'',
                 (int(info_id),),
             )
@@ -1274,7 +1366,9 @@ def _reserve_manual_gem(info_id, package_id):
         if cur.rowcount != 1:
             return False
         cur.execute(
-            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\' WHERE "Id"=%s',
+            'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_PENDING\','
+            '"CredentialStatus"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+            'THEN \'ready\' ELSE "CredentialStatus" END WHERE "Id"=%s',
             (int(info_id),),
         )
         conn.commit()
@@ -1387,7 +1481,13 @@ def _refund_failed_order(order_id):
                              ('FAILED','REJECTED','CANCELED','CANCELLED')
                              THEN "G2BulkStatus"
                         ELSE 'FAILED'
-                   END
+                   END,
+                   "CredentialStatus"=CASE WHEN "PurchaseType"='by_credentials'
+                        THEN 'deleted' ELSE "CredentialStatus" END,
+                   "CredentialCiphertext"=CASE WHEN "PurchaseType"='by_credentials'
+                        THEN NULL ELSE "CredentialCiphertext" END,
+                   "CredentialDeletedAt"=CASE WHEN "PurchaseType"='by_credentials'
+                        THEN now() ELSE "CredentialDeletedAt" END
                    WHERE "OrderId"=%s''',
                 (order_id,),
             )
@@ -1490,9 +1590,17 @@ def fulfill_order(order_id):
                 if not auto_deliver:
                     total_manual += 1
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
+                    if manual_ok and str(catalogue or '').startswith('itunes_try:'):
+                        turkey = g2bulk.get_itunes_turkey_costs(force=False)
+                        supplier_cost = (turkey.get('costs') or {}).get(int(amount or 0))
+                        if supplier_cost:
+                            record_gem_profit_snapshot(
+                                info_id, order_id, supplier_cost,
+                                profitability.get_purchase_rate_snapshot(),
+                            )
                     continue
                 total_auto += 1
-                g2_status_u = str(g2_status or '').strip().upper()
+                g2_status = str(g2_status or '').strip().upper()
                 if g2_id:
                     live = g2bulk.get_game_order_status(g2_id)
                     if live.get('ok'):
@@ -1511,12 +1619,12 @@ def fulfill_order(order_id):
                             processing_auto += 1
                     else:
                         # وضعیت زنده نامشخص — صبر کن، دوباره تلاش نشود به‌عنوان fail
-                        if _is_terminal_g2_failure(g2_status_u):
+                        if _is_terminal_g2_failure(g2_status):
                             pass
                         else:
                             processing_auto += 1
                     continue
-                if g2_status_u in ('SUBMITTING', 'SUBMIT_UNKNOWN'):
+                if g2_status in ('SUBMITTING', 'SUBMIT_UNKNOWN', 'FAILED'):
                     recovered = g2bulk.find_game_order_by_remark(
                         f'Atomic Bot order #{order_id}'
                     )
@@ -1544,7 +1652,7 @@ def fulfill_order(order_id):
                         # هنوز معلوم نیست سفارش سمت تأمین ثبت شده یا نه
                         processing_auto += 1
                     continue
-                if _is_terminal_g2_failure(g2_status_u):
+                if _is_terminal_g2_failure(g2_status):
                     # رد قطعی قبلی — دوباره به G2B نفرست
                     continue
                 if not game_uid or not g2bulk.is_supported_catalogue(
@@ -1658,7 +1766,13 @@ def admin_mark_order_delivered(order_id):
                     (order_id,),
                 )
                 cur.execute(
-                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'COMPLETED\' '
+                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'COMPLETED\','
+                    '"CredentialStatus"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN \'completed\' ELSE "CredentialStatus" END,'
+                    '"CredentialCiphertext"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN NULL ELSE "CredentialCiphertext" END,'
+                    '"CredentialDeletedAt"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN now() ELSE "CredentialDeletedAt" END '
                     'WHERE "OrderId"=%s',
                     (order_id,),
                 )
@@ -1769,7 +1883,13 @@ def admin_cancel_stuck_order(order_id):
                 _release_manual_gem_reservations(cur, order_id)
 
                 cur.execute(
-                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_CANCELLED\' '
+                    'UPDATE "GemOrderInfo" SET "G2BulkStatus"=\'MANUAL_CANCELLED\','
+                    '"CredentialStatus"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN \'deleted\' ELSE "CredentialStatus" END,'
+                    '"CredentialCiphertext"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN NULL ELSE "CredentialCiphertext" END,'
+                    '"CredentialDeletedAt"=CASE WHEN "PurchaseType"=\'by_credentials\' '
+                    'THEN now() ELSE "CredentialDeletedAt" END '
                     'WHERE "OrderId"=%s',
                     (order_id,),
                 )
@@ -2151,6 +2271,28 @@ def ensure_admin_schema():
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardNumber" VARCHAR(32) NOT NULL DEFAULT \'\'',
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "CardVerified" BOOLEAN NOT NULL DEFAULT false',
         'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "G2BulkSubmittedAt" TIMESTAMPTZ',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialCiphertext" TEXT',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialStatus" VARCHAR(30) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialTwoFactorEnabled" BOOLEAN',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialAdminNote" VARCHAR(500) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialViewedAt" TIMESTAMPTZ',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialDeletedAt" TIMESTAMPTZ',
+        'ALTER TABLE "GemOrderInfo" ADD COLUMN IF NOT EXISTS "CredentialUpdatedAt" TIMESTAMPTZ',
+        '''INSERT INTO "GemPackages"
+           ("Title","Amount","BonusAmount","Price","OldPrice","PlanType",
+            "PurchaseType","AutoDeliver","G2BulkCatalogueName","Stock",
+            "IsAvailable","IsActive","SortOrder")
+           SELECT seed.title,seed.amount,0,seed.price,NULL,seed.plan_type,
+                  'by_credentials',false,seed.catalogue,9999,true,true,seed.sort_order
+           FROM (VALUES
+             ('📅 عضویت هفتگی فری‌فایر',60,100000,'weekly','itunes_try:60',10),
+             ('📆 عضویت ماهانه فری‌فایر',300,500000,'monthly','itunes_try:300',20)
+           ) AS seed(title,amount,price,plan_type,catalogue,sort_order)
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "GemPackages" p
+             WHERE p."PurchaseType"='by_credentials'
+               AND p."PlanType"=seed.plan_type
+           )''',
         'ALTER TABLE "GemPackages" ADD COLUMN IF NOT EXISTS "SortOrder" INTEGER NOT NULL DEFAULT 0',
         '''CREATE TABLE IF NOT EXISTS "BotAdmins" (
             "TelegramId" VARCHAR(64) PRIMARY KEY,
@@ -3126,6 +3268,11 @@ def admin_operations_snapshot(low_stock_threshold=5):
         'failed_payments_24h', 'open_tickets', 'low_gem_stock',
         'low_store_stock', 'wallet_refunds_7d',
     )
+    # Older test doubles and databases mid-rolling-upgrade may not yet
+    # expose the final wallet-refund metric. Keep the operational panel
+    # available and default only that additive metric to zero.
+    if len(row) == len(keys) - 1:
+        row = tuple(row) + (0,)
     result = dict(zip(keys, row, strict=True))
     for key in keys:
         result[key] = int(result[key] or 0)
@@ -3709,6 +3856,15 @@ def sync_gem_prices_daily(_force=False):
             _LOG.warning("gem price sync: G2Bulk snapshot failed: %s", snapshot.get("error"))
             return 0
         prices_by_name = snapshot.get("prices_by_name") or {}
+        credential_snapshot = g2.get_itunes_turkey_costs(force=True)
+        credential_costs = (
+            credential_snapshot.get('costs') or {}
+            if credential_snapshot.get('ok') else {}
+        )
+        if not credential_snapshot.get('ok'):
+            _LOG.warning(
+                "credential price sync: %s", credential_snapshot.get('error')
+            )
     except Exception:
         _LOG.warning("gem price sync: G2Bulk error", exc_info=True)
         return 0
@@ -3733,13 +3889,18 @@ def sync_gem_prices_daily(_force=False):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """SELECT "Id","Price","G2BulkCatalogueName" FROM "GemPackages"
+                """SELECT "Id","Price","G2BulkCatalogueName","PurchaseType","Amount"
+                   FROM "GemPackages"
                    WHERE "IsActive"=true AND "G2BulkCatalogueName" IS NOT NULL
                    AND "G2BulkCatalogueName"<>''"""
             )
-            for gem_id, current_price, catalogue_name in cur.fetchall():
-                name_key = g2bulk._normalise_catalogue_name(catalogue_name)
-                cost_usd = prices_by_name.get(name_key)
+            for (gem_id, current_price, catalogue_name,
+                 purchase_type, amount) in cur.fetchall():
+                if purchase_type == 'by_credentials':
+                    cost_usd = credential_costs.get(int(amount or 0))
+                else:
+                    name_key = g2bulk._normalise_catalogue_name(catalogue_name)
+                    cost_usd = prices_by_name.get(name_key)
                 if cost_usd is None:
                     continue
                 matched += 1
@@ -4451,3 +4612,119 @@ def get_kyc_code(telegram_id) -> str:
         )
         row = cur.fetchone()
         return (row[0] if row else '') or ''
+
+
+# ─── Free Fire orders fulfilled with temporary account access ────────────────
+def list_credential_orders(limit=30):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",
+                      p."Title",g."LoginMethod",g."CredentialStatus",
+                      g."CredentialTwoFactorEnabled",u."TelegramUsername",
+                      o."CreatedAt"
+               FROM "GemOrderInfo" g
+               JOIN "Orders" o ON o."Id"=g."OrderId"
+               JOIN "GemPackages" p ON p."Id"=g."GemPackageId"
+               LEFT JOIN "Users" u ON u."Id"=o."UserId"
+               WHERE g."PurchaseType"='by_credentials'
+               ORDER BY CASE g."CredentialStatus"
+                          WHEN 'ready' THEN 0 WHEN 'needs_info' THEN 1
+                          WHEN 'awaiting_payment' THEN 2 ELSE 3 END,
+                        o."Id" DESC LIMIT %s''',
+            (max(1, min(int(limit), 100)),),
+        )
+        return cur.fetchall()
+
+
+def get_credential_order(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",
+                      p."Title",p."PlanType",g."LoginMethod",
+                      g."CredentialCiphertext",g."CredentialStatus",
+                      g."CredentialTwoFactorEnabled",g."CredentialAdminNote",
+                      g."CredentialViewedAt",g."CredentialDeletedAt",
+                      u."TelegramUsername",u."FirstName",u."LastName",g."Id"
+               FROM "GemOrderInfo" g
+               JOIN "Orders" o ON o."Id"=g."OrderId"
+               JOIN "GemPackages" p ON p."Id"=g."GemPackageId"
+               LEFT JOIN "Users" u ON u."Id"=o."UserId"
+               WHERE o."Id"=%s AND g."PurchaseType"='by_credentials' ''',
+            (int(order_id),),
+        )
+        return cur.fetchone()
+
+
+def mark_credential_viewed(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "GemOrderInfo" SET "CredentialViewedAt"=now() '
+            'WHERE "OrderId"=%s AND "PurchaseType"=\'by_credentials\' '
+            'AND "CredentialCiphertext" IS NOT NULL',
+            (int(order_id),),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def admin_complete_credential_order(order_id, admin_note=''):
+    """Complete a paid manual order and irreversibly erase its login secret."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT o."Status",o."TelegramId",g."CredentialStatus"
+               FROM "Orders" o JOIN "GemOrderInfo" g ON g."OrderId"=o."Id"
+               WHERE o."Id"=%s AND g."PurchaseType"='by_credentials'
+               FOR UPDATE OF o,g''',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, None, 'سفارش اطلاعاتی پیدا نشد.'
+        if row[0] in ('delivered', 'completed') and row[2] == 'completed':
+            return True, row[1], 'already'
+        if row[0] not in ('paid', 'processing'):
+            return False, row[1], 'فقط سفارش پرداخت‌شده قابل تکمیل است.'
+        cur.execute(
+            '''UPDATE "GemOrderInfo" SET "CredentialStatus"='completed',
+                      "CredentialAdminNote"=%s,"CredentialCiphertext"=NULL,
+                      "CredentialDeletedAt"=now(),"CredentialUpdatedAt"=now(),
+                      "G2BulkStatus"='COMPLETED'
+               WHERE "OrderId"=%s AND "PurchaseType"='by_credentials' ''',
+            (str(admin_note or '')[:500], int(order_id)),
+        )
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        conn.commit()
+        return True, row[1], 'completed'
+
+
+def admin_reject_credential_info(order_id, admin_note=''):
+    """Mark supplied access data invalid and erase it before notifying buyer."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT o."Status",o."TelegramId"
+               FROM "Orders" o JOIN "GemOrderInfo" g ON g."OrderId"=o."Id"
+               WHERE o."Id"=%s AND g."PurchaseType"='by_credentials'
+               FOR UPDATE OF o,g''',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, None, 'سفارش اطلاعاتی پیدا نشد.'
+        if row[0] not in ('paid', 'processing'):
+            return False, row[1], 'فقط سفارش پرداخت‌شده قابل بررسی است.'
+        cur.execute(
+            '''UPDATE "GemOrderInfo" SET "CredentialStatus"='needs_info',
+                      "CredentialAdminNote"=%s,"CredentialCiphertext"=NULL,
+                      "CredentialDeletedAt"=now(),"CredentialUpdatedAt"=now()
+               WHERE "OrderId"=%s AND "PurchaseType"='by_credentials' ''',
+            (str(admin_note or 'اطلاعات ورود صحیح یا کامل نیست.')[:500], int(order_id)),
+        )
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'processing\' WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        conn.commit()
+        return True, row[1], 'needs_info'

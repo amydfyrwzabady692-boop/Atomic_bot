@@ -53,7 +53,7 @@ async def _gem_api_availability(g, force=False):
     return available, error
 
 
-async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def gems_by_id_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gems = await asyncio.to_thread(get_gems_by_id)
     page = 1
     if update.callback_query and update.callback_query.data.startswith('gems_page_'):
@@ -65,7 +65,7 @@ async def gems_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     page = max(1, min(page, total_pages))
     text = (
-        "🎮 *محصولات فری‌فایر*\n"
+        "🆔 *جم فری‌فایر با آیدی*\n"
         f"بسته موردنظرت را انتخاب کن — صفحه {page} از {total_pages} 👇"
     )
     if not gems:

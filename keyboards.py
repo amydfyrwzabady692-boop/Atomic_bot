@@ -26,6 +26,57 @@ def updating_keyboard(back='home'):
     ])
 
 
+def freefire_products_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🆔 جم با آیدی', callback_data='gems_by_id')],
+        [InlineKeyboardButton('🔐 جم با اطلاعات', callback_data='gems_credentials')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+    ])
+
+
+def credential_products_keyboard(products):
+    rows = [
+        [InlineKeyboardButton(
+            f'{p[1]} • {_fmt(p[4])} تومان', callback_data=f'cred_product_{p[0]}'
+        )]
+        for p in products
+    ]
+    rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
+    return InlineKeyboardMarkup(rows)
+
+
+def credential_method_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('Gmail / Google', callback_data='cred_method_google')],
+        [InlineKeyboardButton('Facebook', callback_data='cred_method_facebook')],
+        [InlineKeyboardButton('VK', callback_data='cred_method_vk')],
+        [InlineKeyboardButton('❌ انصراف', callback_data='cred_cancel')],
+    ])
+
+
+def credential_2fa_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton('✅ فعال است', callback_data='cred_2fa_yes'),
+            InlineKeyboardButton('❌ فعال نیست', callback_data='cred_2fa_no'),
+        ],
+        [InlineKeyboardButton('❌ انصراف', callback_data='cred_cancel')],
+    ])
+
+
+def credential_cancel_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
+    ])
+
+
+def credential_confirm_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ تأیید و ساخت سفارش', callback_data='cred_confirm')],
+        [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
+    ])
+
+
 def sens_platform_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('🖥 PC', callback_data='sens_pc')],
@@ -278,6 +329,7 @@ def admin_home_keyboard():
 
 def admin_hub_orders_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🔐 سفارش‌های جم با اطلاعات', callback_data='admx_credentials')],
         [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],
         [InlineKeyboardButton('❌ تحویل ناموفق G2B', callback_data='adm_failed')],
         [InlineKeyboardButton('⏳ گیرکرده در پردازش', callback_data='admx_stuck')],

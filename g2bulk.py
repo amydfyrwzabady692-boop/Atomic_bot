@@ -34,6 +34,8 @@ _inventory_cache = {'at': 0.0, 'value': None}
 _inventory_refresh_lock = threading.Lock()
 _INVENTORY_CACHE_SECONDS = 5 * 60
 _FORCED_REFRESH_COALESCE_SECONDS = 30
+_products_cache = {'at': 0.0, 'value': None}
+_PRODUCTS_CACHE_SECONDS = 6 * 60 * 60
 
 
 def _api_key():
@@ -74,8 +76,9 @@ def _request(method, path, body=None, idempotency_key=None):
     url = f'{BASE_URL}{path}'
     headers = {
         'Accept': 'application/json',
-        'X-API-Key': _api_key(),
     }
+    if _api_key():
+        headers['X-API-Key'] = _api_key()
     data = None
     if body is not None:
         headers['Content-Type'] = 'application/json'
@@ -208,6 +211,68 @@ def get_inventory_snapshot(force=False):
         }
         _inventory_cache.update(at=now, value=result)
         return result
+
+
+def get_itunes_turkey_costs(force=False):
+    """Return live USD supplier cost for 60/300 TRY Apple credit.
+
+    G2Bulk currently carries an exact 300 TRY denomination but not 60 TRY.
+    The weekly 60 TRY cost is therefore derived from the same live 300 TRY
+    product's per-lira cost.  No voucher is purchased by this lookup.
+    """
+    now = time.monotonic()
+    cached = _products_cache.get('value')
+    if cached and not force and now - _products_cache.get('at', 0) < _PRODUCTS_CACHE_SECONDS:
+        return cached
+    data = _request('GET', '/products')
+    if not data.get('success'):
+        result = {
+            'ok': False,
+            'error': data.get('message') or 'دریافت محصولات G2Bulk ناموفق بود.',
+        }
+        _products_cache.update(at=now, value=result)
+        return result
+    exact = None
+    candidates = []
+    for item in data.get('products') or []:
+        title = _normalise_catalogue_name(item.get('title'))
+        category = _normalise_catalogue_name(item.get('category_title'))
+        if 'itunes turkey' not in f'{title} {category}':
+            continue
+        match = re.search(r'\b(\d+)\s*(?:try|tl)\b', title)
+        if not match:
+            continue
+        try:
+            denomination = int(match.group(1))
+            unit_price = Decimal(str(item.get('unit_price')))
+            stock = int(item.get('stock') or 0)
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if denomination <= 0 or unit_price <= 0:
+            continue
+        candidate = (denomination, unit_price, stock, int(item.get('id')))
+        candidates.append(candidate)
+        if denomination == 300:
+            exact = candidate
+    chosen = exact or (min(candidates, key=lambda row: abs(row[0] - 300)) if candidates else None)
+    if not chosen:
+        result = {'ok': False, 'error': 'گیفت کارت iTunes Turkey در کاتالوگ پیدا نشد.'}
+    else:
+        denomination, unit_price, stock, product_id = chosen
+        per_try = unit_price / Decimal(denomination)
+        result = {
+            'ok': True,
+            'costs': {
+                60: (per_try * Decimal(60)).quantize(Decimal('0.000001')),
+                300: (per_try * Decimal(300)).quantize(Decimal('0.000001')),
+            },
+            'source_product_id': product_id,
+            'source_denomination_try': denomination,
+            'source_unit_price_usd': unit_price,
+            'stock': stock,
+        }
+    _products_cache.update(at=now, value=result)
+    return result
 
 
 def can_fulfill(amount, catalogue_name='', force=False):

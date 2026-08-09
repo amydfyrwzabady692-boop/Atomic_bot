@@ -30,6 +30,7 @@ from db import (
     approve_card_order_payment, reject_card_order_payment,
     log_payment_attempt, log_admin_action, detach_order_authority_to_wallet,
     get_gateway_wallet_charge, complete_wallet_charge_by_authority,
+    get_credential_order,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
@@ -275,6 +276,30 @@ async def _notify_sense_sale(bot, order_id):
     await notify_admin(bot, text)
 
 
+async def _notify_credential_sale(bot, order_id):
+    row = await asyncio.to_thread(get_credential_order, order_id)
+    if not row:
+        return
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    await notify_admin(
+        bot,
+        (
+            f'🔐 *سفارش جم با اطلاعات — #{order_id}*\n'
+            f'محصول: {row[4]}\n'
+            f'مبلغ: {row[2]:,} تومان\n'
+            f'روش ورود: `{row[6]}`\n'
+            f'تأیید دومرحله‌ای: {"فعال" if row[9] else "غیرفعال"}\n'
+            f'کاربر: `{row[1]}`\n\n'
+            'اطلاعات فقط از پنل امن سفارش نمایش داده شود.'
+        ),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                '🔐 باز کردن سفارش', callback_data=f'admx_credential_{order_id}'
+            )
+        ]]),
+    )
+
+
 def _parse_refunded_amount(status):
     text = str(status or '')
     if text.startswith('refunded:'):
@@ -297,11 +322,18 @@ def _success_user_text(order_id, status, ref_id=None):
             "به‌زودی در *پیوی تلگرام* برات ارسال می‌شود."
         )
         return msg
+    credential_order = get_credential_order(order_id)
     msg = f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
     if ref_id:
         msg += f"کد پیگیری: `{ref_id}`\n"
     if status == 'delivered':
         msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
+    elif status == 'paid' and credential_order:
+        msg += (
+            'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n'
+            'اگر ورود نیاز به کد یک‌بارمصرف داشته باشد، پشتیبانی در لحظه ورود '
+            'با تو هماهنگ می‌کند. شماره سفارش را نگه دار.'
+        )
     elif status == 'paid':
         msg += "سفارش ثبت شد."
     else:
@@ -364,6 +396,8 @@ async def _handle_fulfill_result(
     if success and status in ('paid', 'processing', 'sense_manual'):
         if status == 'sense_manual':
             await _notify_sense_sale(bot, order_id)
+        elif await asyncio.to_thread(get_credential_order, order_id):
+            await _notify_credential_sale(bot, order_id)
         text = _success_user_text(order_id, status, ref_id)
         if edit_message:
             await edit_message(text)
