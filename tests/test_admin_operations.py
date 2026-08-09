@@ -76,6 +76,13 @@ class AdminOperationsTests(unittest.TestCase):
         first = admin_home_keyboard().inline_keyboard[0][0]
         self.assertEqual(first.callback_data, 'admx_ops')
 
+    def test_admin_home_shows_alert_counts(self):
+        first = admin_home_keyboard({'ops_alerts': 4}).inline_keyboard[0][0]
+        self.assertIn('(4)', first.text)
+        orders = admin_home_keyboard({'orders_action': 2}).inline_keyboard[1][0]
+        self.assertEqual(orders.callback_data, 'admx_hub_orders')
+        self.assertIn('(2)', orders.text)
+
     def test_invalid_low_stock_setting_falls_back_safely(self):
         with patch.object(admin_extended, 'get_setting', return_value='not-a-number'):
             self.assertEqual(admin_extended._low_stock_threshold(), 5)

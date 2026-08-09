@@ -20,7 +20,7 @@ from db import (
     list_wallet_txs, get_user_orders, get_order, list_open_tickets, get_ticket,
     close_ticket, add_ticket_message, admin_operations_snapshot, get_setting,
     log_admin_action, admin_mark_order_delivered, admin_cancel_stuck_order,
-    mark_delivery_notified, order_refund_amount,
+    mark_delivery_notified, order_refund_amount, count_ready_credential_orders,
 )
 from handlers.payment import fulfill_order_async
 
@@ -113,10 +113,16 @@ async def _show_home(update, ctx, via_message=False):
     except (TypeError, ValueError):
         threshold = 5
     ops = admin_operations_snapshot(threshold)
+    ready_creds = count_ready_credential_orders()
     alerts = (
         ops['pending_receipts'] + ops['stuck_processing']
         + ops['failed_payments_24h'] + ops['open_tickets']
         + ops['low_gem_stock'] + ops['low_store_stock']
+        + ready_creds
+    )
+    orders_action = (
+        ops['pending_receipts'] + ops['stuck_processing']
+        + ready_creds + int(s.get('failed_g2') or 0)
     )
     text = (
         f"✦ *پنل ادمین Atomic*\n"
@@ -124,6 +130,7 @@ async def _show_home(update, ctx, via_message=False):
         f"👥 کاربران: *{s['users']:,}*  ·  🚫 بلاک: {s['blocked']}\n"
         f"📦 سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
         f"❌ تحویل ناموفق: *{s['failed_g2']:,}*\n"
+        f"🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n"
         f"💰 برگشت کیف‌پول (۷روز): *{ops.get('wallet_refunds_7d', 0):,}*\n"
         f"🎫 تیکت باز: *{s['open_tickets']:,}*\n"
         f"🏦 مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
@@ -132,7 +139,11 @@ async def _show_home(update, ctx, via_message=False):
         f"({ops['sales_today_count']:,} سفارش)\n"
         f"{'🚨 نیاز به اقدام:' if alerts else '✅ وضعیت عادی — هشدار:'} *{alerts:,}*"
     )
-    kb = admin_home_keyboard()
+    kb = admin_home_keyboard({
+        'ops_alerts': alerts,
+        'orders_action': orders_action,
+        'open_tickets': s['open_tickets'],
+    })
     if via_message:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
     else:
@@ -176,8 +187,8 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
         ])
     lines.append("\nجستجو با آیدی @user یا شناسه عددی")
-    buttons.append([InlineKeyboardButton('جستجو', callback_data='adm_find')])
-    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    buttons.append([InlineKeyboardButton('🔎 جستجو', callback_data='adm_find')])
+    buttons.append([InlineKeyboardButton('🔙 کاربران', callback_data='admx_hub_users')])
     await query.edit_message_text(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -216,7 +227,7 @@ async def admin_users_with_balance(update: Update, ctx: ContextTypes.DEFAULT_TYP
                 InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
                 InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
             ])
-    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    buttons.append([InlineKeyboardButton('🔙 کاربران', callback_data='admx_hub_users')])
     await query.edit_message_text(
         "\n".join(lines),
         parse_mode='Markdown',
@@ -615,7 +626,9 @@ async def admin_failed(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await query.edit_message_text(
             "✅ مورد ناموفقی نیست.",
-            reply_markup=admin_home_keyboard(),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🔙 سفارش‌ها', callback_data='admx_hub_orders')],
+            ]),
         )
         return
     lines = ["✦ *تحویل ناموفق*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
@@ -841,7 +854,10 @@ async def admin_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = list_open_tickets(15)
     if not rows:
         await query.edit_message_text(
-            "تیکت بازی نیست.", reply_markup=admin_home_keyboard()
+            "تیکت بازی نیست.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🔙 پشتیبانی', callback_data='admx_hub_support')],
+            ]),
         )
         return
     lines = ["✦ *تیکت‌های باز*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
@@ -853,7 +869,7 @@ async def admin_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f'#{tid} پاسخ', callback_data=f'adm_treply_{tid}'),
             InlineKeyboardButton('بستن', callback_data=f'adm_tclose_{tid}'),
         ])
-    buttons.append([InlineKeyboardButton('بازگشت', callback_data='adm_home')])
+    buttons.append([InlineKeyboardButton('🔙 پشتیبانی', callback_data='admx_hub_support')])
     await query.edit_message_text(
         "\n".join(lines), parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(buttons),

@@ -35,14 +35,14 @@ from db import (
     list_low_stock_items, list_wallet_refunded_orders,
     list_credential_orders, get_credential_order, mark_credential_viewed,
     admin_complete_credential_order, admin_reject_credential_info,
-    count_ready_credential_orders,
+    count_ready_credential_orders, get_admin_stats,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
     admin_card_keyboard, admin_home_keyboard,
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
-    admin_hub_system_keyboard,
+    admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
 )
 
 WAIT_VALUE = 50
@@ -207,17 +207,25 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.answer()
 
     if data == 'admx_hub_orders':
+        ops = admin_operations_snapshot(_low_stock_threshold())
+        ready_creds = await asyncio.to_thread(count_ready_credential_orders)
+        stats = await asyncio.to_thread(get_admin_stats)
         await query.edit_message_text(
             '📦 *مدیریت سفارش‌ها*\n'
-            'باز · ناموفق · گیرکرده · ریفاند · رسید',
+            'باز · ناموفق · گیرکرده · ریفاند · رسید · جم با اطلاعات',
             parse_mode='Markdown',
-            reply_markup=admin_hub_orders_keyboard(),
+            reply_markup=admin_hub_orders_keyboard({
+                'ready_creds': ready_creds,
+                'stuck': ops['stuck_processing'],
+                'failed_g2': stats.get('failed_g2', 0),
+                'receipts': ops['pending_receipts'],
+            }),
         )
         return
     if data == 'admx_hub_users':
         await query.edit_message_text(
             '👥 *مدیریت کاربران*\n'
-            'جستجو · موجودی · پیام/شارژ',
+            'جستجو · موجودی · پیام همگانی',
             parse_mode='Markdown',
             reply_markup=admin_hub_users_keyboard(),
         )
@@ -231,17 +239,20 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     if data == 'admx_hub_support':
+        ops = admin_operations_snapshot(_low_stock_threshold())
         await query.edit_message_text(
             '🎧 *پشتیبانی*\n'
-            'تیکت‌ها و دپارتمان‌ها',
+            'تیکت‌ها · دپارتمان‌ها · تنظیمات',
             parse_mode='Markdown',
-            reply_markup=admin_hub_support_keyboard(),
+            reply_markup=admin_hub_support_keyboard({
+                'open_tickets': ops['open_tickets'],
+            }),
         )
         return
     if data == 'admx_hub_system':
         await query.edit_message_text(
             '⚙️ *تنظیمات سیستم*\n'
-            'عمومی · جوین · مدیران · ظاهر',
+            'ظاهر فروشگاه · جوین · مدیران · سینک قیمت',
             parse_mode='Markdown',
             reply_markup=admin_hub_system_keyboard(),
         )
@@ -493,7 +504,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await _edit(query, text, [
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_daily')],
-            _back('admx_ops'),
+            _back('admx_hub_reports'),
         ], markdown=True)
     elif data == 'admx_stuck':
         rows = list_stuck_processing_orders(30)
@@ -588,15 +599,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_shop':
-        await _edit(query, '🛍 مدیریت فروشگاه', [
-            [InlineKeyboardButton('💎 بسته‌های جم', callback_data='admx_gems')],
-            [InlineKeyboardButton('🎯 پک‌های سنس', callback_data='admx_sense')],
-            [InlineKeyboardButton('📦 محصولات', callback_data='admx_products'),
-             InlineKeyboardButton('🗂 دسته‌بندی‌ها', callback_data='admx_categories')],
-            [InlineKeyboardButton('🎁 کد هدیه', callback_data='admx_gift'),
-             InlineKeyboardButton('🏷 کد تخفیف', callback_data='admx_discount')],
-            _back(),
-        ])
+        await query.edit_message_text(
+            '🛍 *کاتالوگ فروش*\n'
+            'جم با آیدی · سود جم با اطلاعات · سنس · اکانت · کدها',
+            parse_mode='Markdown',
+            reply_markup=admin_shop_keyboard(),
+        )
     elif data == 'admx_finance':
         zp = get_setting('zarinpal_enabled', '1') != '0'
         card = get_setting('card_transfer_enabled', '1') != '0'
@@ -608,8 +616,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         credential_profit = int(
             get_setting('credential_profit_percent', '40') or '40'
         )
-        await _edit(query, (
-            '💳 امور مالی\n\n'
+        await query.edit_message_text(
+            '💳 *مالی و درگاه*\n\n'
             f'فروش: {"✅" if sales else "⛔ متوقف"}\n'
             f'پرداخت‌های جدید: {"✅" if payments else "⛔ متوقف"}\n'
             f'زرین‌پال: {"✅" if zp else "❌"}\n'
@@ -617,33 +625,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
             f'شماره کارت: {number}\n'
             f'سود جم با آیدی: {gem_profit}٪\n'
-            f'سود جم با اطلاعات: {credential_profit}٪'
-        ), [
-            [InlineKeyboardButton('🚨 توقف/فعال‌سازی فروش', callback_data='admx_toggle_sales')],
-            [InlineKeyboardButton('🛡 توقف/فعال‌سازی پرداخت', callback_data='admx_toggle_payments')],
-            [InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health'),
-             InlineKeyboardButton('🧭 تاریخچه مدیران', callback_data='admx_audit')],
-            [InlineKeyboardButton('روشن/خاموش زرین‌پال', callback_data='admx_toggle_zp')],
-            [InlineKeyboardButton('✏️ مرچنت زرین‌پال', callback_data='admi_zpmerchant')],
-            [InlineKeyboardButton('✏️ آدرس callback', callback_data='admi_callback')],
-            [InlineKeyboardButton('روشن/خاموش کارت', callback_data='admx_toggle_card')],
-            [InlineKeyboardButton('✏️ شماره کارت', callback_data='admi_cardnumber')],
-            [InlineKeyboardButton('✏️ صاحب کارت', callback_data='admi_cardholder')],
-            [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
-            [InlineKeyboardButton('🧾 رسیدهای تاییدنشده', callback_data='admx_receipts')],
-            [InlineKeyboardButton('📒 گزارش پرداخت‌ها', callback_data='admx_payments_all')],
-            [InlineKeyboardButton('📈 سود فروش جم', callback_data='admx_profit')],
-            [InlineKeyboardButton(
-                '💱 نرخ زنده دلار و بهای واقعی پک‌ها',
-                callback_data='admx_g2balance',
-            )],
-            [InlineKeyboardButton('📈 درصد سود جم', callback_data='admi_gemprofit')],
-            [InlineKeyboardButton(
-                '🔐 درصد سود جم با اطلاعات', callback_data='admi_credentialprofit'
-            )],
-            [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
-            _back(),
-        ])
+            f'سود جم با اطلاعات: {credential_profit}٪',
+            parse_mode='Markdown',
+            reply_markup=admin_finance_keyboard(),
+        )
     elif data == 'admx_health':
         health = financial_health_snapshot()
         warning = (
@@ -882,7 +867,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 break
         await _edit(query, '\n'.join(lines), [
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_profit')],
-            _back('admx_finance'),
+            [
+                InlineKeyboardButton('📊 گزارش‌ها', callback_data='admx_hub_reports'),
+                InlineKeyboardButton('💳 مالی', callback_data='admx_finance'),
+            ],
         ], markdown=True)
     elif data == 'admx_actions':
         await _edit(query, '📨 عملیات کاربران و سفارش‌ها', [
@@ -892,7 +880,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('💵 کاربران دارای موجودی', callback_data='admx_users_balance')],
             [InlineKeyboardButton('👥 کاربران دارای زیرمجموعه', callback_data='admx_users_referral')],
             [InlineKeyboardButton('💳 شماره کارت‌های فعال', callback_data='admx_users_card')],
-            _back(),
+            _back('admx_hub_users'),
         ])
     elif data == 'admx_support':
         support_id = get_setting('support_id', '') or 'تنظیم نشده'
@@ -908,7 +896,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton('➕ افزودن دپارتمان', callback_data='admi_department')],
             [InlineKeyboardButton('📋 دپارتمان‌ها', callback_data='admx_departments')],
             [InlineKeyboardButton('💬 تیکت‌های باز', callback_data='adm_tickets')],
-            _back(),
+            _back('admx_hub_support'),
         ])
     elif data == 'admx_settings':
         await _edit(query, '⚙️ تنظیمات ربات و فروشگاه', [
@@ -923,7 +911,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
             )],
             [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
-            _back(),
+            _back('admx_hub_system'),
         ])
     elif data == 'admx_forcedjoin':
         channels = list_forced_join_channels(active_only=False)
@@ -949,7 +937,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(
                 '➕ افزودن کانال', callback_data='admi_forcedjoin'
             )],
-            _back('admx_settings'),
+            _back('admx_hub_system'),
         ])
         await _edit(query, '\n'.join(lines), buttons)
     elif data.startswith('admx_fjdel_'):
@@ -981,7 +969,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, text, [
             [InlineKeyboardButton('📅 گزارش امروز', callback_data='admx_daily'),
              InlineKeyboardButton('🚨 مرکز عملیات', callback_data='admx_ops')],
-            _back(),
+            _back('admx_hub_reports'),
         ], markdown=True)
     elif data.startswith('admx_users_'):
         kind = data.replace('admx_users_', '')
@@ -1035,7 +1023,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not rows and not wallet_rows:
             lines.append('✅ رسید تاییدنشده‌ای وجود ندارد.')
         buttons.append([InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_receipts')])
-        buttons.append(_back('admx_finance'))
+        buttons.append(_back('admx_hub_orders'))
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data.startswith('admx_receipt_'):
         oid = int(data.rsplit('_', 1)[1])
@@ -1438,7 +1426,7 @@ async def _show_simple_list(query, data):
         text, add_cb, kind, back = '📦 محصولات', 'admi_product', 'product', 'admx_shop'
     elif data == 'admx_departments':
         rows = simple_list('SupportDepartments', ['Id', 'Title', 'IsActive'])
-        text, add_cb, kind, back = '🎧 دپارتمان‌ها', 'admi_department', 'dept', 'admx_support'
+        text, add_cb, kind, back = '🎧 دپارتمان‌ها', 'admi_department', 'dept', 'admx_hub_support'
     elif data in ('admx_gift', 'admx_discount'):
         code_type = 'gift' if data == 'admx_gift' else 'discount'
         all_rows = simple_list('PromoCodes', ['Id', 'Code', 'CodeType', 'Value', 'MaxUses',
@@ -1463,7 +1451,7 @@ async def _show_simple_list(query, data):
         buttons.extend([
                         [InlineKeyboardButton('➕ مدیر کامل', callback_data='admi_admin'),
                          InlineKeyboardButton('⭐ مدیر پریمیوم', callback_data='admi_premiumadmin')],
-                        _back('admx_settings')])
+                        _back('admx_hub_system')])
         await _edit(query, '👮 مدیران ربات\nبرای حذف روی مدیر بزن.', buttons)
         return
     lines = [text, '━━━━━━━━━━━━━━━']
