@@ -129,5 +129,33 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertNotIn(note, inspect.getsource(gem_credentials))
 
 
+class CredentialAdminActionTests(unittest.TestCase):
+    def test_admin_panel_has_done_incomplete_and_wallet_refund(self):
+        from pathlib import Path
+
+        source = Path('handlers/admin_extended.py').read_text(encoding='utf-8')
+        self.assertIn("admx_creddone_", source)
+        self.assertIn("admx_credbad_", source)
+        self.assertIn("admx_credrefundask_", source)
+        self.assertIn("admx_credrefundok_", source)
+        self.assertIn("admin_cancel_stuck_order", source)
+        self.assertIn("سفارش #{order_id} با موفقیت انجام شد", source)
+        self.assertIn("به کیف پولت برگشت", source)
+
+    def test_fulfill_keeps_credential_orders_manual_not_g2b_auto(self):
+        import inspect
+
+        source = inspect.getsource(db.fulfill_order)
+        self.assertIn("if not auto_deliver:", source)
+        self.assertIn("itunes_try:", source)
+        complete = inspect.getsource(db.admin_complete_credential_order)
+        reject = inspect.getsource(db.admin_reject_credential_info)
+        cancel = inspect.getsource(db.admin_cancel_stuck_order)
+        self.assertIn("\"CredentialStatus\"='completed'", complete)
+        self.assertIn("'needs_info'", reject)
+        self.assertIn("لغو توسط ادمین سفارش", cancel)
+        self.assertIn("by_credentials", cancel)
+
+
 if __name__ == '__main__':
     unittest.main()

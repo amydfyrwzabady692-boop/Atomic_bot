@@ -36,6 +36,7 @@ from db import (
     list_credential_orders, get_credential_order, mark_credential_viewed,
     admin_complete_credential_order, admin_reject_credential_info,
     count_ready_credential_orders, get_admin_stats,
+    admin_cancel_stuck_order, mark_delivery_notified,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -43,6 +44,7 @@ from keyboards import (
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
+    main_menu,
 )
 
 WAIT_VALUE = 50
@@ -333,11 +335,87 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )])
         if order_status in ('paid', 'processing'):
             buttons.append([
-                InlineKeyboardButton('✅ انجام شد', callback_data=f'admx_creddone_{oid}'),
+                InlineKeyboardButton('✅ انجام شد — خبر به مشتری', callback_data=f'admx_creddone_{oid}'),
                 InlineKeyboardButton('⚠️ اطلاعات ناقص', callback_data=f'admx_credbad_{oid}'),
             ])
+            buttons.append([InlineKeyboardButton(
+                '💰 لغو و برگشت به کیف پول', callback_data=f'admx_credrefundask_{oid}'
+            )])
+        if tg:
+            buttons.append([InlineKeyboardButton(
+                '👤 کارت کاربر', callback_data=f'adm_user_{tg}'
+            )])
         buttons.extend([_back('admx_credentials'), _back('admx_hub_orders')])
         await _edit(query, text, buttons, markdown=True)
+        return
+
+    if data.startswith('admx_credrefundask_'):
+        order_id = int(data.rsplit('_', 1)[1])
+        row = await asyncio.to_thread(get_credential_order, order_id)
+        if not row or row[3] not in ('paid', 'processing'):
+            await query.answer('این سفارش قابل برگشت نیست.', show_alert=True)
+            return
+        amount = int(row[2] or 0)
+        await _edit(
+            query,
+            f'⚠️ *لغو سفارش #{order_id}*\n'
+            f'مبلغ قابل برگشت به کیف پول مشتری (پس از تأیید پرداخت) '
+            f'محاسبه و واریز می‌شود.\n'
+            f'مبلغ سفارش: *{amount:,}* تومان\n\n'
+            'اطلاعات ورود حذف می‌شود و مشتری می‌تواند دوباره خرید کند.',
+            [
+                [InlineKeyboardButton(
+                    '✅ تأیید لغو و برگشت پول',
+                    callback_data=f'admx_credrefundok_{order_id}',
+                )],
+                [InlineKeyboardButton(
+                    '❌ انصراف', callback_data=f'admx_credential_{order_id}'
+                )],
+            ],
+            markdown=True,
+        )
+        return
+
+    if data.startswith('admx_credrefundok_'):
+        order_id = int(data.rsplit('_', 1)[1])
+        row = await asyncio.to_thread(get_credential_order, order_id)
+        tg_id = row[1] if row else None
+        ok, refunded, error = await asyncio.to_thread(
+            admin_cancel_stuck_order, order_id
+        )
+        if not ok:
+            await query.answer(str(error or 'لغو انجام نشد.'), show_alert=True)
+            return
+        refund_line = (
+            f'\n💰 مبلغ *{refunded:,}* تومان به کیف پول کاربر برگشت.'
+            if refunded > 0 else
+            '\n(مبلغی برای برگشت ثبت نشد / قبلاً برگشته بود.)'
+        )
+        if tg_id:
+            try:
+                user_text = f'⚠️ سفارش #{order_id} لغو شد.'
+                if refunded > 0:
+                    user_text += (
+                        f'\n💰 مبلغ {refunded:,} تومان به کیف پولت برگشت.\n'
+                        'می‌توانی دوباره خرید کنی یا موجودی را نگه داری.'
+                    )
+                await ctx.bot.send_message(
+                    chat_id=int(tg_id), text=user_text, reply_markup=main_menu(),
+                )
+            except Exception:
+                pass
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+        await asyncio.to_thread(
+            log_admin_action, update.effective_user.id,
+            'credential_refunded', 'order', order_id,
+            f'refunded={refunded}',
+        )
+        await query.edit_message_text(
+            f'🗑 سفارش #{order_id} لغو شد.{refund_line}',
+            parse_mode='Markdown',
+            reply_markup=_kb([_back('admx_credentials')]),
+        )
         return
 
     if data.startswith('admx_credreveal_'):
@@ -412,7 +490,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     user_text = (
                         f'⚠️ اطلاعات سفارش #{order_id} صحیح یا کامل نیست.\n'
                         f'لطفاً با پشتیبانی ({support_text}) در ارتباط باش و '
-                        f'حتماً شماره سفارش #{order_id} را بفرست تا همان سفارش بررسی شود.'
+                        f'حتماً شماره سفارش #{order_id} را بفرست تا همان سفارش بررسی شود.\n'
+                        'تا زمان حل مشکل، مبلغ روی سفارش نگه داشته می‌شود؛ '
+                        'اگر لازم باشد پشتیبانی آن را به کیف پولت برمی‌گرداند.'
                     )
                 await ctx.bot.send_message(chat_id=int(tg_id), text=user_text)
             except Exception:
