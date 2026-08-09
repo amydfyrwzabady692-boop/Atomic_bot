@@ -4631,6 +4631,19 @@ def get_kyc_code(telegram_id) -> str:
 
 
 # ─── Free Fire orders fulfilled with temporary account access ────────────────
+def count_ready_credential_orders():
+    """تعداد سفارش‌های اطلاعاتی آماده‌ی بررسی ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            '''SELECT COUNT(*) FROM "GemOrderInfo" g
+               JOIN "Orders" o ON o."Id"=g."OrderId"
+               WHERE g."PurchaseType"='by_credentials'
+                 AND g."CredentialStatus"='ready'
+                 AND o."Status" IN ('paid','processing')'''
+        )
+        return int(cur.fetchone()[0] or 0)
+
+
 def list_credential_orders(limit=30):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(

@@ -35,6 +35,7 @@ from db import (
     list_low_stock_items, list_wallet_refunded_orders,
     list_credential_orders, get_credential_order, mark_credential_viewed,
     admin_complete_credential_order, admin_reject_credential_info,
+    count_ready_credential_orders,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -380,10 +381,15 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ok:
             await query.answer(str(result), show_alert=True)
             return
-        support_id = get_setting('credential_support_id', '') or get_setting('support_id', '')
-        support_id = support_id.strip()
-        if support_id and not support_id.startswith('@'):
-            support_id = '@' + support_id
+        support_raw = (
+            get_setting('credential_support_id', '') or get_setting('support_id', '')
+        ).strip().lstrip('@')
+        if support_raw.isdigit():
+            support_text = f'آیدی عددی `{support_raw}`'
+        elif support_raw:
+            support_text = f'@{support_raw}'
+        else:
+            support_text = 'پشتیبانی فروشگاه'
         if tg_id:
             try:
                 if is_done:
@@ -394,8 +400,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 else:
                     user_text = (
                         f'⚠️ اطلاعات سفارش #{order_id} صحیح یا کامل نیست.\n'
-                        f'برای اصلاح اطلاعات با پشتیبانی {support_id or "فروشگاه"} در ارتباط باش '
-                        f'و حتماً شماره سفارش #{order_id} را ارسال کن.'
+                        f'لطفاً با پشتیبانی ({support_text}) در ارتباط باش و '
+                        f'حتماً شماره سفارش #{order_id} را بفرست تا همان سفارش بررسی شود.'
                     )
                 await ctx.bot.send_message(chat_id=int(tg_id), text=user_text)
             except Exception:
@@ -415,6 +421,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'admx_ops':
         threshold = _low_stock_threshold()
         ops = admin_operations_snapshot(threshold)
+        ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         sales = get_setting('sales_enabled', '1') != '0'
         payments = get_setting('payments_enabled', '1') != '0'
         alerts_enabled = get_setting('admin_alerts_enabled', '1') != '0'
@@ -422,6 +429,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ops['pending_receipts'] + ops['stuck_processing']
             + ops['failed_payments_24h'] + ops['open_tickets']
             + ops['low_gem_stock'] + ops['low_store_stock']
+            + ready_creds
         )
         text = (
             '🚨 *مرکز عملیات مدیر*\n'
@@ -432,6 +440,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'هشدار قابل اقدام: *{alert_total:,}*\n\n'
             f'🧾 رسید در انتظار: *{ops["pending_receipts"]:,}*\n'
             f'⏳ سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
+            f'🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n'
             f'❌ خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
             f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
             f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
@@ -446,9 +455,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'⏳ گیرکرده‌ها ({ops["stuck_processing"]})', callback_data='admx_stuck'
             )],
             [InlineKeyboardButton(
+                f'🔐 جم با اطلاعات ({ready_creds})', callback_data='admx_credentials'
+            ), InlineKeyboardButton(
                 f'💰 برگشت کیف پول ({ops.get("wallet_refunds_7d", 0)})',
                 callback_data='admx_refunds',
-            ), InlineKeyboardButton(
+            )],
+            [InlineKeyboardButton(
                 '📦 منوی سفارش‌ها', callback_data='admx_hub_orders',
             )],
             [InlineKeyboardButton(
