@@ -192,8 +192,11 @@ class CredentialAdminActionTests(unittest.TestCase):
         complete = inspect.getsource(db.admin_complete_credential_order)
         reject = inspect.getsource(db.admin_reject_credential_info)
         cancel = inspect.getsource(db.admin_cancel_stuck_order)
+        reject = inspect.getsource(db.admin_reject_credential_info)
+        cancel = inspect.getsource(db.admin_cancel_stuck_order)
         self.assertIn("\"CredentialStatus\"='completed'", complete)
         self.assertIn("'needs_info'", reject)
+        self.assertNotIn('CredentialCiphertext"=NULL', reject)
         self.assertIn("لغو توسط ادمین سفارش", cancel)
         self.assertIn("by_credentials", cancel)
 

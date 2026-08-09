@@ -336,7 +336,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons = []
         if ciphertext and order_status in ('paid', 'processing'):
             buttons.append([InlineKeyboardButton(
-                '👁 نمایش امن اطلاعات (۶۰ ثانیه)', callback_data=f'admx_credreveal_{oid}'
+                '👁 نمایش اطلاعات ورود', callback_data=f'admx_credreveal_{oid}'
             )])
         if order_status in ('paid', 'processing'):
             buttons.append([
@@ -437,36 +437,51 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await asyncio.to_thread(mark_credential_viewed, order_id)
         await asyncio.to_thread(
             log_admin_action, update.effective_user.id, 'credential_revealed',
-            'order', order_id, 'temporary reveal',
+            'order', order_id, 'persistent reveal until delivery',
         )
+        method_label = {
+            'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
+        }.get(row[6], row[6])
         backup = str(secret.get('backup_code') or '').strip()
-        backup_block = (
-            f'کد بک‌آپ / بازیابی:\n{backup}\n\n'
-            if backup else
-            'کد بک‌آپ: ثبت نشده\n\n'
-        )
-        message = await query.message.reply_text(
-            f'🔐 اطلاعات موقت سفارش #{order_id}\n'
-            f'روش: {row[6]}\n'
+        backup_block = backup if backup else '— ثبت نشده —'
+        # بدون Markdown تا کاراکترهای رمز (_ * `) پیام را خراب نکنند
+        text = (
+            f'🔐 اطلاعات ورود سفارش #{order_id}\n'
+            f'━━━━━━━━━━━━━━━\n'
+            f'محصول: {row[4]}\n'
+            f'روش: {method_label}\n'
             f'شناسه: {secret["identifier"]}\n'
             f'رمز: {secret["password"]}\n'
-            f'{backup_block}'
-            'این پیام حداکثر تا ۶۰ ثانیه دیگر حذف می‌شود.',
-            protect_content=True,
-            reply_markup=_kb([[InlineKeyboardButton(
-                '🗑 همین حالا حذف کن', callback_data='admx_secretdelete'
-            )]]),
+            f'کد بک‌آپ / بازیابی:\n{backup_block}\n\n'
+            'این اطلاعات همین‌جا می‌ماند تا وقتی «انجام شد» بزنی؛\n'
+            'بعد از تحویل و خبر به مشتری، اطلاعات از سرور پاک می‌شود.'
         )
-        async def delete_later():
-            await asyncio.sleep(60)
-            try:
-                await message.delete()
-            except Exception:
-                pass
-        asyncio.create_task(delete_later())
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    '✅ انجام شد — خبر به مشتری',
+                    callback_data=f'admx_creddone_{order_id}',
+                ),
+                InlineKeyboardButton(
+                    '⚠️ اطلاعات ناقص',
+                    callback_data=f'admx_credbad_{order_id}',
+                ),
+            ],
+            [InlineKeyboardButton(
+                '💰 لغو و برگشت به کیف پول',
+                callback_data=f'admx_credrefundask_{order_id}',
+            )],
+            [InlineKeyboardButton(
+                '🔒 مخفی کردن (هنوز در سرور هست)',
+                callback_data=f'admx_credential_{order_id}',
+            )],
+            _back('admx_credentials'),
+        ]
+        await query.edit_message_text(text, reply_markup=_kb(buttons))
         return
 
     if data == 'admx_secretdelete':
+        # سازگاری با پیام‌های قدیمی ۶۰ثانیه‌ای
         try:
             await query.message.delete()
         except Exception:
@@ -511,11 +526,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await asyncio.to_thread(
             log_admin_action, update.effective_user.id,
             'credential_completed' if is_done else 'credential_needs_info',
-            'order', order_id, 'secret erased',
+            'order', order_id,
+            'secret erased after delivery' if is_done else 'needs_info kept secrets',
         )
         await query.edit_message_text(
-            ('✅ سفارش تکمیل و اطلاعات ورود حذف شد.' if is_done else
-             '⚠️ اطلاعات ناقص ثبت، اطلاعات قبلی حذف و کاربر مطلع شد.'),
+            ('✅ سفارش تکمیل شد، مشتری مطلع شد و اطلاعات ورود از سرور پاک شد.'
+             if is_done else
+             '⚠️ اطلاعات ناقص ثبت و مشتری مطلع شد.\n'
+             'اطلاعات ورود هنوز روی سرور هست تا تحویل نهایی یا برگشت پول.'),
             reply_markup=_kb([_back('admx_credentials')]),
         )
         return

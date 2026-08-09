@@ -4813,7 +4813,11 @@ def admin_complete_credential_order(order_id, admin_note=''):
 
 
 def admin_reject_credential_info(order_id, admin_note=''):
-    """Mark supplied access data invalid and erase it before notifying buyer."""
+    """Mark access data as incomplete but keep ciphertext until delivery/refund.
+
+    Admin may still need the same login details while coordinating with the buyer.
+    Secrets are wiped only on successful delivery or wallet refund/cancel.
+    """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             '''SELECT o."Status",o."TelegramId"
@@ -4829,8 +4833,7 @@ def admin_reject_credential_info(order_id, admin_note=''):
             return False, row[1], 'فقط سفارش پرداخت‌شده قابل بررسی است.'
         cur.execute(
             '''UPDATE "GemOrderInfo" SET "CredentialStatus"='needs_info',
-                      "CredentialAdminNote"=%s,"CredentialCiphertext"=NULL,
-                      "CredentialDeletedAt"=now(),"CredentialUpdatedAt"=now()
+                      "CredentialAdminNote"=%s,"CredentialUpdatedAt"=now()
                WHERE "OrderId"=%s AND "PurchaseType"='by_credentials' ''',
             (str(admin_note or 'اطلاعات ورود صحیح یا کامل نیست.')[:500], int(order_id)),
         )
