@@ -11,6 +11,8 @@ from credential_vault import (
     mask_identifier,
 )
 from keyboards import freefire_products_keyboard
+from keyboards import pay_method_keyboard
+from handlers import gem_credentials, gems
 
 
 class CredentialVaultTests(unittest.TestCase):
@@ -103,6 +105,28 @@ class CredentialMenuTests(unittest.TestCase):
         ]
         self.assertIn('gems_by_id', callbacks)
         self.assertIn('gems_credentials', callbacks)
+
+    def test_both_flows_offer_same_three_payment_methods(self):
+        callbacks = [
+            button.callback_data
+            for row in pay_method_keyboard(
+                123, can_wallet=True, wallet_balance=500_000, remaining=100_000
+            ).inline_keyboard
+            for button in row
+        ]
+        self.assertIn('pay_zp_123', callbacks)
+        self.assertIn('pay_card_123', callbacks)
+        self.assertIn('pay_wallet_123', callbacks)
+
+    def test_zarinpal_instant_note_is_only_in_id_flow(self):
+        import inspect
+
+        note = gems.ID_ZARINPAL_INSTANT_NOTE
+        self.assertIn('زرین‌پال', note)
+        self.assertIn('آنی', note)
+        self.assertIn('ID_ZARINPAL_INSTANT_NOTE', inspect.getsource(gems.show_gem))
+        self.assertIn('ID_ZARINPAL_INSTANT_NOTE', inspect.getsource(gems.gem_confirm))
+        self.assertNotIn(note, inspect.getsource(gem_credentials))
 
 
 if __name__ == '__main__':

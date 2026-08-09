@@ -23,6 +23,11 @@ from text_safety import markdown_safe
 
 GEM_UID, GEM_CONFIRM = range(2)
 
+ID_ZARINPAL_INSTANT_NOTE = (
+    '⚡ اگر با درگاه زرین‌پال پرداخت کنی، بعد از تأیید پرداخت '
+    'جم به‌صورت آنی به اکانتت واریز می‌شود.'
+)
+
 _MENU_BUTTONS = {
     '💎 جم فری‌فایر', '🎮 محصولات فری‌فایر', '💰 کیف پول',
     '📦 سفارش‌های من', '👤 حساب من',
@@ -120,6 +125,8 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{price_line}\n\n"
         f"برای ادامه فقط *آیدی بازی (UID)* لازم است."
     )
+    if g[8]:
+        text += f"\n\n{ID_ZARINPAL_INSTANT_NOTE}"
     if g[2] in (1188, 2420):
         text += (
             "\n\n🔐 برای *درگاه زرین‌پال* احراز هویت یک‌باره لازم است "
@@ -342,6 +349,8 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"مبلغ: *{info['price']:,}* تومان\n"
         f"موجودی کیف پول: *{balance:,}* ت\n"
     )
+    if info.get('auto_deliver'):
+        text += f"{ID_ZARINPAL_INSTANT_NOTE}\n"
     if info.get('amount') in (1188, 2420):
         text += (
             "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
