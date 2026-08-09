@@ -1591,7 +1591,7 @@ def fulfill_order(order_id):
                     total_manual += 1
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
                     if manual_ok and str(catalogue or '').startswith('itunes_try:'):
-                        supplier_cost = CREDENTIAL_COST_USD.get(int(amount or 0))
+                        supplier_cost = credential_cost_for_package(amount)
                         if supplier_cost:
                             record_gem_profit_snapshot(
                                 info_id, order_id, supplier_cost,
@@ -2312,6 +2312,36 @@ def ensure_admin_schema():
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('credential_weekly_cost_usd','1.328',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('credential_monthly_cost_usd','6.64',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           SELECT 'credential_weekly_profit_percent',
+                  COALESCE(
+                    (SELECT "Value" FROM "BotSettings"
+                     WHERE "Key"='credential_profit_percent' LIMIT 1),
+                    '40'
+                  ),
+                  now()
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='credential_weekly_profit_percent'
+           )''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           SELECT 'credential_monthly_profit_percent',
+                  COALESCE(
+                    (SELECT "Value" FROM "BotSettings"
+                     WHERE "Key"='credential_profit_percent' LIMIT 1),
+                    '40'
+                  ),
+                  now()
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='credential_monthly_profit_percent'
+           )''',
         '''DO $migration$
            BEGIN
              IF NOT EXISTS (
@@ -3813,6 +3843,67 @@ CREDENTIAL_COST_USD = {
 }
 
 
+def get_credential_pricing_config():
+    """بهای دلاری و درصد سود هفتگی/ماهانه جم با اطلاعات (قابل تنظیم از پنل)."""
+    from decimal import Decimal, InvalidOperation
+
+    legacy_profit = str(get_setting('credential_profit_percent', '40') or '40')
+
+    def _profit(key):
+        raw = get_setting(key, legacy_profit) or legacy_profit
+        try:
+            return max(1, min(200, int(str(raw).replace('%', '').replace('٪', ''))))
+        except (TypeError, ValueError):
+            return 40
+
+    def _cost(key, default):
+        raw = str(get_setting(key, default) or default).replace(',', '').strip()
+        try:
+            value = Decimal(raw)
+        except (InvalidOperation, TypeError, ValueError):
+            value = Decimal(default)
+        if value < Decimal('0.01') or value > Decimal('1000'):
+            value = Decimal(default)
+        return value
+
+    return {
+        'weekly_cost': _cost('credential_weekly_cost_usd', '1.328'),
+        'monthly_cost': _cost('credential_monthly_cost_usd', '6.64'),
+        'weekly_profit': _profit('credential_weekly_profit_percent'),
+        'monthly_profit': _profit('credential_monthly_profit_percent'),
+    }
+
+
+def credential_cost_for_package(amount=None, plan_type=None):
+    """هزینه دلاری تأمین برای بسته جم با اطلاعات."""
+    cfg = get_credential_pricing_config()
+    plan = str(plan_type or '').strip().lower()
+    try:
+        amt = int(amount or 0)
+    except (TypeError, ValueError):
+        amt = 0
+    if plan == 'weekly' or amt == 60:
+        return cfg['weekly_cost']
+    if plan == 'monthly' or amt == 300:
+        return cfg['monthly_cost']
+    return CREDENTIAL_COST_USD.get(amt)
+
+
+def credential_profit_for_package(amount=None, plan_type=None):
+    """درصد سود فروش برای بسته جم با اطلاعات."""
+    cfg = get_credential_pricing_config()
+    plan = str(plan_type or '').strip().lower()
+    try:
+        amt = int(amount or 0)
+    except (TypeError, ValueError):
+        amt = 0
+    if plan == 'weekly' or amt == 60:
+        return cfg['weekly_profit']
+    if plan == 'monthly' or amt == 300:
+        return cfg['monthly_profit']
+    return cfg['monthly_profit']
+
+
 def sync_gem_prices_daily(_force=False):
     """همگام‌سازی قیمت با نرخ دلار و درصد سود مستقل هر روش خرید.
 
@@ -3858,41 +3949,35 @@ def sync_gem_prices_daily(_force=False):
         _LOG.warning("gem price sync: USD rate error", exc_info=True)
         return 0
 
-    # دریافت کاتالوگ G2Bulk
+    # دریافت کاتالوگ G2Bulk (برای جم با آیدی) — شکست آن مانع به‌روز شدن
+    # جم با اطلاعات (بهای ثابت پنل) نمی‌شود.
+    prices_by_name = {}
     try:
         import g2bulk as g2
 
         snapshot = g2.get_inventory_snapshot(force=True)
         if not snapshot.get("ok"):
             _LOG.warning("gem price sync: G2Bulk snapshot failed: %s", snapshot.get("error"))
-            prices_by_name = {}
         else:
             prices_by_name = snapshot.get("prices_by_name") or {}
     except Exception:
         _LOG.warning("gem price sync: G2Bulk error", exc_info=True)
-        return 0
 
-    # سود جم با آیدی و جم با اطلاعات مستقل هستند.
+    # سود جم با آیدی و سود/بهای هفتگی و ماهانهٔ جم با اطلاعات
     profit_percent = 10
-    credential_profit_percent = 40
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                'SELECT "Key","Value" FROM "BotSettings" '
-                'WHERE "Key" IN (%s,%s)',
-                ("gem_profit_percent", "credential_profit_percent"),
+                'SELECT "Value" FROM "BotSettings" WHERE "Key"=%s',
+                ("gem_profit_percent",),
             )
-            profit_settings = dict(cur.fetchall())
-        if profit_settings.get('gem_profit_percent'):
-            profit_percent = max(
-                1, min(200, int(profit_settings['gem_profit_percent']))
-            )
-        if profit_settings.get('credential_profit_percent'):
-            credential_profit_percent = max(
-                1, min(200, int(profit_settings['credential_profit_percent']))
-            )
+            row = cur.fetchone()
+        if row and row[0]:
+            profit_percent = max(1, min(200, int(row[0])))
     except Exception:
         _LOG.warning("gem price sync: profit setting read failed", exc_info=True)
+
+    cred_cfg = get_credential_pricing_config()
 
     # به‌روزرسانی قیمت در دیتابیس
     updated = 0
@@ -3900,16 +3985,19 @@ def sync_gem_prices_daily(_force=False):
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                """SELECT "Id","Price","G2BulkCatalogueName","PurchaseType","Amount"
+                """SELECT "Id","Price","G2BulkCatalogueName","PurchaseType",
+                          "Amount","PlanType"
                    FROM "GemPackages"
                    WHERE "IsActive"=true AND "G2BulkCatalogueName" IS NOT NULL
                    AND "G2BulkCatalogueName"<>''"""
             )
             for (gem_id, current_price, catalogue_name,
-                purchase_type, amount) in cur.fetchall():
+                 purchase_type, amount, plan_type) in cur.fetchall():
                 if purchase_type == 'by_credentials':
-                    cost_usd = CREDENTIAL_COST_USD.get(int(amount or 0))
-                    package_profit_percent = credential_profit_percent
+                    cost_usd = credential_cost_for_package(amount, plan_type)
+                    package_profit_percent = credential_profit_for_package(
+                        amount, plan_type
+                    )
                 else:
                     name_key = g2bulk._normalise_catalogue_name(catalogue_name)
                     cost_usd = prices_by_name.get(name_key)
@@ -3938,21 +4026,16 @@ def sync_gem_prices_daily(_force=False):
         return updated
 
     _LOG.info(
-        "Gem price sync: matched=%d updated=%d rate=%d id_profit=%d%% credential_profit=%d%% source=%s",
+        "Gem price sync: matched=%d updated=%d rate=%d id_profit=%d%% "
+        "weekly_profit=%d%% monthly_profit=%d%% weekly_cost=%s monthly_cost=%s source=%s",
         matched,
         updated,
         rate_value,
         profit_percent,
-        credential_profit_percent,
-        rate_result.get("source", "unknown"),
-    )
-
-    _LOG.info(
-        "Gem price sync done: %d updated, rate=%d, id_profit=%d%%, credential_profit=%d%%, source=%s",
-        updated,
-        rate_value,
-        profit_percent,
-        credential_profit_percent,
+        cred_cfg['weekly_profit'],
+        cred_cfg['monthly_profit'],
+        cred_cfg['weekly_cost'],
+        cred_cfg['monthly_cost'],
         rate_result.get("source", "unknown"),
     )
     return updated

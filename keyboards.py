@@ -323,6 +323,7 @@ def admin_home_keyboard(counts=None):
             InlineKeyboardButton('🛍 کاتالوگ فروش', callback_data='admx_shop'),
             InlineKeyboardButton('💳 مالی و درگاه', callback_data='admx_finance'),
         ],
+        [InlineKeyboardButton('💱 قیمت‌گذاری و سود', callback_data='admx_pricing')],
         [
             InlineKeyboardButton('📊 گزارش‌ها', callback_data='admx_hub_reports'),
             InlineKeyboardButton(support_label, callback_data='admx_hub_support'),
@@ -406,7 +407,7 @@ def admin_hub_system_keyboard():
 def admin_shop_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('💎 بسته‌های جم با آیدی', callback_data='admx_gems')],
-        [InlineKeyboardButton('🔐 سود جم با اطلاعات', callback_data='admi_credentialprofit')],
+        [InlineKeyboardButton('💱 قیمت‌گذاری هفتگی/ماهانه', callback_data='admx_pricing')],
         [InlineKeyboardButton('🎯 پک‌های سنس', callback_data='admx_sense')],
         [
             InlineKeyboardButton('📦 اکانت‌های فروشگاه', callback_data='admx_products'),
@@ -422,6 +423,7 @@ def admin_shop_keyboard():
 
 def admin_finance_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('💱 قیمت‌گذاری و سود', callback_data='admx_pricing')],
         [InlineKeyboardButton('🚦 توقف/فعال فروش', callback_data='admx_toggle_sales')],
         [InlineKeyboardButton('🛡 توقف/فعال پرداخت', callback_data='admx_toggle_payments')],
         [
@@ -436,12 +438,6 @@ def admin_finance_keyboard():
         ],
         [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
         [
-            InlineKeyboardButton('📈 سود جم با آیدی', callback_data='admi_gemprofit'),
-            InlineKeyboardButton('🔐 سود جم با اطلاعات', callback_data='admi_credentialprofit'),
-        ],
-        [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
-        [InlineKeyboardButton('💱 نرخ زنده و بهای پک‌ها', callback_data='admx_g2balance')],
-        [
             InlineKeyboardButton('🧾 رسیدها', callback_data='admx_receipts'),
             InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
         ],
@@ -451,6 +447,28 @@ def admin_finance_keyboard():
         ],
         [InlineKeyboardButton('📈 گزارش سود جم', callback_data='admx_profit')],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+    ])
+
+
+def admin_pricing_keyboard():
+    """هاب قیمت‌گذاری: بهای دلاری + درصد سود جدا برای آیدی / هفتگی / ماهانه."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('💎 سود جم با آیدی', callback_data='admi_gemprofit')],
+        [
+            InlineKeyboardButton('📅 سود هفتگی', callback_data='admi_credprofit_weekly'),
+            InlineKeyboardButton('📆 سود ماهانه', callback_data='admi_credprofit_monthly'),
+        ],
+        [
+            InlineKeyboardButton('💵 بهای دلاری هفتگی', callback_data='admi_credcost_weekly'),
+            InlineKeyboardButton('💵 بهای دلاری ماهانه', callback_data='admi_credcost_monthly'),
+        ],
+        [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
+        [InlineKeyboardButton('🔄 اعمال الان روی قیمت‌های فروش', callback_data='admx_pricesync')],
+        [InlineKeyboardButton('📊 نرخ زنده و بهای پک‌ها', callback_data='admx_g2balance')],
+        [
+            InlineKeyboardButton('🔙 مالی', callback_data='admx_finance'),
+            InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home'),
+        ],
     ])
 
 

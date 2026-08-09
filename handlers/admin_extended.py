@@ -37,6 +37,7 @@ from db import (
     admin_complete_credential_order, admin_reject_credential_info,
     count_ready_credential_orders, get_admin_stats,
     admin_cancel_stuck_order, mark_delivery_notified,
+    get_credential_pricing_config, compute_gem_sale_price,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -44,7 +45,7 @@ from keyboards import (
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
-    main_menu,
+    admin_pricing_keyboard, main_menu,
 )
 
 WAIT_VALUE = 50
@@ -681,9 +682,44 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == 'admx_shop':
         await query.edit_message_text(
             '🛍 *کاتالوگ فروش*\n'
-            'جم با آیدی · سود جم با اطلاعات · سنس · اکانت · کدها',
+            'جم با آیدی · قیمت‌گذاری هفتگی/ماهانه · سنس · اکانت · کدها',
             parse_mode='Markdown',
             reply_markup=admin_shop_keyboard(),
+        )
+    elif data == 'admx_pricing':
+        cfg = await asyncio.to_thread(get_credential_pricing_config)
+        gem_profit = int(get_setting('gem_profit_percent', '10') or '10')
+        last_sync = get_setting('gem_price_last_sync', '') or '—'
+        fx = await asyncio.to_thread(profitability.get_usd_toman_rate, True)
+        rate = int(fx['rate']) if fx.get('ok') else None
+        weekly_sale = monthly_sale = '—'
+        if rate:
+            weekly_sale = f"{compute_gem_sale_price(cfg['weekly_cost'], rate, cfg['weekly_profit']):,} ت"
+            monthly_sale = f"{compute_gem_sale_price(cfg['monthly_cost'], rate, cfg['monthly_profit']):,} ت"
+        rate_line = (
+            f'نرخ زنده دلار: *{rate:,}* تومان'
+            if rate else
+            'نرخ زنده دلار: *در دسترس نیست* (از نرخ پشتیبان استفاده می‌شود)'
+        )
+        await query.edit_message_text(
+            '💱 *قیمت‌گذاری و سود*\n'
+            '━━━━━━━━━━━━━━━\n'
+            f'{rate_line}\n'
+            f'آخرین سینک خودکار: `{_md_safe(str(last_sync)[:19], 40)}`\n\n'
+            f'💎 جم با آیدی — سود: *{gem_profit}٪*\n'
+            f'(بهای دلاری از کاتالوگ G2B هر ۲۴ ساعت)\n\n'
+            f'📅 *هفتگی با اطلاعات*\n'
+            f'بهای دلاری: *${cfg["weekly_cost"]}*\n'
+            f'سود شما: *{cfg["weekly_profit"]}٪*\n'
+            f'قیمت فروش تقریبی: *{weekly_sale}*\n\n'
+            f'📆 *ماهانه با اطلاعات*\n'
+            f'بهای دلاری: *${cfg["monthly_cost"]}*\n'
+            f'سود شما: *{cfg["monthly_profit"]}٪*\n'
+            f'قیمت فروش تقریبی: *{monthly_sale}*\n\n'
+            'قیمت فروش ≈ بهای دلار × نرخ تومان × (۱ + سود٪)\n'
+            'و هر ۲۴ ساعت مثل جم با آیدی به‌روز می‌شود.',
+            parse_mode='Markdown',
+            reply_markup=admin_pricing_keyboard(),
         )
     elif data == 'admx_finance':
         zp = get_setting('zarinpal_enabled', '1') != '0'
@@ -692,10 +728,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sales = get_setting('sales_enabled', '1') != '0'
         number = get_setting('card_number', '') or 'تنظیم نشده'
         merchant = get_setting('zarinpal_merchant_id', '')
+        cfg = await asyncio.to_thread(get_credential_pricing_config)
         gem_profit = int(get_setting('gem_profit_percent', '10') or '10')
-        credential_profit = int(
-            get_setting('credential_profit_percent', '40') or '40'
-        )
         await query.edit_message_text(
             '💳 *مالی و درگاه*\n\n'
             f'فروش: {"✅" if sales else "⛔ متوقف"}\n'
@@ -703,9 +737,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'زرین‌پال: {"✅" if zp else "❌"}\n'
             f'مرچنت: {_mask_secret(merchant) if merchant else "از env سرور"}\n'
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
-            f'شماره کارت: {number}\n'
+            f'شماره کارت: {number}\n\n'
             f'سود جم با آیدی: {gem_profit}٪\n'
-            f'سود جم با اطلاعات: {credential_profit}٪',
+            f'هفتگی با اطلاعات: ${cfg["weekly_cost"]} · سود {cfg["weekly_profit"]}٪\n'
+            f'ماهانه با اطلاعات: ${cfg["monthly_cost"]} · سود {cfg["monthly_profit"]}٪\n'
+            '✏️ تغییر قیمت/سود از «قیمت‌گذاری و سود»',
             parse_mode='Markdown',
             reply_markup=admin_finance_keyboard(),
         )
@@ -868,14 +904,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     callback_data='admx_pricesync',
                 ),
             ],
-            _back('admx_finance'),
+            _back('admx_pricing'),
         ], markdown=snapshot.get('ok', False))
     elif data == 'admx_pricesync':
         await query.answer('در حال بروزرسانی قیمت جم…')
-        profit = int(get_setting('gem_profit_percent', '10') or '10')
-        credential_profit = int(
-            get_setting('credential_profit_percent', '40') or '40'
-        )
+        gem_profit = int(get_setting('gem_profit_percent', '10') or '10')
+        cfg = await asyncio.to_thread(get_credential_pricing_config)
         try:
             updated = await asyncio.to_thread(sync_gem_prices_daily, True)
         except TypeError:
@@ -883,13 +917,17 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if updated:
             text = (
                 f'✅ قیمت {updated} محصول به‌روزرسانی شد.\n'
-                f'جم با آیدی: سود {profit}٪\n'
-                f'جم با اطلاعات: سود {credential_profit}٪'
+                f'جم با آیدی: سود {gem_profit}٪\n'
+                f'هفتگی: ${cfg["weekly_cost"]} · سود {cfg["weekly_profit"]}٪\n'
+                f'ماهانه: ${cfg["monthly_cost"]} · سود {cfg["monthly_profit"]}٪'
             )
         else:
-            text = 'ℹ️ قیمت‌ها بروزرسانی شد؛ اگر تغییری نکرد یعنی همان قیمت قبلی معتبر است.'
+            text = (
+                'ℹ️ سینک انجام شد؛ اگر قیمتی عوض نشد یعنی همان قیمت قبلی '
+                'با نرخ/سود فعلی معتبر است.'
+            )
         await _edit(query, text, [
-            _back('adm_home'),
+            _back('admx_pricing'),
         ], markdown=False)
     elif data == 'admx_profit':
         current_fx = await asyncio.to_thread(
@@ -1586,11 +1624,27 @@ INPUT_ACTIONS = {
     ),
     'admi_gemprofit': (
         'setting:gem_profit_percent',
-        'درصد سود بسته‌های جم را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
+        'درصد سود بسته‌های جم با آیدی را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
+    ),
+    'admi_credprofit_weekly': (
+        'setting:credential_weekly_profit_percent',
+        'درصد سود عضویت هفتگی (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 40',
+    ),
+    'admi_credprofit_monthly': (
+        'setting:credential_monthly_profit_percent',
+        'درصد سود عضویت ماهانه (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 40',
+    ),
+    'admi_credcost_weekly': (
+        'setting:credential_weekly_cost_usd',
+        'بهای دقیق دلاری عضویت هفتگی را بفرست (مثلاً 1.328).',
+    ),
+    'admi_credcost_monthly': (
+        'setting:credential_monthly_cost_usd',
+        'بهای دقیق دلاری عضویت ماهانه را بفرست (مثلاً 6.64).',
     ),
     'admi_credentialprofit': (
         'setting:credential_profit_percent',
-        'درصد سود جم با اطلاعات را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 40',
+        'درصد سود مشترک هفتگی و ماهانه را بفرست (هر دو یکی می‌شوند). پیش‌فرض: 40',
     ),
     'admi_department': ('department', 'نام دپارتمان جدید را بفرست.'),
     'admi_category': ('category', 'نام دسته‌بندی جدید را بفرست.'),
@@ -1750,23 +1804,75 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not 0 <= threshold <= 10_000:
                     raise ValueError('حد موجودی باید بین ۰ تا ۱۰٬۰۰۰ باشد.')
                 raw = str(threshold)
-            if key in ('gem_profit_percent', 'credential_profit_percent'):
+            if key in (
+                'gem_profit_percent',
+                'credential_profit_percent',
+                'credential_weekly_profit_percent',
+                'credential_monthly_profit_percent',
+            ):
                 profit = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
                 if not 1 <= profit <= 200:
                     raise ValueError('درصد سود باید بین ۱ تا ۲۰۰ باشد.')
                 raw = str(profit)
+            if key in (
+                'credential_weekly_cost_usd',
+                'credential_monthly_cost_usd',
+            ):
+                from decimal import Decimal, InvalidOperation
+                cleaned = raw.replace(',', '').replace('$', '').strip()
+                try:
+                    cost = Decimal(cleaned)
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        'بهای دلاری باید عدد معتبر باشد (مثلاً 1.328 یا 6.64).'
+                    ) from exc
+                if not Decimal('0.01') <= cost <= Decimal('1000'):
+                    raise ValueError('بهای دلاری باید بین 0.01 تا 1000 باشد.')
+                raw = format(cost.quantize(Decimal('0.000001')), 'f')
+                if '.' in raw:
+                    raw = raw.rstrip('0').rstrip('.')
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             if key in ('support_id', 'credential_support_id'):
                 raw = raw.strip()
                 if not raw.startswith('@') or not raw[1:].replace('_', '').isalnum():
                     raise ValueError('آیدی پشتیبانی باید با @ و به‌شکل معتبر وارد شود.')
+            if key == 'credential_profit_percent':
+                # سازگاری قدیمی: هر دو پلن یکسان می‌شوند
+                set_setting('credential_weekly_profit_percent', raw)
+                set_setting('credential_monthly_profit_percent', raw)
             set_setting(key, raw)
             log_admin_action(
                 update.effective_user.id, 'setting_updated', 'setting', key,
                 'value changed' if key != 'low_stock_threshold' else f'value={raw}',
             )
-            await update.message.reply_text('✅ ذخیره شد.', reply_markup=admin_home_keyboard())
+            pricing_keys = {
+                'gem_profit_percent',
+                'credential_profit_percent',
+                'credential_weekly_profit_percent',
+                'credential_monthly_profit_percent',
+                'credential_weekly_cost_usd',
+                'credential_monthly_cost_usd',
+                'usd_toman_rate',
+            }
+            if key in pricing_keys:
+                try:
+                    updated = await asyncio.to_thread(sync_gem_prices_daily, True)
+                except Exception:
+                    updated = 0
+                extra = (
+                    f'\n🔄 قیمت فروش {updated} محصول همین الان اعمال شد.'
+                    if updated else
+                    '\n🔄 سینک قیمت انجام شد (اگر تغییری نبود، نرخ/سود فعلی همان قبلی است).'
+                )
+                await update.message.reply_text(
+                    f'✅ ذخیره شد.{extra}',
+                    reply_markup=admin_pricing_keyboard(),
+                )
+            else:
+                await update.message.reply_text(
+                    '✅ ذخیره شد.', reply_markup=admin_home_keyboard()
+                )
         elif action == 'department':
             add_department(raw)
             await update.message.reply_text('✅ دپارتمان اضافه شد.', reply_markup=admin_home_keyboard())

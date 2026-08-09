@@ -90,11 +90,27 @@ class G2BulkTurkeyPricingTests(unittest.TestCase):
     def test_credential_profit_setting_is_independent_from_id_gem_profit(self):
         source = __import__('inspect').getsource(db.sync_gem_prices_daily)
         self.assertIn("profit_percent = 10", source)
-        self.assertIn("credential_profit_percent = 40", source)
-        self.assertIn("CREDENTIAL_COST_USD.get", source)
-        self.assertIn("package_profit_percent = credential_profit_percent", source)
-        self.assertIn("package_profit_percent = profit_percent", source)
+        self.assertIn("credential_cost_for_package", source)
+        self.assertIn("credential_profit_for_package", source)
+        self.assertIn("by_credentials", source)
+        helpers = __import__('inspect').getsource(db.get_credential_pricing_config)
+        self.assertIn("credential_weekly_cost_usd", helpers)
+        self.assertIn("credential_monthly_cost_usd", helpers)
+        self.assertIn("credential_weekly_profit_percent", helpers)
+        self.assertIn("credential_monthly_profit_percent", helpers)
 
+    def test_weekly_and_monthly_costs_resolve_separately(self):
+        with patch.object(db, 'get_setting', side_effect=lambda k, d='': {
+            'credential_weekly_cost_usd': '1.5',
+            'credential_monthly_cost_usd': '7.1',
+            'credential_weekly_profit_percent': '25',
+            'credential_monthly_profit_percent': '55',
+            'credential_profit_percent': '40',
+        }.get(k, d)):
+            self.assertEqual(str(db.credential_cost_for_package(60, 'weekly')), '1.5')
+            self.assertEqual(str(db.credential_cost_for_package(300, 'monthly')), '7.1')
+            self.assertEqual(db.credential_profit_for_package(60, 'weekly'), 25)
+            self.assertEqual(db.credential_profit_for_package(300, 'monthly'), 55)
 
 class CredentialMenuTests(unittest.TestCase):
     def test_freefire_menu_keeps_id_flow_and_adds_credential_flow(self):
@@ -139,6 +155,9 @@ class CredentialAdminActionTests(unittest.TestCase):
         self.assertIn("admx_credrefundask_", source)
         self.assertIn("admx_credrefundok_", source)
         self.assertIn("admin_cancel_stuck_order", source)
+        self.assertIn("admx_pricing", source)
+        self.assertIn("admi_credprofit_weekly", source)
+        self.assertIn("admi_credcost_monthly", source)
         self.assertIn("سفارش #{order_id} با موفقیت انجام شد", source)
         self.assertIn("به کیف پولت برگشت", source)
 
