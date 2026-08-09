@@ -14,7 +14,7 @@ from db import (
     get_or_create_user, get_wallet_balance,
 )
 from keyboards import (
-    credential_2fa_keyboard, credential_cancel_keyboard,
+    credential_backup_keyboard, credential_cancel_keyboard,
     credential_confirm_keyboard, credential_method_keyboard,
     credential_products_keyboard, freefire_products_keyboard, main_menu,
     pay_method_keyboard,
@@ -23,7 +23,72 @@ from payment_safety import checked_amount
 from text_safety import markdown_safe
 
 
-CRED_IDENTIFIER, CRED_PASSWORD, CRED_2FA, CRED_CONFIRM = range(20, 24)
+CRED_METHOD, CRED_IDENTIFIER, CRED_PASSWORD, CRED_BACKUP, CRED_CONFIRM = range(20, 25)
+
+METHOD_META = {
+    'google': {
+        'label': 'Gmail / Google',
+        'id_prompt': (
+            '📧 *مرحله ۱ از ۳ — ایمیل Gmail*\n'
+            'ایمیل اکانت گوگل متصل به فری‌فایر را بفرست.\n'
+            'مثال: `name@gmail.com`'
+        ),
+        'pass_prompt': (
+            '🔑 *مرحله ۲ از ۳ — رمز عبور*\n'
+            'رمز فعلی اکانت Gmail را بفرست.\n'
+            'بعد از تحویل حتماً رمز را عوض کن. این پیام از گفت‌وگو حذف می‌شود.'
+        ),
+        'backup_prompt': (
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Gmail*\n'
+            'یک یا چند *Backup / Recovery code* گوگل را بفرست '
+            '(از Security ← 2-Step Verification ← Backup codes).\n'
+            'اگر چند کد داری می‌توانی هر خط یکی بفرستی.'
+        ),
+    },
+    'facebook': {
+        'label': 'Facebook',
+        'id_prompt': (
+            '📘 *مرحله ۱ از ۳ — شناسه Facebook*\n'
+            'ایمیل، شماره موبایل یا نام‌کاربری فیسبوک متصل به فری‌فایر را بفرست.'
+        ),
+        'pass_prompt': (
+            '🔑 *مرحله ۲ از ۳ — رمز عبور Facebook*\n'
+            'رمز ورود فیسبوک را بفرست.\n'
+            'بعد از تحویل رمز را عوض کن. این پیام حذف می‌شود.'
+        ),
+        'backup_prompt': (
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی Facebook*\n'
+            'کدهای Recovery / Backup فیسبوک را بفرست '
+            '(Settings ← Password and security ← Two-factor authentication).\n'
+            'اگر چند کد داری هر خط یکی بفرست.'
+        ),
+    },
+    'vk': {
+        'label': 'VK',
+        'id_prompt': (
+            '🟣 *مرحله ۱ از ۳ — شناسه VK*\n'
+            'ایمیل، شماره موبایل یا نام‌کاربری VK متصل به فری‌فایر را بفرست.'
+        ),
+        'pass_prompt': (
+            '🔑 *مرحله ۲ از ۳ — رمز عبور VK*\n'
+            'رمز ورود VK را بفرست.\n'
+            'بعد از تحویل رمز را عوض کن. این پیام حذف می‌شود.'
+        ),
+        'backup_prompt': (
+            '🛡 *مرحله ۳ از ۳ — کد بک‌آپ / بازیابی VK*\n'
+            'کدهای Backup / Recovery VK را بفرست '
+            '(Settings ← Security ← Two-step verification).\n'
+            'اگر چند کد داری هر خط یکی بفرست.'
+        ),
+    },
+}
+
+
+def _clear_secrets(info):
+    if not info:
+        return
+    info.pop('password', None)
+    info.pop('backup_code', None)
 
 
 async def freefire_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -54,8 +119,9 @@ async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYP
     text = (
         '🔐 *جم با اطلاعات اکانت*\n'
         '━━━━━━━━━━━━━━━\n'
-        'محصول موردنظر را انتخاب کن. اطلاعات ورود رمزگذاری می‌شود و بعد از '
-        'تکمیل یا لغو سفارش حذف خواهد شد.'
+        'عضویت *هفتگی* یا *ماهانه* را انتخاب کن.\n'
+        'بعد از انتخاب، روش ورود (Gmail / Facebook / VK) و اطلاعات اکانت را '
+        'قدم‌به‌قدم می‌گیری؛ اطلاعات رمزگذاری می‌شود و پس از تکمیل یا لغو حذف می‌شود.'
     )
     if not products:
         text += '\n\n❌ فعلاً محصول فعالی وجود ندارد.'
@@ -82,10 +148,14 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         f'📅 دوره: *{plan}*\n'
         f'🇹🇷 مبنای هزینه: iTunes Turkey {base_try} TRY\n'
         f'💰 قیمت فروش: *{int(product[4]):,} تومان*\n'
-        '⏳ تحویل: دستی پس از بررسی اطلاعات\n\n'
-        'برای ورود، یک رمز موقت بده و بعد از تحویل حتماً آن را عوض کن. '
-        'کد یک‌بارمصرف دو مرحله‌ای داخل ربات ذخیره نمی‌شود و هنگام ورود '
-        'با پشتیبانی هماهنگ خواهد شد.'
+        '⏳ تحویل: دستی پس از بررسی اطلاعات توسط ادمین\n\n'
+        'مراحل بعدی:\n'
+        '۱) انتخاب روش ورود (Gmail / Facebook / VK)\n'
+        '۲) شناسه ورود\n'
+        '۳) رمز عبور\n'
+        '۴) کد بک‌آپ / بازیابی\n'
+        '۵) پرداخت\n\n'
+        'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     await query.edit_message_text(
@@ -113,10 +183,12 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'pk': product_id, 'title': str(product[1]), 'price': int(product[4]),
     }
     await query.edit_message_text(
-        '🔐 اکانت فری‌فایر با کدام روش ذخیره/متصل شده است؟',
+        '🔐 *روش ورود به اکانت را انتخاب کن*\n'
+        'فری‌فایر با کدام حساب ذخیره/متصل شده؟',
+        parse_mode='Markdown',
         reply_markup=credential_method_keyboard(),
     )
-    return CRED_IDENTIFIER
+    return CRED_METHOD
 
 
 async def credential_method_selected(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -126,18 +198,13 @@ async def credential_method_selected(update: Update, ctx: ContextTypes.DEFAULT_T
     if not info:
         return ConversationHandler.END
     method = query.data.split('_')[-1]
+    if method not in METHOD_META:
+        await query.edit_message_text('❌ روش ورود نامعتبر است.')
+        return ConversationHandler.END
     info['method'] = method
-    labels = {'google': 'ایمیل Gmail', 'facebook': 'ایمیل، شماره یا نام کاربری Facebook',
-              'vk': 'ایمیل، شماره یا نام کاربری VK'}
-    warning = ''
-    if method == 'google':
-        warning = (
-            '\n\n⚠️ App Password گوگل برای ورود وب/OAuth فری‌فایر قابل اتکا نیست؛ '
-            'ایمیل اصلی و یک رمز موقت بفرست. کد دو مرحله‌ای را فقط هنگام ورود '
-            'با پشتیبانی هماهنگ کن.'
-        )
     await query.edit_message_text(
-        f'شناسه ورود را بفرست:\n{labels[method]}{warning}',
+        METHOD_META[method]['id_prompt'],
+        parse_mode='Markdown',
         reply_markup=credential_cancel_keyboard(),
     )
     return CRED_IDENTIFIER
@@ -151,15 +218,21 @@ async def credential_identifier(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(value) < 4 or len(value) > 180 or '\n' in value:
         await update.message.reply_text('شناسه ورود معتبر نیست؛ دوباره بفرست.')
         return CRED_IDENTIFIER
+    method = info['method']
+    if method == 'google' and '@' not in value:
+        await update.message.reply_text(
+            'برای Gmail باید ایمیل کامل بفرستی (مثلاً name@gmail.com).'
+        )
+        return CRED_IDENTIFIER
     info['identifier'] = value
     try:
         await update.message.delete()
     except Exception:
         pass
     await update.effective_chat.send_message(
-        '🔑 حالا *رمز موقت* اکانت را بفرست.\n'
-        'بعد از تکمیل سفارش آن را تغییر بده. پیام رمز از گفت‌وگو حذف می‌شود.',
-        parse_mode='Markdown', reply_markup=credential_cancel_keyboard(),
+        METHOD_META[method]['pass_prompt'],
+        parse_mode='Markdown',
+        reply_markup=credential_cancel_keyboard(),
         protect_content=True,
     )
     return CRED_PASSWORD
@@ -168,7 +241,7 @@ async def credential_identifier(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def credential_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     password = update.message.text or ''
     info = ctx.user_data.get('credential_buy')
-    if not info:
+    if not info or not info.get('method'):
         return ConversationHandler.END
     if not 6 <= len(password) <= 200 or '\n' in password:
         await update.message.reply_text('رمز باید بین ۶ تا ۲۰۰ کاراکتر و تک‌خطی باشد.')
@@ -179,49 +252,70 @@ async def credential_password(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
     await update.effective_chat.send_message(
-        '🛡 تأیید دومرحله‌ای این حساب فعال است؟\n\n'
-        'کد لحظه‌ای یا Recovery Code را اینجا نفرست. اگر فعال باشد، هنگام ورود '
-        'پشتیبانی برای دریافت همان کد یک‌بارمصرف با تو هماهنگ می‌کند.',
-        reply_markup=credential_2fa_keyboard(),
+        METHOD_META[info['method']]['backup_prompt'],
+        parse_mode='Markdown',
+        reply_markup=credential_backup_keyboard(),
+        protect_content=True,
     )
-    return CRED_2FA
+    return CRED_BACKUP
 
 
-async def credential_2fa_selected(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def _show_confirm(update, ctx, *, via_callback=False):
+    info = ctx.user_data.get('credential_buy')
+    if not info:
+        return ConversationHandler.END
+    method_label = METHOD_META[info['method']]['label']
+    has_backup = bool(str(info.get('backup_code') or '').strip())
+    text = (
+        f'✅ *بازبینی اطلاعات*\n'
+        f'━━━━━━━━━━━━━━━\n'
+        f'محصول: {markdown_safe(info["title"], 120)}\n'
+        f'روش ورود: {method_label}\n'
+        f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
+        f'رمز: ثبت شد ✅\n'
+        f'کد بک‌آپ: {"ثبت شد ✅" if has_backup else "ثبت نشد ⚠️"}\n'
+        f'مبلغ: *{info["price"]:,} تومان*\n\n'
+        'با تأیید، اطلاعات رمزگذاری و سفارش ساخته می‌شود؛ سپس صفحه پرداخت باز می‌شود.'
+    )
+    if via_callback:
+        await update.callback_query.edit_message_text(
+            text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
+        )
+    else:
+        await update.effective_chat.send_message(
+            text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
+        )
+    return CRED_CONFIRM
+
+
+async def credential_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    info = ctx.user_data.get('credential_buy')
+    if not info:
+        return ConversationHandler.END
+    backup = (update.message.text or '').strip()
+    if len(backup) < 4 or len(backup) > 800:
+        await update.message.reply_text(
+            'کد بک‌آپ معتبر نیست (بین ۴ تا ۸۰۰ کاراکتر). دوباره بفرست یا «فعلاً ندارم» را بزن.'
+        )
+        return CRED_BACKUP
+    info['backup_code'] = backup
+    info['two_factor'] = True
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    return await _show_confirm(update, ctx, via_callback=False)
+
+
+async def credential_backup_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     info = ctx.user_data.get('credential_buy')
     if not info:
         return ConversationHandler.END
-    info['two_factor'] = query.data.endswith('_yes')
-    method_label = {'google': 'Gmail / Google', 'facebook': 'Facebook', 'vk': 'VK'}[info['method']]
-    guide = ''
-    if not info['two_factor']:
-        guide = {
-            'google': (
-                '\n\n🛡 راهنمای فعال‌سازی: Google Account ← Security ← '
-                '2-Step Verification. کد بازیابی را برای خودت نگه دار و داخل ربات نفرست.'
-            ),
-            'facebook': (
-                '\n\n🛡 راهنمای فعال‌سازی: Facebook Settings ← Password and security ← '
-                'Two-factor authentication. کد بازیابی را داخل ربات نفرست.'
-            ),
-            'vk': (
-                '\n\n🛡 راهنمای فعال‌سازی: VK Settings ← Security ← Two-step '
-                'verification. کد بازیابی را داخل ربات نفرست.'
-            ),
-        }[info['method']]
-    await query.edit_message_text(
-        f'✅ *بازبینی اطلاعات*\n'
-        f'محصول: {markdown_safe(info["title"], 120)}\n'
-        f'روش ورود: {method_label}\n'
-        f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
-        f'تأیید دومرحله‌ای: {"فعال" if info["two_factor"] else "غیرفعال"}\n'
-        f'مبلغ: *{info["price"]:,} تومان*\n\n'
-        f'با تأیید، اطلاعات رمزگذاری و سفارش ساخته می‌شود.{guide}',
-        parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
-    )
-    return CRED_CONFIRM
+    info['backup_code'] = ''
+    info['two_factor'] = False
+    return await _show_confirm(update, ctx, via_callback=True)
 
 
 async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -233,14 +327,20 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     current = await asyncio.to_thread(get_gem, info['pk'])
     if not current or current[7] != 'by_credentials':
+        _clear_secrets(info)
         ctx.user_data.pop('credential_buy', None)
         await query.edit_message_text('❌ محصول دیگر فعال نیست.')
         return ConversationHandler.END
     try:
         price = checked_amount(current[4], label='قیمت محصول')
-        ciphertext = encrypt_credentials(info['identifier'], info['password'])
+        ciphertext = encrypt_credentials(
+            info['identifier'],
+            info['password'],
+            backup_code=info.get('backup_code') or '',
+        )
         user = update.effective_user
         full_name = f'{user.first_name or ""} {user.last_name or ""}'.strip() or 'کاربر تلگرام'
+        two_factor = bool(info.get('two_factor') or info.get('backup_code'))
 
         def persist():
             db_id, _ = get_or_create_user(
@@ -249,18 +349,18 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order_id, title, saved_price = create_credential_gem_order_atomic(
                 db_id, info['pk'], price, telegram_id=user.id, full_name=full_name,
                 login_method=info['method'], credential_ciphertext=ciphertext,
-                two_factor_enabled=info['two_factor'],
+                two_factor_enabled=two_factor,
             )
             return db_id, order_id, title, saved_price, int(get_wallet_balance(db_id) or 0)
 
         db_id, order_id, title, price, balance = await asyncio.to_thread(persist)
     except (ValueError, CredentialVaultError) as exc:
+        _clear_secrets(info)
         ctx.user_data.pop('credential_buy', None)
         await query.edit_message_text(f'❌ {exc}')
         return ConversationHandler.END
     finally:
-        if info:
-            info.pop('password', None)
+        _clear_secrets(info)
     ctx.user_data['db_id'] = db_id
     ctx.user_data['pending_order'] = {
         'order_id': order_id, 'total': price, 'title': title, 'tg_id': user.id,
@@ -272,6 +372,7 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'محصول: {markdown_safe(title, 120)}\n'
         f'مبلغ: *{price:,} تومان*\n'
         f'موجودی کیف پول: *{balance:,} تومان*\n\n'
+        'بعد از پرداخت موفق، سفارش برای ادمین ارسال می‌شود.\n'
         'شماره سفارش را برای پیگیری نگه دار.',
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
@@ -283,8 +384,7 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def credential_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     info = ctx.user_data.pop('credential_buy', None)
-    if info:
-        info.pop('password', None)
+    _clear_secrets(info)
     if update.callback_query:
         await update.callback_query.answer('لغو شد')
         await update.callback_query.edit_message_text('✖️ ثبت اطلاعات لغو شد.')
@@ -296,8 +396,14 @@ def credential_conversation_handler():
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(credential_buy_start, pattern=r'^cbuy_\d+$')],
         states={
+            CRED_METHOD: [
+                CallbackQueryHandler(
+                    credential_method_selected,
+                    pattern=r'^cred_method_(google|facebook|vk)$',
+                ),
+                CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
+            ],
             CRED_IDENTIFIER: [
-                CallbackQueryHandler(credential_method_selected, pattern=r'^cred_method_(google|facebook|vk)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_identifier),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
@@ -305,8 +411,9 @@ def credential_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_password),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
-            CRED_2FA: [
-                CallbackQueryHandler(credential_2fa_selected, pattern=r'^cred_2fa_(yes|no)$'),
+            CRED_BACKUP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, credential_backup),
+                CallbackQueryHandler(credential_backup_skip, pattern='^cred_backup_skip$'),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
             CRED_CONFIRM: [

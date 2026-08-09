@@ -307,9 +307,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'deleted': 'حذف‌شده',
         }.get(cred_status, cred_status or '—')
         masked = '—'
+        has_backup = False
         if ciphertext:
             try:
-                masked = mask_identifier(decrypt_credentials(ciphertext)['identifier'])
+                secret_preview = decrypt_credentials(ciphertext)
+                masked = mask_identifier(secret_preview['identifier'])
+                has_backup = bool(str(secret_preview.get('backup_code') or '').strip())
             except CredentialVaultError:
                 masked = 'خطای رمزگشایی'
         text = (
@@ -321,7 +324,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'وضعیت اطلاعات: *{status_label}*\n'
             f'روش ورود: {method_label}\n'
             f'شناسه ماسک‌شده: `{_md_safe(masked, 120)}`\n'
-            f'تأیید دومرحله‌ای: {"فعال" if two_factor else "غیرفعال"}\n'
+            f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else ("نامشخص" if not ciphertext else "ثبت نشده ⚠️")}\n'
+            f'۲FA پرچم: {"فعال" if two_factor else "غیرفعال"}\n'
             f'کاربر: {_md_safe(first_name)} {_md_safe(last_name)} '
             f'@{_md_safe(username)} · `{tg}`\n'
             f'آخرین مشاهده: {str(viewed_at)[:19] if viewed_at else "هرگز"}\n'
@@ -435,13 +439,19 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log_admin_action, update.effective_user.id, 'credential_revealed',
             'order', order_id, 'temporary reveal',
         )
+        backup = str(secret.get('backup_code') or '').strip()
+        backup_block = (
+            f'کد بک‌آپ / بازیابی:\n{backup}\n\n'
+            if backup else
+            'کد بک‌آپ: ثبت نشده\n\n'
+        )
         message = await query.message.reply_text(
             f'🔐 اطلاعات موقت سفارش #{order_id}\n'
             f'روش: {row[6]}\n'
             f'شناسه: {secret["identifier"]}\n'
-            f'رمز موقت: {secret["password"]}\n\n'
-            'این پیام حداکثر تا ۶۰ ثانیه دیگر حذف می‌شود. کد OTP را از کاربر '
-            'در لحظه ورود بگیر و جایی ذخیره نکن.',
+            f'رمز: {secret["password"]}\n'
+            f'{backup_block}'
+            'این پیام حداکثر تا ۶۰ ثانیه دیگر حذف می‌شود.',
             protect_content=True,
             reply_markup=_kb([[InlineKeyboardButton(
                 '🗑 همین حالا حذف کن', callback_data='admx_secretdelete'
@@ -489,11 +499,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     user_text = (
-                        f'⚠️ اطلاعات سفارش #{order_id} صحیح یا کامل نیست.\n'
+                        f'⚠️ اطلاعات سفارش #{order_id} ناقص یا نادرست است.\n'
                         f'لطفاً با پشتیبانی ({support_text}) در ارتباط باش و '
-                        f'حتماً شماره سفارش #{order_id} را بفرست تا همان سفارش بررسی شود.\n'
+                        f'حتماً شماره سفارش #{order_id} را بفرست.\n'
                         'تا زمان حل مشکل، مبلغ روی سفارش نگه داشته می‌شود؛ '
-                        'اگر لازم باشد پشتیبانی آن را به کیف پولت برمی‌گرداند.'
+                        'در صورت نیاز پشتیبانی آن را به کیف پولت برمی‌گرداند.'
                     )
                 await ctx.bot.send_message(chat_id=int(tg_id), text=user_text)
             except Exception:

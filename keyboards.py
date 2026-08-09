@@ -51,10 +51,17 @@ def credential_products_keyboard(products):
 
 def credential_method_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('Gmail / Google', callback_data='cred_method_google')],
-        [InlineKeyboardButton('Facebook', callback_data='cred_method_facebook')],
-        [InlineKeyboardButton('VK', callback_data='cred_method_vk')],
+        [InlineKeyboardButton('📧 Gmail / Google', callback_data='cred_method_google')],
+        [InlineKeyboardButton('📘 Facebook', callback_data='cred_method_facebook')],
+        [InlineKeyboardButton('🟣 VK', callback_data='cred_method_vk')],
         [InlineKeyboardButton('❌ انصراف', callback_data='cred_cancel')],
+    ])
+
+
+def credential_backup_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('⏭ فعلاً کد بک‌آپ ندارم', callback_data='cred_backup_skip')],
+        [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
     ])
 
 

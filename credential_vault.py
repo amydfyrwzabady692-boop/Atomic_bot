@@ -35,11 +35,12 @@ def is_configured():
         return False
 
 
-def encrypt_credentials(identifier, password, note=''):
+def encrypt_credentials(identifier, password, note='', backup_code=''):
     payload = json.dumps(
         {
             'identifier': str(identifier or '').strip(),
             'password': str(password or ''),
+            'backup_code': str(backup_code or '').strip(),
             'note': str(note or '').strip(),
         },
         ensure_ascii=False,
@@ -59,6 +60,7 @@ def decrypt_credentials(ciphertext):
     return {
         'identifier': str(data.get('identifier') or ''),
         'password': str(data.get('password') or ''),
+        'backup_code': str(data.get('backup_code') or ''),
         'note': str(data.get('note') or ''),
     }
 

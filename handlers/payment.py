@@ -34,6 +34,7 @@ from db import (
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, is_admin
+from credential_vault import decrypt_credentials
 import time
 import g2bulk
 
@@ -281,16 +282,28 @@ async def _notify_credential_sale(bot, order_id):
     if not row:
         return
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    method = row[6]
+    method_label = {
+        'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
+    }.get(method, method)
+    has_backup = False
+    if row[7]:
+        try:
+            secret = decrypt_credentials(row[7])
+            has_backup = bool(str(secret.get('backup_code') or '').strip())
+        except Exception:
+            has_backup = False
     await notify_admin(
         bot,
         (
             f'🔐 *سفارش جم با اطلاعات — #{order_id}*\n'
             f'محصول: {row[4]}\n'
             f'مبلغ: {row[2]:,} تومان\n'
-            f'روش ورود: `{row[6]}`\n'
-            f'تأیید دومرحله‌ای: {"فعال" if row[9] else "غیرفعال"}\n'
+            f'روش ورود: `{method_label}`\n'
+            f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else "ثبت نشده ⚠️"}\n'
             f'کاربر: `{row[1]}`\n\n'
-            'اطلاعات فقط از پنل امن سفارش نمایش داده شود.'
+            'پرداخت تأیید شد. از پنل امن سفارش، اطلاعات را ببین و '
+            '«انجام شد» یا «اطلاعات ناقص» را بزن.'
         ),
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(

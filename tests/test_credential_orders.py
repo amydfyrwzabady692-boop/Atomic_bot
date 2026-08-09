@@ -27,16 +27,35 @@ class CredentialVaultTests(unittest.TestCase):
             os.environ['ACCOUNT_CREDENTIALS_KEY'] = self.old_key
 
     def test_round_trip_never_exposes_plaintext_in_ciphertext(self):
-        token = encrypt_credentials('buyer@example.com', 'Temp-Pass-123')
+        token = encrypt_credentials(
+            'buyer@example.com', 'Temp-Pass-123', backup_code='ABCD-1234'
+        )
         self.assertNotIn('buyer@example.com', token)
         self.assertNotIn('Temp-Pass-123', token)
+        self.assertNotIn('ABCD-1234', token)
         self.assertEqual(
             decrypt_credentials(token),
             {
                 'identifier': 'buyer@example.com',
                 'password': 'Temp-Pass-123',
+                'backup_code': 'ABCD-1234',
                 'note': '',
             },
+        )
+
+    def test_legacy_ciphertext_without_backup_still_decrypts(self):
+        # Older payloads only had identifier/password/note.
+        from cryptography.fernet import Fernet
+        import json
+        key = os.environ['ACCOUNT_CREDENTIALS_KEY'].encode('ascii')
+        raw = json.dumps(
+            {'identifier': 'a@b.com', 'password': 'secret', 'note': ''},
+            ensure_ascii=False, separators=(',', ':'),
+        ).encode('utf-8')
+        token = Fernet(key).encrypt(raw).decode('ascii')
+        self.assertEqual(
+            decrypt_credentials(token)['backup_code'],
+            '',
         )
 
     def test_wrong_key_cannot_decrypt(self):
@@ -143,6 +162,9 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertIn('ID_ZARINPAL_INSTANT_NOTE', inspect.getsource(gems.show_gem))
         self.assertIn('ID_ZARINPAL_INSTANT_NOTE', inspect.getsource(gems.gem_confirm))
         self.assertNotIn(note, inspect.getsource(gem_credentials))
+        self.assertIn('CRED_BACKUP', inspect.getsource(gem_credentials))
+        self.assertIn('backup_code', inspect.getsource(gem_credentials))
+        self.assertIn('cred_backup_skip', inspect.getsource(gem_credentials))
 
 
 class CredentialAdminActionTests(unittest.TestCase):
