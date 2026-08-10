@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
 from db import get_or_create_user, is_user_blocked, get_setting
-from admin_notify import is_admin, is_premium_admin
+from admin_notify import is_admin, is_premium_admin, is_credential_admin
 
 
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -50,6 +50,8 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = custom.replace('{name}', name).replace('{welcome}', welcome) if custom else default_text
     if admin:
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
+    elif await asyncio.to_thread(is_credential_admin, user.id):
+        text += "\n\n🔐 پشتیبان جم با اطلاعات: دستور `/credadmin` را بزن."
     elif bool(user.is_premium) and await asyncio.to_thread(is_premium_admin, user.id):
         text += "\n\n⭐ مدیر پریمیوم: دستور `/studio` را بزن."
     try:
@@ -74,6 +76,8 @@ async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if is_admin(update.effective_user.id):
         text += "\n🛠 ادمین: `/admin`"
+    elif is_credential_admin(update.effective_user.id):
+        text += "\n🔐 پشتیبان جم با اطلاعات: `/credadmin`"
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
 
 

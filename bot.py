@@ -45,10 +45,10 @@ from handlers.admin import (
     admin_user_card, admin_user_cmd, admin_block_toggle, admin_failed,
     admin_open_orders, admin_retry, admin_tickets, admin_ticket_close,
     admin_user_orders, admin_conversation_handler, admin_wallet_empty,
-    admin_mark_done, admin_stuck_cancel,
+    admin_mark_done, admin_stuck_cancel, admin_credential_tickets,
 )
 from handlers.admin_extended import (
-    admin_ext_router, admin_extended_conversation_handler,
+    admin_ext_router, admin_extended_conversation_handler, credadmin_cmd,
 )
 from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
@@ -553,6 +553,7 @@ def main():
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
     app.add_handler(CommandHandler('admin', admin_cmd))
+    app.add_handler(CommandHandler('credadmin', credadmin_cmd))
     app.add_handler(CommandHandler('studio', studio_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^/u_\d+$'), admin_user_cmd))
 
@@ -637,6 +638,9 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_mark_done, pattern=r'^adm_done_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_stuck_cancel, pattern=r'^adm_cancel_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_tickets, pattern='^adm_tickets$'))
+    app.add_handler(CallbackQueryHandler(
+        admin_credential_tickets, pattern='^adm_cred_tickets$'
+    ))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))
     app.add_handler(

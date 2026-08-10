@@ -70,13 +70,29 @@ def credential_backup_keyboard():
 
 
 def credential_post_pay_support_keyboard(order_id, support_username='lookurback'):
-    """بعد از پرداخت: پیام به پشتیبانی با شماره سفارش."""
+    """بعد از پرداخت: تیکت داخل ربات + لینک پیوی پشتیبانی."""
     username = str(support_username or 'lookurback').lstrip('@').strip() or 'lookurback'
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            f'🆘 نیاز به راهنمایی بک‌آپ — پشتیبانی (#{order_id})',
+            f'🆘 تیکت راهنمایی بک‌آپ (سفارش #{order_id})',
+            callback_data=f'cred_ticket_{order_id}',
+        )],
+        [InlineKeyboardButton(
+            f'💬 پیوی پشتیبانی (@{username})',
             url=f'https://t.me/{username}',
         )],
+    ])
+
+
+def credential_admin_home_keyboard(counts=None):
+    ready = int((counts or {}).get('ready_creds') or 0)
+    tickets = int((counts or {}).get('cred_tickets') or 0)
+    orders_label = f'🔐 سفارش‌های جم با اطلاعات ({ready})' if ready else '🔐 سفارش‌های جم با اطلاعات'
+    tickets_label = f'🎫 تیکت‌های این بخش ({tickets})' if tickets else '🎫 تیکت‌های این بخش'
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(orders_label, callback_data='admx_credentials')],
+        [InlineKeyboardButton(tickets_label, callback_data='adm_cred_tickets')],
+        [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_credhub')],
     ])
 
 
@@ -410,10 +426,13 @@ def admin_hub_support_keyboard(counts=None):
     ticket_label = f'🎫 تیکت‌های باز ({tickets})' if tickets else '🎫 تیکت‌های باز'
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(ticket_label, callback_data='adm_tickets')],
+        [InlineKeyboardButton(
+            '🔐 تیکت‌های جم با اطلاعات', callback_data='adm_cred_tickets'
+        )],
         [InlineKeyboardButton('🏢 دپارتمان‌ها', callback_data='admx_departments')],
         [InlineKeyboardButton('👤 پشتیبان‌ها و متن‌ها', callback_data='admx_support')],
         [InlineKeyboardButton(
-            '🔐 پشتیبان جم با اطلاعات', callback_data='admi_credentialsupportid'
+            '🔐 افزودن پشتیبان جم با اطلاعات', callback_data='admi_credentialadmin'
         )],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
@@ -556,7 +575,7 @@ def admin_failed_order_keyboard(order_id, tg_id=''):
     return InlineKeyboardMarkup(rows)
 
 
-def admin_ticket_keyboard(ticket_id, tg_id=None):
+def admin_ticket_keyboard(ticket_id, tg_id=None, *, back_to='admx_hub_support'):
     rows = [
         [
             InlineKeyboardButton('💬 پاسخ', callback_data=f'adm_treply_{ticket_id}'),
@@ -565,6 +584,9 @@ def admin_ticket_keyboard(ticket_id, tg_id=None):
     ]
     if tg_id:
         rows.append([InlineKeyboardButton('👤 کارت کاربر', callback_data=f'adm_user_{tg_id}')])
-    rows.append([InlineKeyboardButton('🔙 پشتیبانی', callback_data='admx_hub_support')])
-    rows.append([InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home')])
+    rows.append([InlineKeyboardButton('🔙 بازگشت', callback_data=back_to)])
+    if back_to != 'admx_credhub':
+        rows.append([InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home')])
+    else:
+        rows.append([InlineKeyboardButton('🏠 پنل جم با اطلاعات', callback_data='admx_credhub')])
     return InlineKeyboardMarkup(rows)

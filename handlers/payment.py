@@ -34,7 +34,7 @@ from db import (
     get_credential_order,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
-from admin_notify import notify_admin, is_admin
+from admin_notify import notify_admin, notify_credential_admins, is_admin
 from credential_vault import decrypt_credentials
 import time
 import g2bulk
@@ -325,16 +325,20 @@ async def _notify_credential_sale(bot, order_id, *, event='paid'):
             f'کاربر: {tg}\n\n'
             'الان اطلاعات را باز کن، وارد اکانت شو و «انجام شد» بزن.'
         )
-    ok = await notify_admin(
-        bot,
-        text,
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                '🔐 باز کردن سفارش', callback_data=f'admx_credential_{order_id}'
-            )
-        ]]),
-        parse_mode=None,
-    )
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            '🔐 باز کردن سفارش', callback_data=f'admx_credential_{order_id}'
+        )
+    ]])
+    if event == 'created':
+        # فقط ادمین کامل / owner — پشتیبان credential تا پرداخت خبر نگیرد
+        ok = await notify_admin(
+            bot, text, reply_markup=markup, parse_mode=None,
+        )
+    else:
+        ok = await notify_credential_admins(
+            bot, text, reply_markup=markup, parse_mode=None,
+        )
     if not ok:
         log.error('credential admin notify failed for order %s event=%s', order_id, event)
     return ok

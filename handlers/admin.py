@@ -8,10 +8,11 @@ from telegram.ext import (
     CallbackQueryHandler, CommandHandler, filters,
 )
 
-from admin_notify import is_admin, notify_admin
+from admin_notify import is_admin, is_credential_admin, notify_admin
 from keyboards import (
     admin_home_keyboard, admin_user_keyboard, admin_failed_order_keyboard,
     admin_stuck_order_keyboard, admin_ticket_keyboard, main_menu,
+    credential_admin_home_keyboard,
 )
 from db import (
     get_admin_stats, list_recent_users, list_users_with_balance, get_user_profile,
@@ -21,6 +22,7 @@ from db import (
     close_ticket, add_ticket_message, admin_operations_snapshot, get_setting,
     log_admin_action, admin_mark_order_delivered, admin_cancel_stuck_order,
     mark_delivery_notified, order_refund_amount, count_ready_credential_orders,
+    count_open_tickets,
 )
 from handlers.payment import fulfill_order_async
 
@@ -65,6 +67,29 @@ async def _require_admin(update: Update) -> bool:
     return False
 
 
+def _ticket_category(ticket):
+    if not ticket or len(ticket) < 9:
+        return 'other'
+    return str(ticket[8] or 'other')
+
+
+async def _can_manage_ticket(update: Update, ticket) -> bool:
+    uid = update.effective_user.id if update.effective_user else None
+    if not ticket:
+        if update.callback_query:
+            await update.callback_query.answer('تیکت پیدا نشد.', show_alert=True)
+        return False
+    if is_admin(uid):
+        return True
+    if is_credential_admin(uid) and _ticket_category(ticket) == 'credential':
+        return True
+    if update.callback_query:
+        await update.callback_query.answer(_deny_text(), show_alert=True)
+    elif update.message:
+        await update.message.reply_text(_deny_text())
+    return False
+
+
 def _tg_handle(uname):
     un = (uname or '').lstrip('@').strip()
     if not un or un.startswith('tg_'):
@@ -91,6 +116,13 @@ def _format_user(p):
 
 
 async def admin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id if update.effective_user else None
+    if is_credential_admin(uid) and not is_admin(uid):
+        await update.message.reply_text(
+            "🔐 دسترسی شما فقط بخش جم با اطلاعات است.\n"
+            "دستور /credadmin را بزن."
+        )
+        return
     if not await _require_admin(update):
         return
     await _show_home(update, ctx, via_message=True)
@@ -863,8 +895,10 @@ async def admin_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["✦ *تیکت‌های باز*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     for r in rows:
-        tid, subject, status, created, tg, name = r
-        lines.append(f"#{tid} · {name or '—'} · `{tg}`\n  {(subject or '')[:50]}")
+        tid, subject, status, created, tg, name = r[:6]
+        cat = r[6] if len(r) > 6 else 'other'
+        tag = '🔐' if cat == 'credential' else '🎧'
+        lines.append(f"{tag} #{tid} · {name or '—'} · `{tg}`\n  {(subject or '')[:50]}")
         buttons.append([
             InlineKeyboardButton(f'#{tid} پاسخ', callback_data=f'adm_treply_{tid}'),
             InlineKeyboardButton('بستن', callback_data=f'adm_tclose_{tid}'),
@@ -876,17 +910,52 @@ async def admin_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def admin_credential_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """تیکت‌های فقط بخش جم با اطلاعات — برای پشتیبان credential و ادمین کامل."""
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    if not (is_admin(uid) or is_credential_admin(uid)):
+        await query.edit_message_text(_deny_text())
+        return
+    rows = list_open_tickets(20, category='credential')
+    back = 'admx_credhub' if is_credential_admin(uid) and not is_admin(uid) else 'admx_hub_support'
+    if not rows:
+        await query.edit_message_text(
+            "تیکت باز جم با اطلاعات نیست.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🔙 بازگشت', callback_data=back)],
+            ]),
+        )
+        return
+    lines = ["🔐 *تیکت‌های جم با اطلاعات*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    buttons = []
+    for r in rows:
+        tid, subject, status, created, tg, name = r[:6]
+        lines.append(f"#{tid} · {name or '—'} · `{tg}`\n  {(subject or '')[:50]}")
+        buttons.append([
+            InlineKeyboardButton(f'#{tid} پاسخ', callback_data=f'adm_treply_{tid}'),
+            InlineKeyboardButton('بستن', callback_data=f'adm_tclose_{tid}'),
+        ])
+    buttons.append([InlineKeyboardButton('🔙 بازگشت', callback_data=back)])
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
 async def admin_ticket_reply_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not await _require_admin(update):
-        return ConversationHandler.END
     tid = int(query.data.replace('adm_treply_', ''))
     ticket = get_ticket(tid)
     if not ticket:
         await query.edit_message_text("تیکت پیدا نشد.")
         return ConversationHandler.END
+    if not await _can_manage_ticket(update, ticket):
+        return ConversationHandler.END
     ctx.user_data['adm_ticket_id'] = tid
+    ctx.user_data['adm_ticket_category'] = _ticket_category(ticket)
     tg = ticket[5] or ticket[6]
     await query.edit_message_text(
         f"پاسخ تیکت #{tid}\nکاربر `{tg}`\n{(ticket[3] or '')[:280]}\n\nپاسخت را بفرست:",
@@ -896,18 +965,22 @@ async def admin_ticket_reply_start(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
 
 async def admin_ticket_reply_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    tid = ctx.user_data.pop('adm_ticket_id', None)
+    uid = update.effective_user.id
+    tid = ctx.user_data.get('adm_ticket_id')
     if not tid:
         return ConversationHandler.END
     ticket = get_ticket(tid)
-    if not ticket:
-        await update.message.reply_text("تیکت پیدا نشد.")
+    if not ticket or not await _can_manage_ticket(update, ticket):
+        ctx.user_data.pop('adm_ticket_id', None)
         return ConversationHandler.END
+    ctx.user_data.pop('adm_ticket_id', None)
+    cat = _ticket_category(ticket)
     text = update.message.text or ''
     add_ticket_message(tid, 'admin', text)
     tg = ticket[5] or ticket[6]
+    back_to = 'admx_credhub' if cat == 'credential' else 'admx_hub_support'
+    # پشتیبان credential دکمه کارت کاربر نگیرد
+    show_user = is_admin(uid)
     try:
         await ctx.bot.send_message(
             chat_id=int(tg),
@@ -917,7 +990,9 @@ async def admin_ticket_reply_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         )
         await update.message.reply_text(
             "✅ ارسال شد.",
-            reply_markup=admin_ticket_keyboard(tid),
+            reply_markup=admin_ticket_keyboard(
+                tid, tg if show_user else None, back_to=back_to,
+            ),
         )
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
@@ -927,11 +1002,11 @@ async def admin_ticket_reply_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE
 async def admin_ticket_close(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("بسته شد")
-    if not await _require_admin(update):
-        return
     tid = int(query.data.replace('adm_tclose_', ''))
-    close_ticket(tid)
     ticket = get_ticket(tid)
+    if not await _can_manage_ticket(update, ticket):
+        return
+    close_ticket(tid)
     tg = (ticket[5] or ticket[6]) if ticket else None
     if tg:
         try:
@@ -942,7 +1017,19 @@ async def admin_ticket_close(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
-    await query.edit_message_text(f"تیکت #{tid} بسته شد.", reply_markup=admin_home_keyboard())
+    uid = update.effective_user.id
+    cat = _ticket_category(ticket)
+    if is_credential_admin(uid) and not is_admin(uid):
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton('🔙 پنل جم با اطلاعات', callback_data='admx_credhub')],
+        ])
+    elif cat == 'credential':
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton('🔙 تیکت‌های این بخش', callback_data='adm_cred_tickets')],
+        ])
+    else:
+        markup = admin_home_keyboard()
+    await query.edit_message_text(f"تیکت #{tid} بسته شد.", reply_markup=markup)
 
 
 async def admin_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -954,6 +1041,13 @@ async def admin_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.message:
         if is_admin(update.effective_user.id):
             await update.message.reply_text("انصراف.", reply_markup=admin_home_keyboard())
+        elif is_credential_admin(update.effective_user.id):
+            await update.message.reply_text(
+                "انصراف.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton('🔙 پنل جم با اطلاعات', callback_data='admx_credhub'),
+                ]]),
+            )
         else:
             await update.message.reply_text(_deny_text())
     return ConversationHandler.END

@@ -2704,12 +2704,43 @@ def is_premium_editor(telegram_id):
         return False
 
 
+def is_credential_staff(telegram_id):
+    """پشتیبان فقط بخش جم با اطلاعات (Role=credential)."""
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT 1 FROM "BotAdmins" WHERE "TelegramId"=%s AND "IsActive"=true '
+                'AND COALESCE("Role",\'admin\')=\'credential\'',
+                (str(telegram_id),),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        _LOG.warning(
+            "Credential staff lookup failed for telegram_id=%s",
+            telegram_id,
+            exc_info=True,
+        )
+        return False
+
+
+def list_credential_admins():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "TelegramId", "Title", "IsActive", "CreatedAt", '
+            'COALESCE("Role",\'admin\') '
+            'FROM "BotAdmins" '
+            'WHERE "IsActive"=true AND COALESCE("Role",\'admin\')=\'credential\' '
+            'ORDER BY "CreatedAt"'
+        )
+        return cur.fetchall()
+
+
 def add_bot_admin(telegram_id, title='', role='admin', added_by=None):
     telegram_id = str(telegram_id or '').strip()
     if not telegram_id.isdigit() or not 1 <= int(telegram_id) < 2 ** 52:
         raise ValueError('شناسه عددی تلگرام معتبر نیست.')
     role = str(role or '').strip().lower()
-    if role not in ('admin', 'premium'):
+    if role not in ('admin', 'premium', 'credential'):
         raise ValueError('نقش مدیر معتبر نیست.')
     with get_conn() as conn, conn.cursor() as cur:
         if role == 'premium':
@@ -4598,7 +4629,8 @@ def get_ticket(ticket_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT t."Id", t."UserId", t."Subject", t."Message", t."Status", '
-            't."TelegramId", u."TelegramId", u."FirstName" '
+            't."TelegramId", u."TelegramId", u."FirstName", '
+            'COALESCE(t."Category", \'other\') '
             'FROM "SupportTickets" t '
             'LEFT JOIN "Users" u ON u."Id"=t."UserId" '
             'WHERE t."Id"=%s',
@@ -4607,18 +4639,40 @@ def get_ticket(ticket_id):
         return cur.fetchone()
 
 
-def list_open_tickets(limit=20):
+def list_open_tickets(limit=20, category=None):
     with get_conn() as conn, conn.cursor() as cur:
+        params = []
+        where = 'WHERE t."Status"=\'open\' '
+        if category:
+            where += 'AND COALESCE(t."Category", \'other\')=%s '
+            params.append(str(category))
+        params.append(limit)
         cur.execute(
             'SELECT t."Id", t."Subject", t."Status", t."CreatedAt", '
-            'COALESCE(t."TelegramId", u."TelegramId"), u."FirstName" '
+            'COALESCE(t."TelegramId", u."TelegramId"), u."FirstName", '
+            'COALESCE(t."Category", \'other\') '
             'FROM "SupportTickets" t '
             'LEFT JOIN "Users" u ON u."Id"=t."UserId" '
-            'WHERE t."Status"=\'open\' '
+            + where +
             'ORDER BY t."UpdatedAt" DESC NULLS LAST, t."Id" DESC LIMIT %s',
-            (limit,),
+            tuple(params),
         )
         return cur.fetchall()
+
+
+def count_open_tickets(category=None):
+    with get_conn() as conn, conn.cursor() as cur:
+        if category:
+            cur.execute(
+                'SELECT COUNT(*) FROM "SupportTickets" '
+                'WHERE "Status"=\'open\' AND COALESCE("Category", \'other\')=%s',
+                (str(category),),
+            )
+        else:
+            cur.execute(
+                'SELECT COUNT(*) FROM "SupportTickets" WHERE "Status"=\'open\''
+            )
+        return int(cur.fetchone()[0] or 0)
 
 
 def close_ticket(ticket_id):
@@ -4630,13 +4684,22 @@ def close_ticket(ticket_id):
         conn.commit()
 
 
-def get_active_ticket_for_user(user_db_id):
+def get_active_ticket_for_user(user_db_id, category=None):
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'SELECT "Id" FROM "SupportTickets" '
-            'WHERE "UserId"=%s AND "Status"=\'open\' ORDER BY "Id" DESC LIMIT 1',
-            (user_db_id,),
-        )
+        if category:
+            cur.execute(
+                'SELECT "Id" FROM "SupportTickets" '
+                'WHERE "UserId"=%s AND "Status"=\'open\' '
+                'AND COALESCE("Category", \'other\')=%s '
+                'ORDER BY "Id" DESC LIMIT 1',
+                (user_db_id, str(category)),
+            )
+        else:
+            cur.execute(
+                'SELECT "Id" FROM "SupportTickets" '
+                'WHERE "UserId"=%s AND "Status"=\'open\' ORDER BY "Id" DESC LIMIT 1',
+                (user_db_id,),
+            )
         row = cur.fetchone()
         return row[0] if row else None
 

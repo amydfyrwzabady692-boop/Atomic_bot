@@ -5,7 +5,7 @@ import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
-from admin_notify import is_admin
+from admin_notify import is_admin, is_credential_admin
 from db import get_or_create_user, list_forced_join_channels
 from forced_join_logic import member_is_joined
 from keyboards import main_menu
@@ -119,6 +119,8 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         admin = bool(admin_cache.get('value'))
     else:
         admin = await asyncio.to_thread(is_admin, user.id)
+        if not admin:
+            admin = await asyncio.to_thread(is_credential_admin, user.id)
         ctx.user_data['_forced_join_admin'] = {
             'user_id': user.id,
             'value': bool(admin),

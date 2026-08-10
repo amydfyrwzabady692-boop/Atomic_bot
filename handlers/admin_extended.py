@@ -9,7 +9,7 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
-from admin_notify import admin_id, invalidate_role_cache, is_admin
+from admin_notify import admin_id, invalidate_role_cache, is_admin, is_credential_admin
 import g2bulk
 import profitability
 from credential_vault import CredentialVaultError, decrypt_credentials, mask_identifier
@@ -38,7 +38,7 @@ from db import (
     count_ready_credential_orders, get_admin_stats,
     admin_cancel_stuck_order, mark_delivery_notified,
     get_credential_pricing_config, compute_gem_sale_price,
-    get_credential_support_contact,
+    get_credential_support_contact, count_open_tickets, list_credential_admins,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -46,7 +46,7 @@ from keyboards import (
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
-    admin_pricing_keyboard, main_menu,
+    admin_pricing_keyboard, main_menu, credential_admin_home_keyboard,
 )
 
 WAIT_VALUE = 50
@@ -88,6 +88,10 @@ COMPOUND_FIELDS = {
         ('شناسه عددی تلگرام', 'کاربر باید قبلاً ربات را /start کرده باشد'),
         ('نام مدیر پریمیوم', 'مثال: طراح فروشگاه'),
     ),
+    'credentialadminadd': (
+        ('شناسه عددی تلگرام', 'مثال: 123456789'),
+        ('نام پشتیبان جم با اطلاعات', 'مثال: پشتیبان هفتگی'),
+    ),
     'forcedjoinadd': (
         (
             'شناسه کانال',
@@ -127,13 +131,42 @@ def _back(target='adm_home'):
 
 
 async def _guard(update):
-    if is_admin(update.effective_user.id):
+    uid = update.effective_user.id if update.effective_user else None
+    if is_admin(uid):
+        return True
+    data = ''
+    if update.callback_query and update.callback_query.data:
+        data = str(update.callback_query.data)
+    if is_credential_admin(uid) and _credential_staff_allowed(data):
         return True
     if update.callback_query:
         await update.callback_query.answer('دسترسی ندارید.', show_alert=True)
     elif update.message:
         await update.message.reply_text('دسترسی ندارید.')
     return False
+
+
+def _credential_staff_allowed(data):
+    """Callbackهایی که پشتیبان فقط-جم-با-اطلاعات می‌تواند بزند."""
+    if data in (
+        'admx_credhub', 'admx_credentials', 'admx_noop', 'adm_cred_tickets',
+    ):
+        return True
+    prefixes = (
+        'admx_credential_',
+        'admx_credreveal_',
+        'admx_creddone_',
+        'admx_credbad_',
+        'admx_credrefund',
+    )
+    return any(str(data or '').startswith(p) for p in prefixes)
+
+
+def _credential_nav_back(user_id):
+    """بازگشت مناسب برای owner (هاب سفارش) یا پشتیبان credential."""
+    if is_admin(user_id):
+        return _back('admx_hub_orders')
+    return [InlineKeyboardButton('🔙 پنل جم با اطلاعات', callback_data='admx_credhub')]
 
 
 async def _owner_guard(update):
@@ -289,6 +322,25 @@ async def _edit(query, text, rows, markdown=False):
         raise
 
 
+async def credadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """پنل محدود پشتیبان جم با اطلاعات."""
+    uid = update.effective_user.id if update.effective_user else None
+    if not (is_admin(uid) or is_credential_admin(uid)):
+        await update.message.reply_text('دسترسی ندارید.')
+        return
+    ready_creds = await asyncio.to_thread(count_ready_credential_orders)
+    cred_tickets = await asyncio.to_thread(count_open_tickets, 'credential')
+    await update.message.reply_text(
+        '🔐 *پنل جم با اطلاعات*\n'
+        'فقط سفارش‌های پرداخت‌شده و تیکت‌های همین بخش.',
+        parse_mode='Markdown',
+        reply_markup=credential_admin_home_keyboard({
+            'ready_creds': ready_creds,
+            'cred_tickets': cred_tickets,
+        }),
+    )
+
+
 async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     # _guard خودش در صورت عدم دسترسی answer می‌زند — دوباره نزن
@@ -306,6 +358,20 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if not self_answer:
         await query.answer()
+
+    if data == 'admx_credhub':
+        ready_creds = await asyncio.to_thread(count_ready_credential_orders)
+        cred_tickets = await asyncio.to_thread(count_open_tickets, 'credential')
+        await query.edit_message_text(
+            '🔐 *پنل جم با اطلاعات*\n'
+            'فقط سفارش‌های پرداخت‌شده و تیکت‌های همین بخش.',
+            parse_mode='Markdown',
+            reply_markup=credential_admin_home_keyboard({
+                'ready_creds': ready_creds,
+                'cred_tickets': cred_tickets,
+            }),
+        )
+        return
 
     if data == 'admx_hub_orders':
         ops = admin_operations_snapshot(_low_stock_threshold())
@@ -384,7 +450,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append('سفارشی ثبت نشده است.')
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_credentials')],
-            _back('admx_hub_orders'),
+            _credential_nav_back(update.effective_user.id),
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
         return
@@ -444,11 +510,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton(
                 '💰 لغو و برگشت به کیف پول', callback_data=f'admx_credrefundask_{oid}'
             )])
-        if tg:
+        if tg and is_admin(update.effective_user.id):
             buttons.append([InlineKeyboardButton(
                 '👤 کارت کاربر', callback_data=f'adm_user_{tg}'
             )])
-        buttons.extend([_back('admx_credentials'), _back('admx_hub_orders')])
+        buttons.extend([
+            _back('admx_credentials'),
+            _credential_nav_back(update.effective_user.id),
+        ])
         await _edit(query, text, buttons, markdown=True)
         return
 
@@ -1126,16 +1195,25 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, (
             '🎧 تنظیمات پشتیبانی\n\n'
             f'آیدی عمومی: {support_id}\n'
-            f'پشتیبان جم با اطلاعات: {cred_support["handle"]}\n\n'
-            'آیدی پشتیبان جم با اطلاعات را هر وقت خواستی از دکمه زیر عوض کن.'
+            f'پشتیبان جم با اطلاعات (@برای کاربر): {cred_support["handle"]}\n\n'
+            'برای دادن دسترسی پنل به پشتیبان جم با اطلاعات، از «مدیران ربات» '
+            'دکمه «افزودن پشتیبان جم با اطلاعات» را بزن (شناسه عددی تلگرام).'
         ), [
             [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی', callback_data='admi_supportid')],
             [InlineKeyboardButton(
-                '🔐 پشتیبان جم با اطلاعات', callback_data='admi_credentialsupportid'
+                '🔐 @ پشتیبان جم با اطلاعات (لینک کاربر)',
+                callback_data='admi_credentialsupportid'
+            )],
+            [InlineKeyboardButton(
+                '👮 افزودن پشتیبان با شناسه عددی',
+                callback_data='admi_credentialadmin',
             )],
             [InlineKeyboardButton('➕ افزودن دپارتمان', callback_data='admi_department')],
             [InlineKeyboardButton('📋 دپارتمان‌ها', callback_data='admx_departments')],
             [InlineKeyboardButton('💬 تیکت‌های باز', callback_data='adm_tickets')],
+            [InlineKeyboardButton(
+                '🔐 تیکت‌های جم با اطلاعات', callback_data='adm_cred_tickets'
+            )],
             _back('admx_hub_support'),
         ])
     elif data == 'admx_settings':
@@ -1683,7 +1761,12 @@ async def _show_simple_list(query, data):
                 f'👑 مدیر اصلی · {admin_id()}', callback_data='admx_noop'
             )])
         for tg, title, _active, _, role in rows:
-            role_label = '⭐ پریمیوم' if role == 'premium' else '🛡 مدیر'
+            if role == 'premium':
+                role_label = '⭐ پریمیوم'
+            elif role == 'credential':
+                role_label = '🔐 جم‌اطلاعات'
+            else:
+                role_label = '🛡 مدیر'
             buttons.append([InlineKeyboardButton(
                 f'❌ {role_label} · {title or "بدون نام"} · {tg}',
                 callback_data=f'admx_adminremove_{tg}'
@@ -1691,6 +1774,10 @@ async def _show_simple_list(query, data):
         buttons.extend([
                         [InlineKeyboardButton('➕ مدیر کامل', callback_data='admi_admin'),
                          InlineKeyboardButton('⭐ مدیر پریمیوم', callback_data='admi_premiumadmin')],
+                        [InlineKeyboardButton(
+                            '🔐 افزودن پشتیبان جم با اطلاعات',
+                            callback_data='admi_credentialadmin',
+                        )],
                         _back('admx_hub_system')])
         await _edit(query, '👮 مدیران ربات\nبرای حذف روی مدیر بزن.', buttons)
         return
@@ -1782,6 +1869,13 @@ INPUT_ACTIONS = {
         'قالب: شناسه عددی تلگرام | نام مدیر پریمیوم\n'
         'کاربر باید ابتدا ربات را /start کرده باشد.',
     ),
+    'admi_credentialadmin': (
+        'credentialadminadd',
+        'قالب: شناسه عددی تلگرام | نام پشتیبان جم با اطلاعات\n'
+        'مثال: 123456789 | پشتیبان هفتگی\n\n'
+        'این نفر فقط سفارش‌های پرداخت‌شده و تیکت جم با اطلاعات را می‌بیند.\n'
+        'بعد از افزودن باید دستور /credadmin را بزند.',
+    ),
     'admi_forcedjoin': (
         'forcedjoinadd',
         'مشخصات کانال جوین اجباری را وارد کن.',
@@ -1795,7 +1889,7 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update):
         return ConversationHandler.END
     data = query.data
-    if data in ('admi_admin', 'admi_premiumadmin') and not await _owner_guard(update):
+    if data in ('admi_admin', 'admi_premiumadmin', 'admi_credentialadmin') and not await _owner_guard(update):
         return ConversationHandler.END
     action = None
     prompt = None
@@ -2023,20 +2117,32 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '' if p[3] == '-' else p[3],
             )
             await update.message.reply_text('✅ پک سنس اضافه شد.', reply_markup=admin_home_keyboard())
-        elif action in ('adminadd', 'premiumadminadd'):
+        elif action in ('adminadd', 'premiumadminadd', 'credentialadminadd'):
             if not await _owner_guard(update):
                 return ConversationHandler.END
             if not p[0].isdigit():
                 raise ValueError('شناسه تلگرام باید عددی باشد.')
-            role = 'premium' if action == 'premiumadminadd' else 'admin'
+            if action == 'premiumadminadd':
+                role = 'premium'
+            elif action == 'credentialadminadd':
+                role = 'credential'
+            else:
+                role = 'admin'
             add_bot_admin(
                 p[0], p[1] if len(p) > 1 else '', role=role,
                 added_by=update.effective_user.id,
             )
             invalidate_role_cache(p[0])
-            await update.message.reply_text(
-                '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
-            )
+            if role == 'credential':
+                await update.message.reply_text(
+                    '✅ پشتیبان جم با اطلاعات ثبت شد.\n'
+                    'به او بگو دستور /credadmin را بزند.',
+                    reply_markup=admin_home_keyboard(),
+                )
+            else:
+                await update.message.reply_text(
+                    '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
+                )
         elif action == 'forcedjoinadd':
             chat_id = p[0].strip()
             if not valid_forced_join_chat_id(chat_id):
