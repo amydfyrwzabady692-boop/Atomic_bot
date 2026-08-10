@@ -549,7 +549,9 @@ async def _send_credential_post_pay_support(bot, tg_id, order_id):
             text=text,
             parse_mode='Markdown',
             reply_markup=credential_post_pay_support_keyboard(
-                order_id, support['username'],
+                order_id,
+                support.get('handle') or support.get('username') or 'پشتیبانی',
+                support_url=support.get('url'),
             ),
         )
     except Exception:

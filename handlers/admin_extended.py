@@ -39,6 +39,7 @@ from db import (
     admin_cancel_stuck_order, mark_delivery_notified,
     get_credential_pricing_config, compute_gem_sale_price,
     get_credential_support_contact, count_open_tickets, list_credential_admins,
+    set_credential_support_from_admin, get_user_profile,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from keyboards import (
@@ -426,8 +427,19 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == 'admx_credentials':
-        rows = await asyncio.to_thread(list_credential_orders, 30)
-        lines = ['🔐 *سفارش‌های جم با اطلاعات*', '━━━━━━━━━━━━━━━']
+        paid_only = (
+            is_credential_admin(update.effective_user.id)
+            and not is_admin(update.effective_user.id)
+        )
+        rows = await asyncio.to_thread(
+            list_credential_orders, 30, paid_only=paid_only,
+        )
+        title = (
+            '🔐 *سفارش‌های پرداخت‌شده جم با اطلاعات*'
+            if paid_only else
+            '🔐 *سفارش‌های جم با اطلاعات*'
+        )
+        lines = [title, '━━━━━━━━━━━━━━━']
         buttons = []
         status_labels = {
             'ready': '🟢 آماده بررسی', 'needs_info': '🟠 اطلاعات ناقص',
@@ -1195,18 +1207,18 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, (
             '🎧 تنظیمات پشتیبانی\n\n'
             f'آیدی عمومی: {support_id}\n'
-            f'پشتیبان جم با اطلاعات (@برای کاربر): {cred_support["handle"]}\n\n'
-            'برای دادن دسترسی پنل به پشتیبان جم با اطلاعات، از «مدیران ربات» '
-            'دکمه «افزودن پشتیبان جم با اطلاعات» را بزن (شناسه عددی تلگرام).'
+            f'پشتیبان جم با اطلاعات (برای مشتری): {cred_support["handle"]}\n\n'
+            'از دکمه زیر با *شناسه عددی تلگرام* پشتیبان این بخش را تعیین کن:\n'
+            'هم دسترسی پنل می‌گیرد، هم آیدی پشتیبانی همان بخش می‌شود.'
         ), [
-            [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی', callback_data='admi_supportid')],
+            [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی عمومی', callback_data='admi_supportid')],
             [InlineKeyboardButton(
-                '🔐 @ پشتیبان جم با اطلاعات (لینک کاربر)',
-                callback_data='admi_credentialsupportid'
+                '🔐 تعیین پشتیبان جم با اطلاعات (شناسه عددی)',
+                callback_data='admi_credentialadmin',
             )],
             [InlineKeyboardButton(
-                '👮 افزودن پشتیبان با شناسه عددی',
-                callback_data='admi_credentialadmin',
+                '✏️ فقط @ پشتیبانی جم با اطلاعات',
+                callback_data='admi_credentialsupportid'
             )],
             [InlineKeyboardButton('➕ افزودن دپارتمان', callback_data='admi_department')],
             [InlineKeyboardButton('📋 دپارتمان‌ها', callback_data='admx_departments')],
@@ -1871,10 +1883,13 @@ INPUT_ACTIONS = {
     ),
     'admi_credentialadmin': (
         'credentialadminadd',
-        'قالب: شناسه عددی تلگرام | نام پشتیبان جم با اطلاعات\n'
+        'پشتیبان بخش جم با اطلاعات را مشخص کن.\n\n'
+        'قالب: شناسه عددی تلگرام | نام\n'
         'مثال: 123456789 | پشتیبان هفتگی\n\n'
-        'این نفر فقط سفارش‌های پرداخت‌شده و تیکت جم با اطلاعات را می‌بیند.\n'
-        'بعد از افزودن باید دستور /credadmin را بزند.',
+        'با این کار:\n'
+        '• به پنل /credadmin دسترسی می‌گیرد (فقط سفارش‌های پرداخت‌شده)\n'
+        '• اعلان خرید موفق فقط برای او (+ تو) می‌رود\n'
+        '• همان نفر آیدی پشتیبانی این بخش برای مشتری می‌شود',
     ),
     'admi_forcedjoin': (
         'forcedjoinadd',
@@ -2052,8 +2067,12 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
             if key in ('support_id', 'credential_support_id'):
                 raw = raw.strip()
-                if not raw.startswith('@') or not raw[1:].replace('_', '').isalnum():
-                    raise ValueError('آیدی پشتیبانی باید با @ و به‌شکل معتبر وارد شود.')
+                if raw.isdigit():
+                    pass  # شناسه عددی تلگرام مجاز است
+                elif not raw.startswith('@') or not raw[1:].replace('_', '').isalnum():
+                    raise ValueError(
+                        'آیدی پشتیبانی باید @username یا شناسه عددی تلگرام باشد.'
+                    )
             if key == 'credential_profit_percent':
                 # سازگاری قدیمی: هر دو پلن یکسان می‌شوند
                 set_setting('credential_weekly_profit_percent', raw)
@@ -2134,9 +2153,25 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             invalidate_role_cache(p[0])
             if role == 'credential':
+                uname = ''
+                try:
+                    chat = await ctx.bot.get_chat(int(p[0]))
+                    uname = (chat.username or '').strip()
+                except Exception:
+                    uname = ''
+                if not uname:
+                    profile = await asyncio.to_thread(get_user_profile, telegram_id=p[0])
+                    if profile and profile[2]:
+                        uname = str(profile[2]).lstrip('@').strip()
+                support_value = await asyncio.to_thread(
+                    set_credential_support_from_admin, p[0], uname,
+                )
                 await update.message.reply_text(
                     '✅ پشتیبان جم با اطلاعات ثبت شد.\n'
-                    'به او بگو دستور /credadmin را بزند.',
+                    f'آیدی پشتیبانی این بخش هم شد: `{support_value}`\n'
+                    'به او بگو دستور /credadmin را بزند.\n'
+                    'فقط سفارش‌های پرداخت‌شده و تیکت همین بخش را می‌بیند.',
+                    parse_mode='Markdown',
                     reply_markup=admin_home_keyboard(),
                 )
             else:

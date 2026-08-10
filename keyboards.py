@@ -69,19 +69,29 @@ def credential_backup_keyboard():
     ])
 
 
-def credential_post_pay_support_keyboard(order_id, support_username='lookurback'):
+def credential_post_pay_support_keyboard(order_id, support_username='lookurback', support_url=None):
     """بعد از پرداخت: تیکت داخل ربات + لینک پیوی پشتیبانی."""
-    username = str(support_username or 'lookurback').lstrip('@').strip() or 'lookurback'
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            f'🆘 تیکت راهنمایی بک‌آپ (سفارش #{order_id})',
-            callback_data=f'cred_ticket_{order_id}',
-        )],
-        [InlineKeyboardButton(
-            f'💬 پیوی پشتیبانی (@{username})',
-            url=f'https://t.me/{username}',
-        )],
-    ])
+    rows = [[InlineKeyboardButton(
+        f'🆘 تیکت راهنمایی بک‌آپ (سفارش #{order_id})',
+        callback_data=f'cred_ticket_{order_id}',
+    )]]
+    url = str(support_url or '').strip()
+    label = str(support_username or 'پشتیبانی').strip() or 'پشتیبانی'
+    if not url:
+        username = label.lstrip('@').strip() or 'lookurback'
+        if username.isdigit():
+            url = f'https://t.me/user?id={username}'
+            label = username
+        else:
+            url = f'https://t.me/{username}'
+            label = f'@{username}'
+    elif not label.startswith('@') and not label.isdigit():
+        label = f'@{label.lstrip("@")}'
+    rows.append([InlineKeyboardButton(
+        f'💬 پیوی پشتیبانی ({label})',
+        url=url,
+    )])
+    return InlineKeyboardMarkup(rows)
 
 
 def credential_admin_home_keyboard(counts=None):

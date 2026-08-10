@@ -2588,10 +2588,61 @@ def get_setting(key, default=''):
 
 
 def get_credential_support_contact():
-    """آیدی پشتیبان جم با اطلاعات — پیش‌فرض @lookurback."""
+    """آیدی پشتیبان جم با اطلاعات.
+
+    اولویت:
+    1) اولین پشتیبان فعال Role=credential (یوزرنیم یا شناسه عددی)
+    2) تنظیم credential_support_id
+    3) پیش‌فرض @lookurback
+    """
+    try:
+        staff = list_credential_admins()
+    except Exception:
+        staff = []
+    if staff:
+        tg_id = str(staff[0][0] or '').strip()
+        username = ''
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    'SELECT COALESCE(NULLIF("TelegramUsername", \'\'), \'\') '
+                    'FROM "Users" WHERE "TelegramId"=%s',
+                    (tg_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    username = str(row[0]).lstrip('@').strip()
+        except Exception:
+            username = ''
+        if username:
+            handle = f'@{username}'
+            return {
+                'handle': handle,
+                'username': username,
+                'url': f'https://t.me/{username}',
+                'display': handle,
+                'telegram_id': tg_id,
+            }
+        if tg_id.isdigit():
+            return {
+                'handle': tg_id,
+                'username': '',
+                'url': f'https://t.me/user?id={tg_id}',
+                'display': tg_id,
+                'telegram_id': tg_id,
+            }
+
     raw = str(get_setting('credential_support_id', '@lookurback') or '@lookurback').strip()
     if not raw:
         raw = '@lookurback'
+    if raw.isdigit():
+        return {
+            'handle': raw,
+            'username': '',
+            'url': f'https://t.me/user?id={raw}',
+            'display': raw,
+            'telegram_id': raw,
+        }
     if not raw.startswith('@'):
         raw = '@' + raw.lstrip('@')
     username = raw[1:]
@@ -2600,7 +2651,30 @@ def get_credential_support_contact():
         'username': username,
         'url': f'https://t.me/{username}',
         'display': raw,
+        'telegram_id': '',
     }
+
+
+def set_credential_support_from_admin(telegram_id, username=''):
+    """با ثبت پشتیبان credential، آیدی پشتیبانی عمومی همان بخش را هم ست می‌کند."""
+    tg = str(telegram_id or '').strip()
+    uname = str(username or '').lstrip('@').strip()
+    if not uname:
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    'SELECT COALESCE(NULLIF("TelegramUsername", \'\'), \'\') '
+                    'FROM "Users" WHERE "TelegramId"=%s',
+                    (tg,),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    uname = str(row[0]).lstrip('@').strip()
+        except Exception:
+            uname = ''
+    value = f'@{uname}' if uname else tg
+    set_setting('credential_support_id', value)
+    return value
 
 
 def set_setting(key, value):
@@ -4810,8 +4884,15 @@ def count_ready_credential_orders():
         return int(cur.fetchone()[0] or 0)
 
 
-def list_credential_orders(limit=30):
+def list_credential_orders(limit=30, *, paid_only=False):
     with get_conn() as conn, conn.cursor() as cur:
+        paid_filter = ''
+        if paid_only:
+            paid_filter = (
+                " AND o.\"Status\" IN ('paid','processing') "
+                " AND COALESCE(g.\"CredentialStatus\",'') "
+                " NOT IN ('awaiting_payment','deleted') "
+            )
         cur.execute(
             '''SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",
                       p."Title",g."LoginMethod",g."CredentialStatus",
@@ -4822,6 +4903,7 @@ def list_credential_orders(limit=30):
                JOIN "GemPackages" p ON p."Id"=g."GemPackageId"
                LEFT JOIN "Users" u ON u."Id"=o."UserId"
                WHERE g."PurchaseType"='by_credentials'
+               ''' + paid_filter + '''
                ORDER BY CASE g."CredentialStatus"
                           WHEN 'ready' THEN 0 WHEN 'needs_info' THEN 1
                           WHEN 'awaiting_payment' THEN 2 ELSE 3 END,
