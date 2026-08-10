@@ -1303,35 +1303,65 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ], markdown=True)
     elif data.startswith('admx_users_'):
         kind = data.replace('admx_users_', '')
-        titles = {'balance': 'دارای موجودی', 'referral': 'دارای زیرمجموعه',
-                  'card': 'شماره کارت فعال'}
-        rows = list_users_filtered(kind, limit=12)
-        lines = [f'👥 کاربران {titles.get(kind, "")}', '━━━━━━━━━━━━━━━']
+        titles = {
+            'balance': 'دارای موجودی',
+            'referral': 'دارای زیرمجموعه',
+            'card': 'شماره کارت فعال',
+        }
+        if kind not in titles:
+            await _edit(query, 'فیلتر نامعتبر است.', [_back('admx_actions')])
+            return
+        try:
+            rows = await asyncio.to_thread(list_users_filtered, kind, 12)
+        except Exception as exc:
+            await _edit(
+                query,
+                f'❌ دریافت لیست ممکن نشد:\n{exc}',
+                [_back('admx_actions')],
+            )
+            return
+        lines = [f'👥 کاربران {titles[kind]}', '━━━━━━━━━━━━━━━']
         buttons = []
-        for tg, name, username, balance, refs, card in rows:
+        for row in rows:
+            tg = str(row[0] or '').strip()
+            name = str(row[1] or '').strip()
+            username = str(row[2] or '').strip().lstrip('@')
+            try:
+                balance = int(row[3] or 0)
+            except (TypeError, ValueError):
+                balance = 0
+            try:
+                refs = int(row[4] or 0)
+            except (TypeError, ValueError):
+                refs = 0
+            card = str(row[5] or '').strip()
+            if not tg:
+                continue
             handle = f'@{username}' if username else (name or '—')
+            safe_handle = _md_safe(handle, 24)
             if kind == 'balance':
                 extra = f'{balance:,} ت'
             elif kind == 'referral':
                 extra = f'{refs} زیرمجموعه · موجودی {balance:,} ت'
             else:
-                extra = f'{card or "—"} · موجودی {balance:,} ت'
-            lines.append(f'{_md_safe(handle)} · `{tg}` · {extra}')
+                extra = f'{_md_safe(card or "—", 24)} · موجودی {balance:,} ت'
+            lines.append(f'{safe_handle} · {tg} · {extra}')
+            label = _md_safe(handle, 16)
             buttons.append([
                 InlineKeyboardButton(
-                    f'👤 {_md_safe(handle, 18)}', callback_data=f'adm_user_{tg}'
+                    f'👤 {label}',
+                    callback_data=f'adm_user_{tg}',
                 ),
-            ])
-            buttons.append([
-                InlineKeyboardButton(f'➖ کسر', callback_data=f'adm_wdeduct_{tg}'),
-                InlineKeyboardButton(f'➕ شارژ', callback_data=f'adm_wal_{tg}'),
+                InlineKeyboardButton('➖ کسر', callback_data=f'adm_wdeduct_{tg}'),
+                InlineKeyboardButton('➕ شارژ', callback_data=f'adm_wal_{tg}'),
             ])
         if not rows:
             lines.append('موردی ثبت نشده است.')
         else:
-            lines.append('\nحداکثر ۱۲ مورد اخیر — برای بقیه از جستجوی کاربر استفاده کن.')
+            lines.append('\nحداکثر ۱۲ مورد — برای بقیه از جستجوی کاربر استفاده کن.')
         buttons.append(_back('admx_actions'))
-        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+        # بدون Markdown تا نام/یوزرنیم عجیب پیام را خراب نکند
+        await _edit(query, '\n'.join(lines), buttons, markdown=False)
     elif data == 'admx_receipts':
         rows = list_pending_receipts()
         wallet_rows = list_pending_wallet_card_charges(30)

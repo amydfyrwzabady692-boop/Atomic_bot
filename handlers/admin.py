@@ -234,37 +234,51 @@ async def admin_users_with_balance(update: Update, ctx: ContextTypes.DEFAULT_TYP
     if not await _require_admin(update):
         return
     try:
-        rows = list_users_with_balance(30)
+        rows = await asyncio.to_thread(list_users_with_balance, 30)
     except Exception as e:
         await query.edit_message_text(
             f"❌ خطا در دریافت کاربران:\n{e}",
             reply_markup=admin_home_keyboard(),
         )
         return
-    lines = ["💰 *کاربران دارای موجودی*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    lines = ["💰 کاربران دارای موجودی", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     if not rows:
         lines.append("کاربری با موجودی نیست.")
     else:
         for r in rows:
             _db_id, tg, name, uname, blocked, bal = r
+            tg = str(tg or '').strip()
+            if not tg:
+                continue
             handle = _tg_handle(uname)
             safe_name = (name or '—').replace('\n', ' ')[:24]
             flag = "🚫" if blocked else "·"
+            try:
+                amount = int(bal or 0)
+            except (TypeError, ValueError):
+                amount = 0
             lines.append(
                 f"{flag} {handle}  ·  {safe_name}\n"
-                f"   `{tg}`  ·  موجودی *{int(bal or 0):,}* ت"
+                f"   {tg}  ·  موجودی {amount:,} ت"
             )
             buttons.append([
                 InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
                 InlineKeyboardButton(f'➕ شارژ {tg}', callback_data=f'adm_wal_{tg}'),
             ])
     buttons.append([InlineKeyboardButton('🔙 کاربران', callback_data='admx_hub_users')])
-    await query.edit_message_text(
-        "\n".join(lines),
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
+    try:
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    except Exception as e:
+        if 'message is not modified' in str(e).lower():
+            return
+        await query.message.reply_text(
+            f"❌ نمایش لیست ممکن نشد:\n{e}",
+            reply_markup=admin_home_keyboard(),
+        )
 
 
 async def admin_user_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

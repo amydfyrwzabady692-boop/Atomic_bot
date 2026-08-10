@@ -2847,24 +2847,61 @@ def remove_bot_admin(telegram_id):
 
 
 def list_users_filtered(kind='all', limit=50):
+    """لیست فیلترشده کاربران برای پنل ادمین.
+
+    خروجی: (TelegramId, FirstName, TelegramUsername, Balance, RefCount, CardNumber)
+    """
+    limit = max(1, min(int(limit or 50), 100))
     where = ''
+    order = 'ORDER BY u."Id" DESC'
     if kind == 'balance':
         where = 'WHERE COALESCE(w."Balance",0)>0'
+        order = 'ORDER BY COALESCE(w."Balance",0) DESC, u."Id" DESC'
     elif kind == 'referral':
         where = 'WHERE EXISTS (SELECT 1 FROM "Users" r WHERE r."ReferredById"=u."Id")'
     elif kind == 'card':
         where = 'WHERE COALESCE(u."CardVerified",false)=true'
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            'SELECT u."TelegramId", u."FirstName", COALESCE(u."TelegramUsername",\'\'), '
-            'COALESCE(w."Balance",0), '
-            '(SELECT COUNT(*) FROM "Users" r WHERE r."ReferredById"=u."Id"), '
-            'COALESCE(u."CardNumber",\'\') FROM "Users" u '
-            'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" ' + where +
-            ' ORDER BY u."Id" DESC LIMIT %s',
-            (int(limit),),
-        )
-        return cur.fetchall()
+        try:
+            cur.execute(
+                'SELECT u."TelegramId", u."FirstName", COALESCE(u."TelegramUsername",\'\'), '
+                'COALESCE(w."Balance",0), '
+                '(SELECT COUNT(*) FROM "Users" r WHERE r."ReferredById"=u."Id"), '
+                'COALESCE(u."CardNumber",\'\') FROM "Users" u '
+                'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" ' + where + ' '
+                + order + ' LIMIT %s',
+                (limit,),
+            )
+            return cur.fetchall()
+        except Exception:
+            # اسکیمای ناقص / ستون قدیمی — حداقل موجودی را برگردان
+            _LOG.warning(
+                'list_users_filtered(%s) failed; using balance fallback',
+                kind,
+                exc_info=True,
+            )
+            try:
+                cur.execute(
+                    'SELECT u."TelegramId", COALESCE(u."FirstName",\'\'), '
+                    'COALESCE(u."TelegramUsername", \'\'), '
+                    'COALESCE(w."Balance",0), 0, \'\' '
+                    'FROM "Users" u '
+                    'JOIN "Wallets" w ON w."UserId"=u."Id" '
+                    'WHERE COALESCE(w."Balance",0)>0 '
+                    'ORDER BY w."Balance" DESC LIMIT %s',
+                    (limit,),
+                )
+            except Exception:
+                cur.execute(
+                    'SELECT u."TelegramId", COALESCE(u."FirstName",\'\'), '
+                    '\'\', COALESCE(w."Balance",0), 0, \'\' '
+                    'FROM "Users" u '
+                    'JOIN "Wallets" w ON w."UserId"=u."Id" '
+                    'WHERE COALESCE(w."Balance",0)>0 '
+                    'ORDER BY w."Balance" DESC LIMIT %s',
+                    (limit,),
+                )
+            return cur.fetchall()
 
 
 def list_all_telegram_ids():
