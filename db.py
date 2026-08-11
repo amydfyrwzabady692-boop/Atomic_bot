@@ -2312,14 +2312,35 @@ def ensure_admin_schema():
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('support_id','@omid_1797',now())
            ON CONFLICT ("Key") DO NOTHING''',
-        '''UPDATE "BotSettings"
+        # اجبار یک‌باره آیدی‌های عمومی پشتیبانی
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           SELECT 'support_id','@omid_1797',now()
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='support_ids_public_v1' AND "Value"='1'
+           )
+           ON CONFLICT ("Key") DO UPDATE
            SET "Value"='@omid_1797',"UpdatedAt"=now()
-           WHERE "Key"='support_id'
-             AND COALESCE(TRIM("Value"),'')='' ''',
-        '''UPDATE "BotSettings"
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='support_ids_public_v1' AND "Value"='1'
+           )''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           SELECT 'credential_support_id','@lookurback',now()
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='support_ids_public_v1' AND "Value"='1'
+           )
+           ON CONFLICT ("Key") DO UPDATE
            SET "Value"='@lookurback',"UpdatedAt"=now()
-           WHERE "Key"='credential_support_id'
-             AND COALESCE(TRIM("Value"),'')='' ''',
+           WHERE NOT EXISTS (
+             SELECT 1 FROM "BotSettings"
+             WHERE "Key"='support_ids_public_v1' AND "Value"='1'
+           )''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('support_ids_public_v1','1',now())
+           ON CONFLICT ("Key") DO UPDATE
+           SET "Value"='1',"UpdatedAt"=now()''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
