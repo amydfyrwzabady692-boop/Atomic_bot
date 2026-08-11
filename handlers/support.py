@@ -60,9 +60,10 @@ async def support_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "برای انصراف /cancel"
     )
     text = get_setting('support_text', '').strip() or default_text
-    support_id = get_setting('support_id', '').strip()
-    if support_id:
-        text += f"\n\n🎧 آیدی پشتیبانی:\n`{support_id}`"
+    from db import get_support_contact
+    support = get_support_contact()
+    if support.get('handle'):
+        text += f"\n\n🎧 آیدی پشتیبانی:\n`{support['handle']}`"
     if update.callback_query:
         await update.callback_query.answer()
         try:

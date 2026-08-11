@@ -669,7 +669,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         support_raw = (
             get_setting('credential_support_id', '@lookurback')
-            or get_setting('support_id', '')
+            or get_setting('support_id', '@omid_1797')
             or '@lookurback'
         ).strip().lstrip('@')
         if support_raw.isdigit():

@@ -2307,11 +2307,19 @@ def ensure_admin_schema():
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('credential_support_id','',now())
+           VALUES ('credential_support_id','@lookurback',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('support_id','',now())
+           VALUES ('support_id','@omid_1797',now())
            ON CONFLICT ("Key") DO NOTHING''',
+        '''UPDATE "BotSettings"
+           SET "Value"='@omid_1797',"UpdatedAt"=now()
+           WHERE "Key"='support_id'
+             AND COALESCE(TRIM("Value"),'')='' ''',
+        '''UPDATE "BotSettings"
+           SET "Value"='@lookurback',"UpdatedAt"=now()
+           WHERE "Key"='credential_support_id'
+             AND COALESCE(TRIM("Value"),'')='' ''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
@@ -2589,75 +2597,50 @@ def get_setting(key, default=''):
 def get_credential_support_contact():
     """آیدی پشتیبان جم با اطلاعات برای نمایش به مشتری.
 
-    اولویت:
-    1) تنظیم credential_support_id (آنچه ادمین خودش تعیین کرده)
-    2) اولین پشتیبان فعال Role=credential (یوزرنیم یا شناسه عددی)
-    3) پیش‌فرض خالی
+    اولویت: تنظیم credential_support_id در پنل (پیش‌فرض @lookurback).
     """
-    raw = str(get_setting('credential_support_id', '') or '').strip()
-    if raw:
-        if raw.isdigit():
-            return {
-                'handle': raw,
-                'username': '',
-                'url': f'https://t.me/user?id={raw}',
-                'display': raw,
-                'telegram_id': raw,
-            }
-        if not raw.startswith('@'):
-            raw = '@' + raw.lstrip('@')
-        username = raw[1:]
+    raw = str(get_setting('credential_support_id', '@lookurback') or '@lookurback').strip()
+    if not raw:
+        raw = '@lookurback'
+    if raw.isdigit():
         return {
             'handle': raw,
-            'username': username,
-            'url': f'https://t.me/{username}',
+            'username': '',
+            'url': f'https://t.me/user?id={raw}',
             'display': raw,
-            'telegram_id': '',
+            'telegram_id': raw,
         }
-
-    try:
-        staff = list_credential_admins()
-    except Exception:
-        staff = []
-    if staff:
-        tg_id = str(staff[0][0] or '').strip()
-        username = ''
-        try:
-            with get_conn() as conn, conn.cursor() as cur:
-                cur.execute(
-                    'SELECT COALESCE(NULLIF("TelegramUsername", \'\'), \'\') '
-                    'FROM "Users" WHERE "TelegramId"=%s',
-                    (tg_id,),
-                )
-                row = cur.fetchone()
-                if row and row[0]:
-                    username = str(row[0]).lstrip('@').strip()
-        except Exception:
-            username = ''
-        if username:
-            handle = f'@{username}'
-            return {
-                'handle': handle,
-                'username': username,
-                'url': f'https://t.me/{username}',
-                'display': handle,
-                'telegram_id': tg_id,
-            }
-        if tg_id.isdigit():
-            return {
-                'handle': tg_id,
-                'username': '',
-                'url': f'https://t.me/user?id={tg_id}',
-                'display': tg_id,
-                'telegram_id': tg_id,
-            }
-
+    if not raw.startswith('@'):
+        raw = '@' + raw.lstrip('@')
+    username = raw[1:]
     return {
-        'handle': '',
-        'username': '',
-        'url': '',
-        'display': 'پشتیبانی',
+        'handle': raw,
+        'username': username,
+        'url': f'https://t.me/{username}',
+        'display': raw,
         'telegram_id': '',
+    }
+
+
+def get_support_contact():
+    """آیدی پشتیبانی عمومی کل ربات (پیش‌فرض @omid_1797)."""
+    raw = str(get_setting('support_id', '@omid_1797') or '@omid_1797').strip()
+    if not raw:
+        raw = '@omid_1797'
+    if raw.isdigit():
+        return {
+            'handle': raw,
+            'username': '',
+            'url': f'https://t.me/user?id={raw}',
+            'display': raw,
+        }
+    if not raw.startswith('@'):
+        raw = '@' + raw.lstrip('@')
+    return {
+        'handle': raw,
+        'username': raw[1:],
+        'url': f'https://t.me/{raw[1:]}',
+        'display': raw,
     }
 
 
