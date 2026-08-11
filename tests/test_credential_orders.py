@@ -176,7 +176,9 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertIn('CRED_BACKUP', inspect.getsource(gem_credentials))
         self.assertIn('backup_code', inspect.getsource(gem_credentials))
         self.assertIn('cred_backup_skip', inspect.getsource(gem_credentials))
-        self.assertIn('get_credential_support_contact', inspect.getsource(gem_credentials))
+        self.assertNotIn('get_credential_support_contact', inspect.getsource(gem_credentials))
+        self.assertIn('بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود', inspect.getsource(gem_credentials))
+        self.assertNotIn('iTunes Turkey', inspect.getsource(gem_credentials))
         self.assertIn('_backup_footer_text', inspect.getsource(gem_credentials))
         self.assertIn('myaccount.google.com', inspect.getsource(gem_credentials))
         from keyboards import (

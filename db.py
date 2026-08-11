@@ -2307,12 +2307,11 @@ def ensure_admin_schema():
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('credential_support_id','@lookurback',now())
+           VALUES ('credential_support_id','',now())
            ON CONFLICT ("Key") DO NOTHING''',
-        '''UPDATE "BotSettings"
-           SET "Value"='@lookurback',"UpdatedAt"=now()
-           WHERE "Key"='credential_support_id'
-             AND COALESCE(TRIM("Value"),'')='' ''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('support_id','',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
@@ -2588,13 +2587,34 @@ def get_setting(key, default=''):
 
 
 def get_credential_support_contact():
-    """آیدی پشتیبان جم با اطلاعات.
+    """آیدی پشتیبان جم با اطلاعات برای نمایش به مشتری.
 
     اولویت:
-    1) اولین پشتیبان فعال Role=credential (یوزرنیم یا شناسه عددی)
-    2) تنظیم credential_support_id
-    3) پیش‌فرض @lookurback
+    1) تنظیم credential_support_id (آنچه ادمین خودش تعیین کرده)
+    2) اولین پشتیبان فعال Role=credential (یوزرنیم یا شناسه عددی)
+    3) پیش‌فرض خالی
     """
+    raw = str(get_setting('credential_support_id', '') or '').strip()
+    if raw:
+        if raw.isdigit():
+            return {
+                'handle': raw,
+                'username': '',
+                'url': f'https://t.me/user?id={raw}',
+                'display': raw,
+                'telegram_id': raw,
+            }
+        if not raw.startswith('@'):
+            raw = '@' + raw.lstrip('@')
+        username = raw[1:]
+        return {
+            'handle': raw,
+            'username': username,
+            'url': f'https://t.me/{username}',
+            'display': raw,
+            'telegram_id': '',
+        }
+
     try:
         staff = list_credential_admins()
     except Exception:
@@ -2632,31 +2652,20 @@ def get_credential_support_contact():
                 'telegram_id': tg_id,
             }
 
-    raw = str(get_setting('credential_support_id', '@lookurback') or '@lookurback').strip()
-    if not raw:
-        raw = '@lookurback'
-    if raw.isdigit():
-        return {
-            'handle': raw,
-            'username': '',
-            'url': f'https://t.me/user?id={raw}',
-            'display': raw,
-            'telegram_id': raw,
-        }
-    if not raw.startswith('@'):
-        raw = '@' + raw.lstrip('@')
-    username = raw[1:]
     return {
-        'handle': raw,
-        'username': username,
-        'url': f'https://t.me/{username}',
-        'display': raw,
+        'handle': '',
+        'username': '',
+        'url': '',
+        'display': 'پشتیبانی',
         'telegram_id': '',
     }
 
 
 def set_credential_support_from_admin(telegram_id, username=''):
-    """با ثبت پشتیبان credential، آیدی پشتیبانی عمومی همان بخش را هم ست می‌کند."""
+    """با ثبت پشتیبان credential، اگر آیدی عمومی خالی بود پر می‌کند؛ در غیر این صورت دست نمی‌زند."""
+    current = str(get_setting('credential_support_id', '') or '').strip()
+    if current:
+        return current
     tg = str(telegram_id or '').strip()
     uname = str(username or '').lstrip('@').strip()
     if not uname:
@@ -2673,7 +2682,8 @@ def set_credential_support_from_admin(telegram_id, username=''):
         except Exception:
             uname = ''
     value = f'@{uname}' if uname else tg
-    set_setting('credential_support_id', value)
+    if value:
+        set_setting('credential_support_id', value)
     return value
 
 

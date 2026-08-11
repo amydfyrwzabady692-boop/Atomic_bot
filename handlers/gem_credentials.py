@@ -11,7 +11,7 @@ from credential_vault import (
 )
 from db import (
     create_credential_gem_order_atomic, get_gem, get_gems_by_credentials,
-    get_or_create_user, get_wallet_balance, get_credential_support_contact,
+    get_or_create_user, get_wallet_balance,
 )
 from keyboards import (
     credential_backup_keyboard, credential_cancel_keyboard,
@@ -156,7 +156,6 @@ async def freefire_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     products = await asyncio.to_thread(get_gems_by_credentials)
-    support = await asyncio.to_thread(get_credential_support_contact)
     text = (
         '🔐 *جم با اطلاعات اکانت*\n'
         '━━━━━━━━━━━━━━━\n'
@@ -164,7 +163,7 @@ async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYP
         'بعد از انتخاب: روش ورود ← شناسه ← رمز ← راهنمای بک‌آپ '
         '(اگر بلد نیستی دکمه راهنمایی را بزن).\n\n'
         'راهنمای گرفتن بک‌آپ برای Gmail / Facebook / VK داخل چت می‌آید.\n'
-        f'اگر *بعد از پرداخت* هنوز مشکل داشتی، به {support["handle"]} پیام بده.'
+        '🔒 بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود.'
     )
     if not products:
         text += '\n\n❌ فعلاً محصول فعالی وجود ندارد.'
@@ -184,14 +183,11 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text('❌ محصول پیدا نشد یا غیرفعال شده است.')
         return
     plan = 'هفتگی' if product[6] == 'weekly' else 'ماهانه'
-    base_try = 60 if product[6] == 'weekly' else 300
-    support = await asyncio.to_thread(get_credential_support_contact)
     text = (
         f'🔐 *{markdown_safe(product[1], 120)}*\n'
         '━━━━━━━━━━━━━━━\n'
         f'📅 دوره: *{plan}*\n'
-        f'🇹🇷 مبنای هزینه: iTunes Turkey {base_try} TRY\n'
-        f'💰 قیمت فروش: *{int(product[4]):,} تومان*\n'
+        f'💰 قیمت: *{int(product[4]):,} تومان*\n'
         '⏳ تحویل: دستی پس از بررسی اطلاعات توسط ادمین\n\n'
         'مراحل بعدی:\n'
         '۱) انتخاب روش ورود (Gmail / Facebook / VK)\n'
@@ -199,8 +195,7 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         '۳) رمز عبور\n'
         '۴) راهنمای بک‌آپ (اگر بلد نیستی: نیاز به راهنمایی)\n'
         '۵) پرداخت\n\n'
-        f'اگر *بعد از پرداخت* بک‌آپ نداشتی یا کار نکرد، دکمه پشتیبانی باز می‌شود '
-        f'({support["handle"]}) — شماره سفارش را بفرست.\n'
+        '🔒 بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود.\n'
         'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup

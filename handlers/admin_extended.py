@@ -1206,19 +1206,21 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cred_support = get_credential_support_contact()
         await _edit(query, (
             '🎧 تنظیمات پشتیبانی\n\n'
-            f'آیدی عمومی: {support_id}\n'
-            f'پشتیبان جم با اطلاعات (برای مشتری): {cred_support["handle"]}\n\n'
-            'از دکمه زیر با *شناسه عددی تلگرام* پشتیبان این بخش را تعیین کن:\n'
-            'هم دسترسی پنل می‌گیرد، هم آیدی پشتیبانی همان بخش می‌شود.'
+            f'آیدی عمومی / جم با آیدی: {support_id}\n'
+            f'پشتیبان جم با اطلاعات (برای مشتری): '
+            f'{cred_support["handle"] or "تنظیم نشده"}\n\n'
+            '⚠️ آیدی جم با اطلاعات فقط بعد از پرداخت به مشتری نشان داده می‌شود.\n\n'
+            '• آیدی عمومی و آیدی مشتری را جداگانه با دکمه‌های زیر ست کن\n'
+            '• افزودن پشتیبان با شناسه عددی فقط دسترسی پنل می‌دهد'
         ), [
             [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی عمومی', callback_data='admi_supportid')],
             [InlineKeyboardButton(
-                '🔐 تعیین پشتیبان جم با اطلاعات (شناسه عددی)',
-                callback_data='admi_credentialadmin',
+                '✏️ آیدی پشتیبانی جم با اطلاعات (برای مشتری)',
+                callback_data='admi_credentialsupportid'
             )],
             [InlineKeyboardButton(
-                '✏️ فقط @ پشتیبانی جم با اطلاعات',
-                callback_data='admi_credentialsupportid'
+                '🔐 افزودن پشتیبان پنل جم با اطلاعات',
+                callback_data='admi_credentialadmin',
             )],
             [InlineKeyboardButton('➕ افزودن دپارتمان', callback_data='admi_department')],
             [InlineKeyboardButton('📋 دپارتمان‌ها', callback_data='admx_departments')],
@@ -2196,9 +2198,14 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 support_value = await asyncio.to_thread(
                     set_credential_support_from_admin, p[0], uname,
                 )
+                note = (
+                    f'آیدی عمومی مشتری فعلاً: `{support_value}`'
+                    if support_value
+                    else 'آیدی عمومی مشتری هنوز خالی است — از «آیدی پشتیبانی جم با اطلاعات» ست کن.'
+                )
                 await update.message.reply_text(
                     '✅ پشتیبان جم با اطلاعات ثبت شد.\n'
-                    f'آیدی پشتیبانی این بخش هم شد: `{support_value}`\n'
+                    f'{note}\n'
                     'به او بگو دستور /credadmin را بزند.\n'
                     'فقط سفارش‌های پرداخت‌شده و تیکت همین بخش را می‌بیند.',
                     parse_mode='Markdown',

@@ -535,13 +535,18 @@ async def _send_credential_post_pay_support(bot, tg_id, order_id):
         return
     from db import get_credential_support_contact
     support = await asyncio.to_thread(get_credential_support_contact)
+    handle_line = (
+        f'\n\n🎧 آیدی پشتیبان جم با اطلاعات:\n`{support["handle"]}`'
+        if support.get('handle')
+        else ''
+    )
     text = (
-        f'🆘 *نیاز به راهنمایی بک‌آپ کد؟*\n'
-        f'پرداختت ثبت شد — حالا پشتیبانی می‌تواند کمکت کند.\n\n'
-        f'روی دکمه بزن و در پیوی حتماً بنویس:\n'
-        f'`سفارش #{order_id}`\n'
-        f'و بگو بک‌آپ بلد نیستی یا کد کار نمی‌کند.\n\n'
-        f'پشتیبانی: {support["handle"]}'
+        f'✅ *پرداخت سفارش #{order_id} ثبت شد*\n'
+        '━━━━━━━━━━━━━━━\n'
+        'حالا دسترسی به آیدی پشتیبان باز شد.\n'
+        'اگر بک‌آپ بلد نیستی یا کار نمی‌کند، به پشتیبان پیام بده '
+        'و حتماً شماره سفارش را بنویس.'
+        f'{handle_line}'
     )
     try:
         await bot.send_message(

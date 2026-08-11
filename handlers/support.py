@@ -62,7 +62,7 @@ async def support_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = get_setting('support_text', '').strip() or default_text
     support_id = get_setting('support_id', '').strip()
     if support_id:
-        text += f"\n\nآیدی پشتیبانی: {support_id}"
+        text += f"\n\n🎧 آیدی پشتیبانی:\n`{support_id}`"
     if update.callback_query:
         await update.callback_query.answer()
         try:
