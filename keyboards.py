@@ -1,4 +1,15 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+import button_style  # noqa: F401 — دکمه‌های رنگی primary/success/danger
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+
+
+def _menu_btn(text, style=None):
+    kwargs = {}
+    if style:
+        try:
+            return KeyboardButton(text, style=style)
+        except TypeError:
+            kwargs['api_kwargs'] = {'style': style}
+    return KeyboardButton(text, **kwargs)
 
 GEM_PRODUCTS_PER_PAGE = 8
 
@@ -10,10 +21,10 @@ def _fmt(n):
 def main_menu():
     return ReplyKeyboardMarkup(
         [
-            ['🎮 محصولات فری‌فایر', '💰 کیف پول'],
-            ['📦 سفارش‌های من', '👤 حساب من'],
-            ['🛍 فروشگاه اکانت', '🎯 پک سنس'],
-            ['🎧 پشتیبانی'],
+            [_menu_btn('🎮 محصولات فری‌فایر', 'primary'), _menu_btn('💰 کیف پول', 'success')],
+            [_menu_btn('📦 سفارش‌های من'), _menu_btn('👤 حساب من')],
+            [_menu_btn('🛍 فروشگاه اکانت'), _menu_btn('🎯 پک سنس')],
+            [_menu_btn('🎧 پشتیبانی', 'primary')],
         ],
         resize_keyboard=True,
         input_field_placeholder='از منوی پایین انتخاب کن…',

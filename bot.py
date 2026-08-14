@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
+import button_style  # noqa: F401 — قبل از ساخت دکمه‌ها
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
