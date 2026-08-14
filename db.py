@@ -316,9 +316,13 @@ def create_gem_order_atomic(user_db_id, gem_package_id, expected_price, *,
 def create_credential_gem_order_atomic(
     user_db_id, gem_package_id, expected_price, *, telegram_id='',
     full_name='', login_method='', credential_ciphertext='', two_factor_enabled=False,
+    quantity=1,
 ):
     """Create a manual membership order without ever persisting plaintext secrets."""
     expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    quantity = int(quantity or 1)
+    if quantity < 1 or quantity > 50:
+        raise ValueError('تعداد نامعتبر است.')
     login_method = str(login_method or '').strip().lower()
     if login_method not in ('google', 'facebook', 'vk'):
         raise ValueError('روش ورود نامعتبر است.')
@@ -337,27 +341,29 @@ def create_credential_gem_order_atomic(
             package = cur.fetchone()
             if not package:
                 raise ValueError('این محصول دیگر فعال یا موجود نیست.')
-            title, price, stock = package
-            price = checked_amount(price, label='قیمت محصول')
-            if price != expected_price:
+            title, unit_price, stock = package
+            unit_price = checked_amount(unit_price, label='قیمت محصول')
+            total = checked_amount(unit_price * quantity, label='مبلغ کل')
+            if total != expected_price:
                 raise ValueError('قیمت تغییر کرده است؛ دوباره محصول را انتخاب کن.')
-            if int(stock or 0) < 1:
-                raise ValueError('ظرفیت این محصول فعلاً تکمیل است.')
+            if int(stock or 0) < quantity:
+                raise ValueError('ظرفیت این محصول برای این تعداد کافی نیست.')
             cur.execute(
-                'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
-                'WHERE "Id"=%s AND "Stock">0', (int(gem_package_id),)
+                'UPDATE "GemPackages" SET "Stock"="Stock"-%s '
+                'WHERE "Id"=%s AND "Stock">=%s',
+                (quantity, int(gem_package_id), quantity),
             )
             if cur.rowcount != 1:
-                raise ValueError('ظرفیت این محصول فعلاً تکمیل است.')
+                raise ValueError('ظرفیت این محصول برای این تعداد کافی نیست.')
             order_id = _insert_pending_order(
-                cur, user_db_id, price, telegram_id=telegram_id,
+                cur, user_db_id, total, telegram_id=telegram_id,
                 full_name=full_name, payment_method='pending',
             )
             cur.execute(
                 'INSERT INTO "OrderItems" '
                 '("OrderId","ProductId","ProductName","Price","Quantity") '
-                'VALUES (%s,NULL,%s,%s,1) RETURNING "Id"',
-                (order_id, title, price),
+                'VALUES (%s,NULL,%s,%s,%s) RETURNING "Id"',
+                (order_id, title, unit_price, quantity),
             )
             item_id = cur.fetchone()[0]
             cur.execute(
@@ -374,7 +380,7 @@ def create_credential_gem_order_atomic(
                 ),
             )
             conn.commit()
-            return order_id, str(title), price
+            return order_id, str(title), total
         except Exception:
             conn.rollback()
             raise
@@ -746,16 +752,25 @@ def refund_order_wallet(order_id):
 def _release_manual_gem_reservations(cur, order_id):
     """Release only unpaid manual inventory reservations in caller transaction."""
     cur.execute(
-        'SELECT "Id","GemPackageId" FROM "GemOrderInfo" '
+        'SELECT "Id","GemPackageId","OrderItemId" FROM "GemOrderInfo" '
         'WHERE "OrderId"=%s AND "G2BulkStatus"=\'MANUAL_RESERVED\' '
         'FOR UPDATE',
         (int(order_id),),
     )
     reservations = cur.fetchall()
-    for info_id, package_id in reservations:
+    for info_id, package_id, item_id in reservations:
+        qty = 1
+        if item_id:
+            cur.execute(
+                'SELECT COALESCE("Quantity",1) FROM "OrderItems" WHERE "Id"=%s',
+                (int(item_id),),
+            )
+            item = cur.fetchone()
+            if item:
+                qty = max(1, int(item[0] or 1))
         cur.execute(
-            'UPDATE "GemPackages" SET "Stock"="Stock"+1 WHERE "Id"=%s',
-            (int(package_id),),
+            'UPDATE "GemPackages" SET "Stock"="Stock"+%s WHERE "Id"=%s',
+            (qty, int(package_id)),
         )
         if cur.rowcount != 1:
             raise ValueError('بسته رزروشده برای آزادسازی پیدا نشد.')
@@ -4948,10 +4963,11 @@ def list_credential_orders(limit=30, *, paid_only=False):
             '''SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",
                       p."Title",g."LoginMethod",g."CredentialStatus",
                       g."CredentialTwoFactorEnabled",u."TelegramUsername",
-                      o."CreatedAt"
+                      o."CreatedAt",COALESCE(oi."Quantity",1)
                FROM "GemOrderInfo" g
                JOIN "Orders" o ON o."Id"=g."OrderId"
                JOIN "GemPackages" p ON p."Id"=g."GemPackageId"
+               LEFT JOIN "OrderItems" oi ON oi."Id"=g."OrderItemId"
                LEFT JOIN "Users" u ON u."Id"=o."UserId"
                WHERE g."PurchaseType"='by_credentials'
                ''' + paid_filter + '''
@@ -4972,10 +4988,12 @@ def get_credential_order(order_id):
                       g."CredentialCiphertext",g."CredentialStatus",
                       g."CredentialTwoFactorEnabled",g."CredentialAdminNote",
                       g."CredentialViewedAt",g."CredentialDeletedAt",
-                      u."TelegramUsername",u."FirstName",u."LastName",g."Id"
+                      u."TelegramUsername",u."FirstName",u."LastName",g."Id",
+                      COALESCE(oi."Quantity",1)
                FROM "GemOrderInfo" g
                JOIN "Orders" o ON o."Id"=g."OrderId"
                JOIN "GemPackages" p ON p."Id"=g."GemPackageId"
+               LEFT JOIN "OrderItems" oi ON oi."Id"=g."OrderItemId"
                LEFT JOIN "Users" u ON u."Id"=o."UserId"
                WHERE o."Id"=%s AND g."PurchaseType"='by_credentials' ''',
             (int(order_id),),

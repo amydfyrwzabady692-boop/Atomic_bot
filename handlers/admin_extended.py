@@ -448,9 +448,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         }
         for row in rows:
             oid, _tg, amount, order_status, title, method, cred_status = row[:7]
+            qty = int(row[10] or 1) if len(row) > 10 else 1
             label = status_labels.get(cred_status, cred_status or order_status)
             lines.append(
-                f'#{oid} · {_md_safe(title, 40)} · {amount:,} ت · {label}'
+                f'#{oid} · {_md_safe(title, 40)} · {qty} عدد · {amount:,} ت · {label}'
             )
             buttons.append([InlineKeyboardButton(
                 f'{label} · #{oid}', callback_data=f'admx_credential_{oid}'
@@ -475,7 +476,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         (oid, tg, amount, order_status, title, plan, method, ciphertext,
          cred_status, two_factor, note, viewed_at, deleted_at, username,
-         first_name, last_name, _info_id) = row
+         first_name, last_name, _info_id, *rest) = row
+        qty = int(rest[0] or 1) if rest else 1
         method_label = {'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK'}.get(method, method)
         status_label = {
             'ready': 'آماده بررسی', 'needs_info': 'اطلاعات ناقص',
@@ -495,6 +497,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'🔐 *سفارش #{oid}*\n'
             f'━━━━━━━━━━━━━━━\n'
             f'محصول: {_md_safe(title, 100)}\n'
+            f'تعداد: *{qty}* عدد از این بسته\n'
             f'مبلغ: {amount:,} تومان\n'
             f'وضعیت سفارش: `{order_status}`\n'
             f'وضعیت اطلاعات: *{status_label}*\n'

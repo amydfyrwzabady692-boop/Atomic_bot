@@ -304,10 +304,12 @@ async def _notify_credential_sale(bot, order_id, *, event='paid'):
     title = str(row[4] or '—')
     amount = int(row[2] or 0)
     tg = row[1] or '—'
+    qty = int(row[17] or 1) if len(row) > 17 else 1
     if event == 'created':
         text = (
             f'🆕 درخواست جم با اطلاعات — #{order_id}\n'
             f'محصول: {title}\n'
+            f'تعداد: {qty} عدد\n'
             f'مبلغ: {amount:,} تومان\n'
             f'روش ورود: {method_label}\n'
             f'کد بک‌آپ: {"ثبت شده" if has_backup else "ثبت نشده"}\n'
@@ -319,6 +321,7 @@ async def _notify_credential_sale(bot, order_id, *, event='paid'):
         text = (
             f'💰 پرداخت شد — جم با اطلاعات #{order_id}\n'
             f'محصول: {title}\n'
+            f'تعداد: {qty} عدد از این بسته\n'
             f'مبلغ: {amount:,} تومان\n'
             f'روش ورود: {method_label}\n'
             f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else "ثبت نشده ⚠️"}\n'

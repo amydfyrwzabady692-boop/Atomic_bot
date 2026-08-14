@@ -23,7 +23,20 @@ from payment_safety import checked_amount
 from text_safety import markdown_safe
 
 
-CRED_METHOD, CRED_IDENTIFIER, CRED_PASSWORD, CRED_BACKUP, CRED_CONFIRM = range(20, 25)
+CRED_QUANTITY, CRED_METHOD, CRED_IDENTIFIER, CRED_PASSWORD, CRED_BACKUP, CRED_CONFIRM = range(19, 25)
+
+CREDENTIAL_QTY_MAX = 50
+_DIGIT_MAP = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+
+
+def parse_credential_quantity(raw) -> int:
+    text = str(raw or '').strip().translate(_DIGIT_MAP).replace(',', '').replace(' ', '')
+    if not text.isdigit():
+        raise ValueError('تعداد باید یک عدد صحیح باشد (مثلاً ۱ یا ۳).')
+    qty = int(text)
+    if qty < 1 or qty > CREDENTIAL_QTY_MAX:
+        raise ValueError(f'تعداد باید بین ۱ تا {CREDENTIAL_QTY_MAX} باشد.')
+    return qty
 
 METHOD_META = {
     'google': {
@@ -160,8 +173,7 @@ async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYP
         '🔐 *جم با اطلاعات اکانت*\n'
         '━━━━━━━━━━━━━━━\n'
         'عضویت *هفتگی* یا *ماهانه* را انتخاب کن.\n'
-        'بعد از انتخاب: روش ورود ← شناسه ← رمز ← راهنمای بک‌آپ '
-        '(اگر بلد نیستی دکمه راهنمایی را بزن).\n\n'
+        'بعد از انتخاب بسته، تعداد را بفرست؛ سپس روش ورود ← شناسه ← رمز ← بک‌آپ.\n\n'
         'راهنمای گرفتن بک‌آپ برای Gmail / Facebook / VK داخل چت می‌آید.\n'
         '🔒 بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود.'
     )
@@ -187,14 +199,15 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         f'🔐 *{markdown_safe(product[1], 120)}*\n'
         '━━━━━━━━━━━━━━━\n'
         f'📅 دوره: *{plan}*\n'
-        f'💰 قیمت: *{int(product[4]):,} تومان*\n'
+        f'💰 قیمت هر عدد: *{int(product[4]):,} تومان*\n'
         '⏳ تحویل: دستی پس از بررسی اطلاعات توسط ادمین\n\n'
         'مراحل بعدی:\n'
-        '۱) انتخاب روش ورود (Gmail / Facebook / VK)\n'
-        '۲) شناسه ورود\n'
-        '۳) رمز عبور\n'
-        '۴) راهنمای بک‌آپ (اگر بلد نیستی: نیاز به راهنمایی)\n'
-        '۵) پرداخت\n\n'
+        '۱) وارد کردن تعداد\n'
+        '۲) انتخاب روش ورود (Gmail / Facebook / VK)\n'
+        '۳) شناسه ورود\n'
+        '۴) رمز عبور\n'
+        '۵) راهنمای بک‌آپ (اگر بلد نیستی: نیاز به راهنمایی)\n'
+        '۶) پرداخت جمع کل\n\n'
         '🔒 بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود.\n'
         'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
@@ -221,9 +234,47 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     ctx.user_data['credential_buy'] = {
-        'pk': product_id, 'title': str(product[1]), 'price': int(product[4]),
+        'pk': product_id, 'title': str(product[1]), 'unit_price': int(product[4]),
+        'price': int(product[4]),
     }
     await query.edit_message_text(
+        f'🔢 *تعداد را وارد کن*\n'
+        f'محصول: {markdown_safe(product[1], 120)}\n'
+        f'قیمت هر عدد: *{int(product[4]):,} تومان*\n\n'
+        f'یک عدد بین ۱ تا {CREDENTIAL_QTY_MAX} بفرست.\n'
+        'جمع کل بعد از وارد کردن تعداد مشخص می‌شود.',
+        parse_mode='Markdown',
+        reply_markup=credential_cancel_keyboard(),
+    )
+    return CRED_QUANTITY
+
+
+async def credential_quantity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    info = ctx.user_data.get('credential_buy')
+    if not info:
+        return ConversationHandler.END
+    try:
+        qty = parse_credential_quantity(update.message.text)
+    except ValueError as exc:
+        await update.message.reply_text(
+            f'❌ {exc}',
+            reply_markup=credential_cancel_keyboard(),
+        )
+        return CRED_QUANTITY
+    unit = int(info.get('unit_price') or info.get('price') or 0)
+    try:
+        total = checked_amount(unit * qty, label='مبلغ کل')
+    except ValueError as exc:
+        await update.message.reply_text(
+            f'❌ {exc}',
+            reply_markup=credential_cancel_keyboard(),
+        )
+        return CRED_QUANTITY
+    info['quantity'] = qty
+    info['price'] = total
+    await update.message.reply_text(
+        f'✅ تعداد: *{qty}* عدد\n'
+        f'جمع کل: *{total:,} تومان*\n\n'
         '🔐 *روش ورود به اکانت را انتخاب کن*\n'
         'فری‌فایر با کدام حساب ذخیره/متصل شده؟',
         parse_mode='Markdown',
@@ -236,7 +287,9 @@ async def credential_method_selected(update: Update, ctx: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     info = ctx.user_data.get('credential_buy')
-    if not info:
+    if not info or not int(info.get('quantity') or 0):
+        if query:
+            await query.edit_message_text('❌ اول تعداد را وارد کن؛ از انتخاب بسته دوباره شروع کن.')
         return ConversationHandler.END
     method = query.data.split('_')[-1]
     if method not in METHOD_META:
@@ -310,15 +363,20 @@ async def _show_confirm(update, ctx, *, via_callback=False):
     backup_line = (
         'ثبت شد ✅' if has_backup else 'نیاز به راهنمایی / ارسال نشده 🆘'
     )
+    qty = int(info.get('quantity') or 1)
+    unit = int(info.get('unit_price') or 0)
+    unit_line = f'قیمت هر عدد: {unit:,} تومان\n' if unit else ''
     text = (
         f'✅ *بازبینی اطلاعات*\n'
         f'━━━━━━━━━━━━━━━\n'
         f'محصول: {markdown_safe(info["title"], 120)}\n'
+        f'تعداد: *{qty}* عدد\n'
+        f'{unit_line}'
         f'روش ورود: {method_label}\n'
         f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
         f'رمز: ثبت شد ✅\n'
         f'کد بک‌آپ: {backup_line}\n'
-        f'مبلغ: *{info["price"]:,} تومان*\n\n'
+        f'جمع کل: *{info["price"]:,} تومان*\n\n'
         f'با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.\n'
     )
     if not has_backup:
@@ -397,7 +455,9 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text('❌ محصول دیگر فعال نیست.')
         return ConversationHandler.END
     try:
-        price = checked_amount(current[4], label='قیمت محصول')
+        qty = int(info.get('quantity') or 1)
+        unit = checked_amount(current[4], label='قیمت محصول')
+        price = checked_amount(unit * qty, label='مبلغ کل')
         ciphertext = encrypt_credentials(
             info['identifier'],
             info['password'],
@@ -415,6 +475,7 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 db_id, info['pk'], price, telegram_id=user.id, full_name=full_name,
                 login_method=info['method'], credential_ciphertext=ciphertext,
                 two_factor_enabled=two_factor,
+                quantity=qty,
             )
             return db_id, order_id, title, saved_price, int(get_wallet_balance(db_id) or 0)
 
@@ -440,6 +501,7 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f'✦ *انتخاب روش پرداخت*\n'
         f'سفارش `#{order_id}`\n'
         f'محصول: {markdown_safe(title, 120)}\n'
+        f'تعداد: *{int(info.get("quantity") or 1)}* عدد\n'
         f'مبلغ: *{price:,} تومان*\n'
         f'موجودی کیف پول: *{balance:,} تومان*\n\n'
         'بعد از پرداخت موفق، سفارش برای ادمین ارسال می‌شود.\n'
@@ -466,6 +528,10 @@ def credential_conversation_handler():
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(credential_buy_start, pattern=r'^cbuy_\d+$')],
         states={
+            CRED_QUANTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, credential_quantity),
+                CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
+            ],
             CRED_METHOD: [
                 CallbackQueryHandler(
                     credential_method_selected,

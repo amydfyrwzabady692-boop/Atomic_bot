@@ -34,7 +34,7 @@ class AtomicCheckoutTests(unittest.TestCase):
         expire_source = inspect.getsource(db.expire_order_and_refund)
         self.assertIn("MANUAL_RESERVED", create_source)
         self.assertIn('"Stock"="Stock"-1', create_source)
-        self.assertIn('"Stock"="Stock"+1', release_source)
+        self.assertIn('"Stock"="Stock"+%s', release_source)
         self.assertIn("MANUAL_RELEASED", release_source)
         self.assertIn("MANUAL_RESERVED", fulfill_source)
         self.assertIn("_release_manual_gem_reservations", cancel_source)

@@ -207,6 +207,9 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertIn('https://myaccount.google.com', inspect.getsource(gem_credentials))
         self.assertIn('Accounts Center', inspect.getsource(gem_credentials))
         self.assertIn('Настройки', inspect.getsource(gem_credentials))
+        self.assertIn('CRED_QUANTITY', inspect.getsource(gem_credentials.credential_conversation_handler))
+        self.assertIn('parse_credential_quantity', inspect.getsource(gem_credentials))
+        self.assertIn('تعداد: *{qty}* عدد', inspect.getsource(gem_credentials._show_confirm))
         post_pay = credential_post_pay_support_keyboard(42, 'lookurback')
         post_urls = [
             getattr(btn, 'url', None)
@@ -218,6 +221,30 @@ class CredentialMenuTests(unittest.TestCase):
             '_send_credential_post_pay_support',
             inspect.getsource(__import__('handlers.payment', fromlist=['payment'])),
         )
+
+
+class CredentialQuantityTests(unittest.TestCase):
+    def test_parses_persian_digits_and_rejects_out_of_range(self):
+        self.assertEqual(gem_credentials.parse_credential_quantity('۳'), 3)
+        self.assertEqual(gem_credentials.parse_credential_quantity('12'), 12)
+        with self.assertRaises(ValueError):
+            gem_credentials.parse_credential_quantity('0')
+        with self.assertRaises(ValueError):
+            gem_credentials.parse_credential_quantity('abc')
+        with self.assertRaises(ValueError):
+            gem_credentials.parse_credential_quantity('51')
+
+    def test_order_helper_multiplies_quantity_and_restores_stock(self):
+        import inspect
+        create = inspect.getsource(db.create_credential_gem_order_atomic)
+        release = inspect.getsource(db._release_manual_gem_reservations)
+        notify = inspect.getsource(__import__('handlers.payment', fromlist=['payment'])._notify_credential_sale)
+        self.assertIn('quantity=1', create)
+        self.assertIn('"Stock"="Stock"-%s', create)
+        self.assertIn('unit_price * quantity', create)
+        self.assertIn('COALESCE(oi."Quantity",1)', inspect.getsource(db.get_credential_order))
+        self.assertIn('"Stock"="Stock"+%s', release)
+        self.assertIn('تعداد: {qty} عدد از این بسته', notify)
 
 
 class CredentialAdminActionTests(unittest.TestCase):
