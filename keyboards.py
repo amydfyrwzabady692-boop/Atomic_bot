@@ -22,9 +22,9 @@ def main_menu():
     return ReplyKeyboardMarkup(
         [
             [_menu_btn('🎮 محصولات فری‌فایر', 'primary'), _menu_btn('💰 کیف پول', 'success')],
-            [_menu_btn('📦 سفارش‌های من'), _menu_btn('👤 حساب من')],
-            [_menu_btn('🛍 فروشگاه اکانت'), _menu_btn('🎯 پک سنس')],
-            [_menu_btn('🎧 پشتیبانی', 'primary')],
+            [_menu_btn('📦 سفارش‌های من', 'primary'), _menu_btn('👤 حساب من', 'primary')],
+            [_menu_btn('🛍 فروشگاه اکانت', 'success'), _menu_btn('🎯 پک سنس', 'primary')],
+            [_menu_btn('🎧 پشتیبانی', 'danger')],
         ],
         resize_keyboard=True,
         input_field_placeholder='از منوی پایین انتخاب کن…',
