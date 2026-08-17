@@ -395,10 +395,10 @@ def site_card_keyboard(payment_id):
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
-                '✅ بررسی برای تأیید', callback_data=f'site_review_ok_{payment_id}'
+                '✅ تأیید رسید', callback_data=f'site_review_ok_{payment_id}'
             ),
             InlineKeyboardButton(
-                '❌ بررسی برای رد', callback_data=f'site_review_no_{payment_id}'
+                '❌ رد رسید', callback_data=f'site_review_no_{payment_id}'
             ),
         ],
     ])

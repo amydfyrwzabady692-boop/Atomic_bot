@@ -25,10 +25,12 @@ class SiteKeyboardSourceTests(unittest.TestCase):
         self.assertIn("f'site_review_no_{payment_id}'", keyboards)
         self.assertIn("f'site_ok_{payment_id}'", keyboards)
         self.assertIn("f'site_no_{payment_id}'", keyboards)
-        self.assertIn("f'site_review_back_{payment_id}'", keyboards)
         self.assertIn(r'site_review_(?:ok|no)_\d+', bot_src)
         self.assertIn('site_ok_', bot_src)
         self.assertIn('site_no_', bot_src)
+        handler = (ROOT / 'handlers' / 'site_receipts.py').read_text(encoding='utf-8')
+        self.assertNotIn('armed_at', handler)
+        self.assertNotIn('۲ دقیقه', handler)
 
 
 class ReviewBroadcastTests(unittest.TestCase):
