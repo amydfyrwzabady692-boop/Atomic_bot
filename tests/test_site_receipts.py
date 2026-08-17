@@ -27,9 +27,17 @@ class SiteKeyboardSourceTests(unittest.TestCase):
         self.assertIn("f'site_review_no_{payment_id}'", keyboards)
         self.assertIn("f'site_ok_{payment_id}'", keyboards)
         self.assertIn("f'site_no_{payment_id}'", keyboards)
+        self.assertIn("admx_sitecreds", keyboards)
+        self.assertIn("admx_sitereceipts", keyboards)
+        self.assertIn('جم با اطلاعات ربات', keyboards)
+        self.assertIn('جم با اطلاعات سایت', keyboards)
+        self.assertIn('رسیدهای ربات', keyboards)
+        self.assertIn('رسیدهای سایت', keyboards)
         self.assertIn(r'site_review_(?:ok|no)_\d+', bot_src)
         self.assertIn('site_ok_', bot_src)
         self.assertIn('site_no_', bot_src)
+        self.assertIn('site_panel_router', bot_src)
+        self.assertIn(r'^admx_site(?:cred|receipt)', bot_src)
         handler = (ROOT / 'handlers' / 'site_receipts.py').read_text(encoding='utf-8')
         self.assertNotIn('armed_at', handler)
         self.assertNotIn('۲ دقیقه', handler)
@@ -104,6 +112,30 @@ class SiteApiTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(req.call_args.kwargs['headers']['X-Bot-Secret'], 's3cret')
         self.assertIn('/internal/bot/card-transfer/12/review/', req.call_args.args[0])
+
+    def test_fetch_site_ops_path(self):
+        class _Resp:
+            def read(self):
+                return b'{"ok": true, "ready_credentials": 2, "pending_receipts": 3}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch.dict('os.environ', {
+            'BOT_INTERNAL_SECRET': 's3cret',
+            'SITE_API_URL': 'https://atomicshop.ir',
+        }):
+            site_api.BOT_INTERNAL_SECRET = 's3cret'
+            site_api.SITE_API_URL = 'https://atomicshop.ir'
+            with patch('site_api.urllib.request.urlopen', return_value=_Resp()):
+                with patch('site_api.urllib.request.Request', return_value=MagicMock()) as req:
+                    result = site_api.fetch_site_ops()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['ready_credentials'], 2)
+        self.assertIn('/internal/bot/site-ops/', req.call_args.args[0])
 
     def test_html_500_extracts_exception_type(self):
         html = (

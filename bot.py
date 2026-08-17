@@ -59,6 +59,7 @@ from handlers.forced_join import force_join_guard
 from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
 )
+from handlers.site_panel import site_panel_router
 from admin_notify import is_admin, notify_admin
 from refund_notify import notify_g2_refund
 from db import (
@@ -657,6 +658,9 @@ def main():
         admin_credential_tickets, pattern='^adm_cred_tickets$'
     ))
     app.add_handler(CallbackQueryHandler(admin_ticket_close, pattern=r'^adm_tclose_\d+$'))
+    app.add_handler(CallbackQueryHandler(
+        site_panel_router, pattern=r'^admx_site(?:cred|receipt)'
+    ))
     app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))
     app.add_handler(
         CallbackQueryHandler(

@@ -155,12 +155,18 @@ def credential_post_pay_support_keyboard(order_id, support_username='lookurback'
 
 
 def credential_admin_home_keyboard(counts=None):
-    ready = int((counts or {}).get('ready_creds') or 0)
-    tickets = int((counts or {}).get('cred_tickets') or 0)
-    orders_label = f'🔐 سفارش‌های جم با اطلاعات ({ready})' if ready else '🔐 سفارش‌های جم با اطلاعات'
+    c = counts or {}
+    ready = int(c.get('ready_creds') or 0)
+    site_ready = int(c.get('site_ready_creds') or 0)
+    tickets = int(c.get('cred_tickets') or 0)
+    bot_label = f'🔐 جم با اطلاعات ربات ({ready})' if ready else '🔐 جم با اطلاعات ربات'
+    site_label = (
+        f'🌐 جم با اطلاعات سایت ({site_ready})' if site_ready else '🌐 جم با اطلاعات سایت'
+    )
     tickets_label = f'🎫 تیکت‌های این بخش ({tickets})' if tickets else '🎫 تیکت‌های این بخش'
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(orders_label, callback_data='admx_credentials')],
+        [InlineKeyboardButton(bot_label, callback_data='admx_credentials')],
+        [InlineKeyboardButton(site_label, callback_data='admx_sitecreds')],
         [InlineKeyboardButton(tickets_label, callback_data='adm_cred_tickets')],
         [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_credhub')],
     ])
@@ -480,20 +486,30 @@ def admin_home_keyboard(counts=None):
 def admin_hub_orders_keyboard(counts=None):
     c = counts or {}
     cred = int(c.get('ready_creds') or 0)
+    site_cred = int(c.get('site_ready_creds') or 0)
     stuck = int(c.get('stuck') or 0)
     failed = int(c.get('failed_g2') or 0)
     receipts = int(c.get('receipts') or 0)
-    cred_label = f'🔐 جم با اطلاعات ({cred})' if cred else '🔐 جم با اطلاعات'
+    site_receipts = int(c.get('site_receipts') or 0)
+    cred_label = f'🔐 جم با اطلاعات ربات ({cred})' if cred else '🔐 جم با اطلاعات ربات'
+    site_cred_label = (
+        f'🌐 جم با اطلاعات سایت ({site_cred})' if site_cred else '🌐 جم با اطلاعات سایت'
+    )
     stuck_label = f'⏳ گیرکرده ({stuck})' if stuck else '⏳ گیرکرده در پردازش'
     failed_label = f'❌ تحویل ناموفق G2B ({failed})' if failed else '❌ تحویل ناموفق G2B'
-    receipt_label = f'🧾 رسید کارت‌به‌کارت ({receipts})' if receipts else '🧾 رسیدهای کارت‌به‌کارت'
+    receipt_label = f'🧾 رسیدهای ربات ({receipts})' if receipts else '🧾 رسیدهای ربات'
+    site_receipt_label = (
+        f'🌐 رسیدهای سایت ({site_receipts})' if site_receipts else '🌐 رسیدهای سایت'
+    )
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(cred_label, callback_data='admx_credentials')],
+        [InlineKeyboardButton(site_cred_label, callback_data='admx_sitecreds')],
         [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],
         [InlineKeyboardButton(failed_label, callback_data='adm_failed')],
         [InlineKeyboardButton(stuck_label, callback_data='admx_stuck')],
         [InlineKeyboardButton('💰 برگشت به کیف پول', callback_data='admx_refunds')],
         [InlineKeyboardButton(receipt_label, callback_data='admx_receipts')],
+        [InlineKeyboardButton(site_receipt_label, callback_data='admx_sitereceipts')],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 
@@ -589,7 +605,8 @@ def admin_finance_keyboard():
         ],
         [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
         [
-            InlineKeyboardButton('🧾 رسیدها', callback_data='admx_receipts'),
+            InlineKeyboardButton('🧾 رسید ربات', callback_data='admx_receipts'),
+            InlineKeyboardButton('🌐 رسید سایت', callback_data='admx_sitereceipts'),
             InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
         ],
         [

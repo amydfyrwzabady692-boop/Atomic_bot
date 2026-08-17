@@ -42,6 +42,7 @@ from db import (
     set_credential_support_from_admin, get_user_profile,
 )
 from handlers.forced_join import invalidate_forced_join_cache
+from handlers.site_panel import site_ops_counts
 from keyboards import (
     admin_card_keyboard, admin_home_keyboard,
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
@@ -150,7 +151,8 @@ async def _guard(update):
 def _credential_staff_allowed(data):
     """Callbackهایی که پشتیبان فقط-جم-با-اطلاعات می‌تواند بزند."""
     if data in (
-        'admx_credhub', 'admx_credentials', 'admx_noop', 'adm_cred_tickets',
+        'admx_credhub', 'admx_credentials', 'admx_sitecreds',
+        'admx_noop', 'adm_cred_tickets',
     ):
         return True
     prefixes = (
@@ -159,6 +161,10 @@ def _credential_staff_allowed(data):
         'admx_creddone_',
         'admx_credbad_',
         'admx_credrefund',
+        'admx_sitecred_',
+        'admx_sitecredreveal_',
+        'admx_sitecreddone_',
+        'admx_sitecredbad_',
     )
     return any(str(data or '').startswith(p) for p in prefixes)
 
@@ -331,12 +337,14 @@ async def credadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     ready_creds = await asyncio.to_thread(count_ready_credential_orders)
     cred_tickets = await asyncio.to_thread(count_open_tickets, 'credential')
+    site = await asyncio.to_thread(site_ops_counts)
     await update.message.reply_text(
         '🔐 *پنل جم با اطلاعات*\n'
-        'فقط سفارش‌های پرداخت‌شده و تیکت‌های همین بخش.',
+        'دو بخش جدا: سفارش‌های *ربات* و سفارش‌های *سایت*.',
         parse_mode='Markdown',
         reply_markup=credential_admin_home_keyboard({
             'ready_creds': ready_creds,
+            'site_ready_creds': site['site_ready_creds'],
             'cred_tickets': cred_tickets,
         }),
     )
@@ -363,12 +371,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'admx_credhub':
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         cred_tickets = await asyncio.to_thread(count_open_tickets, 'credential')
+        site = await asyncio.to_thread(site_ops_counts)
         await query.edit_message_text(
             '🔐 *پنل جم با اطلاعات*\n'
-            'فقط سفارش‌های پرداخت‌شده و تیکت‌های همین بخش.',
+            'دو بخش جدا: سفارش‌های *ربات* و سفارش‌های *سایت*.',
             parse_mode='Markdown',
             reply_markup=credential_admin_home_keyboard({
                 'ready_creds': ready_creds,
+                'site_ready_creds': site['site_ready_creds'],
                 'cred_tickets': cred_tickets,
             }),
         )
@@ -378,15 +388,18 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ops = admin_operations_snapshot(_low_stock_threshold())
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         stats = await asyncio.to_thread(get_admin_stats)
+        site = await asyncio.to_thread(site_ops_counts)
         await query.edit_message_text(
             '📦 *مدیریت سفارش‌ها*\n'
-            'باز · ناموفق · گیرکرده · ریفاند · رسید · جم با اطلاعات',
+            'جم ربات / جم سایت · رسید ربات / رسید سایت',
             parse_mode='Markdown',
             reply_markup=admin_hub_orders_keyboard({
                 'ready_creds': ready_creds,
+                'site_ready_creds': site['site_ready_creds'],
                 'stuck': ops['stuck_processing'],
                 'failed_g2': stats.get('failed_g2', 0),
                 'receipts': ops['pending_receipts'],
+                'site_receipts': site['site_receipts'],
             }),
         )
         return
@@ -435,9 +448,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             list_credential_orders, 30, paid_only=paid_only,
         )
         title = (
-            '🔐 *سفارش‌های پرداخت‌شده جم با اطلاعات*'
+            '🔐 *جم با اطلاعات ربات — پرداخت‌شده*'
             if paid_only else
-            '🔐 *سفارش‌های جم با اطلاعات*'
+            '🔐 *جم با اطلاعات ربات*'
         )
         lines = [title, '━━━━━━━━━━━━━━━']
         buttons = []
@@ -718,6 +731,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         threshold = _low_stock_threshold()
         ops = admin_operations_snapshot(threshold)
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
+        site = await asyncio.to_thread(site_ops_counts)
         sales = get_setting('sales_enabled', '1') != '0'
         payments = get_setting('payments_enabled', '1') != '0'
         alerts_enabled = get_setting('admin_alerts_enabled', '1') != '0'
@@ -725,7 +739,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ops['pending_receipts'] + ops['stuck_processing']
             + ops['failed_payments_24h'] + ops['open_tickets']
             + ops['low_gem_stock'] + ops['low_store_stock']
-            + ready_creds
+            + ready_creds + site['site_ready_creds'] + site['site_receipts']
         )
         text = (
             '🚨 *مرکز عملیات مدیر*\n'
@@ -734,9 +748,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'پرداخت: {"✅ فعال" if payments else "⛔ متوقف"}\n'
             f'اعلان خودکار: {"🔔 روشن" if alerts_enabled else "🔕 خاموش"}\n'
             f'هشدار قابل اقدام: *{alert_total:,}*\n\n'
-            f'🧾 رسید در انتظار: *{ops["pending_receipts"]:,}*\n'
+            f'🧾 رسید ربات: *{ops["pending_receipts"]:,}*\n'
+            f'🌐 رسید سایت: *{site["site_receipts"]:,}*\n'
             f'⏳ سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
-            f'🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n'
+            f'🔐 جم با اطلاعات ربات: *{ready_creds:,}*\n'
+            f'🌐 جم با اطلاعات سایت: *{site["site_ready_creds"]:,}*\n'
             f'❌ خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
             f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
             f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
@@ -746,13 +762,19 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await _edit(query, text, [
             [InlineKeyboardButton(
-                f'🧾 رسیدها ({ops["pending_receipts"]})', callback_data='admx_receipts'
+                f'🧾 رسید ربات ({ops["pending_receipts"]})', callback_data='admx_receipts'
             ), InlineKeyboardButton(
+                f'🌐 رسید سایت ({site["site_receipts"]})', callback_data='admx_sitereceipts'
+            )],
+            [InlineKeyboardButton(
                 f'⏳ گیرکرده‌ها ({ops["stuck_processing"]})', callback_data='admx_stuck'
             )],
             [InlineKeyboardButton(
-                f'🔐 جم با اطلاعات ({ready_creds})', callback_data='admx_credentials'
+                f'🔐 جم ربات ({ready_creds})', callback_data='admx_credentials'
             ), InlineKeyboardButton(
+                f'🌐 جم سایت ({site["site_ready_creds"]})', callback_data='admx_sitecreds'
+            )],
+            [InlineKeyboardButton(
                 f'💰 برگشت کیف پول ({ops.get("wallet_refunds_7d", 0)})',
                 callback_data='admx_refunds',
             )],
@@ -1370,7 +1392,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == 'admx_receipts':
         rows = list_pending_receipts()
         wallet_rows = list_pending_wallet_card_charges(30)
-        lines = ['🧾 *رسیدهای تاییدنشده*', '━━━━━━━━━━━━━━━']
+        lines = ['🧾 *رسیدهای تاییدنشده ربات*', '━━━━━━━━━━━━━━━']
         buttons = []
         for oid, tg, total, _created, _file_id, _rid in rows:
             lines.append(f'🛒 سفارش `#{oid}` · {total:,} ت · `{tg}`')
