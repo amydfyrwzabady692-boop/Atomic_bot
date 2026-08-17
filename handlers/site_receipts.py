@@ -1,6 +1,8 @@
 """تایید/رد فوری رسید کارت‌به‌کارت سایت از داخل ربات."""
 from __future__ import annotations
 
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -45,7 +47,8 @@ async def _finalize_site(update: Update, ctx: ContextTypes.DEFAULT_TYPE, *, want
     payment_id = _payment_id(query.data)
     name = admin_display_name(update.effective_user)
     api_action = 'approve' if want_action == 'ok' else 'reject'
-    result = call_site_review(
+    result = await asyncio.to_thread(
+        call_site_review,
         payment_id, api_action, update.effective_user.id, name,
     )
     approved = api_action == 'approve' or result.get('status') == 'approved'

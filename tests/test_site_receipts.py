@@ -1,6 +1,8 @@
 import asyncio
+import io
 import pathlib
 import unittest
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -102,6 +104,24 @@ class SiteApiTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(req.call_args.kwargs['headers']['X-Bot-Secret'], 's3cret')
         self.assertIn('/internal/bot/card-transfer/12/review/', req.call_args.args[0])
+
+    def test_html_500_extracts_exception_type(self):
+        html = (
+            b'<html><title>ProgrammingError at /internal/</title>'
+            b'<table><tr><th>Exception Type:</th><td>ProgrammingError</td></tr></table>'
+        )
+        err = urllib.error.HTTPError(
+            'https://atomicshop.ir/x', 500, 'Server Error', hdrs={}, fp=io.BytesIO(html),
+        )
+        with patch.dict('os.environ', {
+            'BOT_INTERNAL_SECRET': 's3cret',
+            'SITE_API_URL': 'https://atomicshop.ir',
+        }):
+            site_api.BOT_INTERNAL_SECRET = 's3cret'
+            with patch('site_api.urllib.request.urlopen', side_effect=err):
+                result = site_api.call_site_review(12, 'approve', 1, 'Omid')
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error'], 'ProgrammingError')
 
 
 if __name__ == '__main__':
