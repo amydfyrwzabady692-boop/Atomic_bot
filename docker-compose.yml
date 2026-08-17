@@ -57,6 +57,8 @@ services:
       CARD_NUMBER: ${CARD_NUMBER:-}
       CARD_HOLDER: ${CARD_HOLDER:-}
       ADMIN_CHAT_ID: ${ADMIN_CHAT_ID:-}
+      SITE_API_URL: ${SITE_API_URL:-https://atomicshop.ir}
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET:-}
       BOT_DOMAIN: ${BOT_DOMAIN:-botatomic.atomicshop.ir}
       PAYMENT_CALLBACK_BASE: ${PAYMENT_CALLBACK_BASE:-https://botatomic.atomicshop.ir}
       WEB_PORT: "8080"
