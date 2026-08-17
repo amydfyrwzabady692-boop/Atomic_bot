@@ -54,7 +54,11 @@ from handlers.admin_extended import (
 from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
 )
+from handlers.appearance import appearance_conversation_handler, appear_router
 from handlers.forced_join import force_join_guard
+from handlers.site_receipts import (
+    site_approve, site_reject, site_review_back, site_review_prompt,
+)
 from admin_notify import is_admin, notify_admin
 from refund_notify import notify_g2_refund
 from db import (
@@ -70,6 +74,7 @@ from db import (
 from payments import verify_payment_detailed
 from webapp import start_web_server
 from keyboards import main_menu
+import appearance
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -80,15 +85,14 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 
 ADMIN_ALERT_INTERVAL_SECONDS = 8 * 60 * 60
 
-MENU_TEXTS = {
-    '💎 جم فری‌فایر': freefire_products_menu,
-    '🎮 محصولات فری‌فایر': freefire_products_menu,
-    '💰 کیف پول': wallet_menu,
-    '📦 سفارش‌های من': my_orders,
-    '👤 حساب من': my_account,
-    '🛍 فروشگاه اکانت': store_menu,
-    '🎯 پک سنس': sens_menu,
-    '🛒 سبد خرید': show_cart,
+MENU_ACTIONS = {
+    'ff': freefire_products_menu,
+    'wallet': wallet_menu,
+    'orders': my_orders,
+    'account': my_account,
+    'store': store_menu,
+    'sense': sens_menu,
+    'cart': show_cart,
 }
 
 
@@ -143,7 +147,8 @@ async def text_router(update, ctx):
         return
 
     # اگر ادمین در حالت پاسخ/جستجو نیست، منوی عادی
-    handler = MENU_TEXTS.get(message.text)
+    action = appearance.menu_action(message.text)
+    handler = MENU_ACTIONS.get(action) if action else None
     if handler:
         await handler(update, ctx)
     else:
@@ -567,6 +572,7 @@ def main():
     app.add_handler(admin_conversation_handler())
     app.add_handler(admin_extended_conversation_handler())
     app.add_handler(premium_admin_conversation_handler())
+    app.add_handler(appearance_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
     app.add_handler(CallbackQueryHandler(freefire_products_menu, pattern=r'^gems$'))
@@ -596,6 +602,14 @@ def main():
     app.add_handler(CallbackQueryHandler(
         admin_review_order_back, pattern=r'^admin_review_back_\d+$'
     ))
+    app.add_handler(CallbackQueryHandler(
+        site_review_prompt, pattern=r'^site_review_(?:ok|no)_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        site_review_back, pattern=r'^site_review_back_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
+    app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+$'))
 
     app.add_handler(CallbackQueryHandler(wallet_menu, pattern='^wallet$'))
     app.add_handler(CallbackQueryHandler(wallet_charge_preset, pattern=r'^wchg_\d+$'))
@@ -649,6 +663,9 @@ def main():
             studio_router, pattern=r'^studio_(?:home|g2|payments)$'
         )
     )
+    app.add_handler(CallbackQueryHandler(
+        appear_router, pattern=r'^ap_(?:home$|h:|c:|i:|cle:|rst:)'
+    ))
 
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))

@@ -36,6 +36,7 @@ from db import (
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, notify_credential_admins, is_admin
 from credential_vault import decrypt_credentials
+from review_broadcast import admin_display_name, broadcast_reviewed, remember_notices
 import time
 import g2bulk
 
@@ -1125,31 +1126,37 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
             caption = _receipt_admin_caption(
                 order_id, pending, user, receipt_text=receipt_text
             )
+            notices = []
             for aid in recipients:
-                if receipt_msg and receipt_msg.photo:
-                    await ctx.bot.send_photo(
-                        chat_id=aid,
-                        photo=receipt_msg.photo[-1].file_id,
-                        caption=caption,
-                        parse_mode='HTML',
-                        reply_markup=admin_card_keyboard(order_id),
-                    )
-                elif receipt_msg and receipt_msg.document:
-                    await ctx.bot.send_document(
-                        chat_id=aid,
-                        document=receipt_msg.document.file_id,
-                        caption=caption,
-                        parse_mode='HTML',
-                        reply_markup=admin_card_keyboard(order_id),
-                    )
-                else:
-                    await ctx.bot.send_message(
-                        chat_id=aid,
-                        text=caption,
-                        parse_mode='HTML',
-                        reply_markup=admin_card_keyboard(order_id),
-                    )
-            admin_ok = True
+                try:
+                    if receipt_msg and receipt_msg.photo:
+                        sent = await ctx.bot.send_photo(
+                            chat_id=aid,
+                            photo=receipt_msg.photo[-1].file_id,
+                            caption=caption,
+                            parse_mode='HTML',
+                            reply_markup=admin_card_keyboard(order_id),
+                        )
+                    elif receipt_msg and receipt_msg.document:
+                        sent = await ctx.bot.send_document(
+                            chat_id=aid,
+                            document=receipt_msg.document.file_id,
+                            caption=caption,
+                            parse_mode='HTML',
+                            reply_markup=admin_card_keyboard(order_id),
+                        )
+                    else:
+                        sent = await ctx.bot.send_message(
+                            chat_id=aid,
+                            text=caption,
+                            parse_mode='HTML',
+                            reply_markup=admin_card_keyboard(order_id),
+                        )
+                    notices.append({'chat_id': aid, 'message_id': sent.message_id})
+                    admin_ok = True
+                except Exception as send_err:
+                    log.warning('card receipt notify failed chat=%s: %s', aid, send_err)
+            remember_notices('order', order_id, notices)
         except Exception as e:
             print(f'[CARD] admin notify failed: {e}')
 
@@ -1245,6 +1252,13 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             query, f"❌ تأیید امن انجام نشد: {approve_error}"
         )
         return
+    reviewer = admin_display_name(update.effective_user)
+    await broadcast_reviewed(
+        ctx.bot, 'order', order_id,
+        approved=True,
+        reviewer_name=reviewer,
+        result_text=f'✅ سفارش #{order_id} تایید شد.',
+    )
     log_payment_attempt(
         provider='card_transfer', event='card_approved', status='success',
         amount=get_order_payment_expected(order_id), order_id=order_id,
@@ -1430,6 +1444,13 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rejected:
         await _edit_review_message(query, f"❌ رد امن انجام نشد: {reject_error}")
         return
+    reviewer = admin_display_name(update.effective_user)
+    await broadcast_reviewed(
+        ctx.bot, 'order', order_id,
+        approved=False,
+        reviewer_name=reviewer,
+        result_text=f'❌ سفارش #{order_id} رد شد.',
+    )
     log_payment_attempt(
         provider='card_transfer', event='card_rejected', status='rejected',
         amount=expected_amount or order[2],

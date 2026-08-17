@@ -16,6 +16,7 @@ from keyboards import (
     wallet_card_pay_keyboard, admin_wallet_card_keyboard,
     admin_wallet_card_confirm_keyboard, main_menu,
 )
+import appearance
 from db import (
     get_or_create_user, get_wallet_balance, create_wallet_charge_tx,
     complete_wallet_charge_by_authority, create_wallet_card_charge,
@@ -27,6 +28,7 @@ from db import (
 from payments import request_payment, verify_payment
 from payment_safety import MIN_WALLET_CHARGE, checked_amount
 from admin_notify import is_admin, notify_admin
+from review_broadcast import admin_display_name, broadcast_reviewed, remember_notices
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / '.env')
 
@@ -73,18 +75,25 @@ async def wallet_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data['db_id'] = db_id
 
     balance = get_wallet_balance(db_id)
-    text = (
-        "💰 *کیف پول Atomic*\n"
-        "━━━━━━━━━━━━━━━\n"
-        f"موجودی فعلی: *{balance:,} تومان*\n\n"
-        "مبلغ شارژ را انتخاب کن؛ بعد روش پرداخت (درگاه یا کارت‌به‌کارت) را می‌گیری."
+    payload = appearance.message_kwargs(
+        't.wallet.hdr', appearance.DEFAULTS['t.wallet.hdr'],
+        balance=f'{balance:,}',
     )
-    kb = wallet_keyboard()
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
-    else:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
+    try:
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                **payload, reply_markup=wallet_keyboard()
+            )
+        else:
+            await update.message.reply_text(**payload, reply_markup=wallet_keyboard())
+    except Exception:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                payload['text'], reply_markup=wallet_keyboard()
+            )
+        else:
+            await update.message.reply_text(payload['text'], reply_markup=wallet_keyboard())
 
 
 async def _show_charge_methods(reply, amount):
@@ -521,30 +530,44 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not recipients:
             await update.message.reply_text("❌ ادمین تنظیم نشده.")
             return ConversationHandler.END
+        notices = []
         if update.message.photo:
             for aid in recipients:
-                await ctx.bot.send_photo(
-                    chat_id=aid, photo=update.message.photo[-1].file_id,
-                    caption=caption,
-                    reply_markup=admin_wallet_card_keyboard(tx_id),
-                )
+                try:
+                    sent = await ctx.bot.send_photo(
+                        chat_id=aid, photo=update.message.photo[-1].file_id,
+                        caption=caption,
+                        reply_markup=admin_wallet_card_keyboard(tx_id),
+                    )
+                    notices.append({'chat_id': aid, 'message_id': sent.message_id})
+                except Exception as send_err:
+                    print(f'[WALLET] admin photo failed chat={aid}: {send_err}')
         elif update.message.document:
             for aid in recipients:
-                await ctx.bot.send_document(
-                    chat_id=aid, document=update.message.document.file_id,
-                    caption=caption,
-                    reply_markup=admin_wallet_card_keyboard(tx_id),
-                )
+                try:
+                    sent = await ctx.bot.send_document(
+                        chat_id=aid, document=update.message.document.file_id,
+                        caption=caption,
+                        reply_markup=admin_wallet_card_keyboard(tx_id),
+                    )
+                    notices.append({'chat_id': aid, 'message_id': sent.message_id})
+                except Exception as send_err:
+                    print(f'[WALLET] admin document failed chat={aid}: {send_err}')
         else:
             text = caption
             if update.message.text:
                 text += f"\n\nپیام کاربر:\n{update.message.text}"
-            await notify_admin(
-                ctx.bot,
-                text,
-                reply_markup=admin_wallet_card_keyboard(tx_id),
-                parse_mode=None,
-            )
+            for aid in recipients:
+                try:
+                    sent = await ctx.bot.send_message(
+                        chat_id=aid,
+                        text=text,
+                        reply_markup=admin_wallet_card_keyboard(tx_id),
+                    )
+                    notices.append({'chat_id': aid, 'message_id': sent.message_id})
+                except Exception as send_err:
+                    print(f'[WALLET] admin text failed chat={aid}: {send_err}')
+        remember_notices('wallet', tx_id, notices)
     except Exception as e:
         await update.message.reply_text(f"❌ ارسال به ادمین ناموفق: {e}")
         return ConversationHandler.END
@@ -596,6 +619,12 @@ async def admin_wallet_card_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not done:
         await query.edit_message_text(f"❌ اعمال شارژ ناموفق بود: {approve_status}")
         return
+    reviewer = admin_display_name(update.effective_user)
+    result_text = f"✅ شارژ کیف پول #{tx_id} تایید شد — {amt:,} ت"
+    await broadcast_reviewed(
+        ctx.bot, 'wallet', tx_id,
+        approved=True, reviewer_name=reviewer, result_text=result_text,
+    )
     if approve_status == 'approved':
         log_payment_attempt(
             provider='card_transfer', event='wallet_card_approved',
@@ -701,6 +730,12 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rejected:
         await query.edit_message_text(f"❌ رد شارژ انجام نشد: {reject_error}")
         return
+    reviewer = admin_display_name(update.effective_user)
+    result_text = f"❌ شارژ کیف پول #{tx_id} رد شد."
+    await broadcast_reviewed(
+        ctx.bot, 'wallet', tx_id,
+        approved=False, reviewer_name=reviewer, result_text=result_text,
+    )
     log_payment_attempt(
         provider='card_transfer', event='wallet_card_rejected',
         status='rejected', amount=amount, wallet_tx_id=tx_id,

@@ -1,15 +1,46 @@
 import button_style  # noqa: F401 — دکمه‌های رنگی primary/success/danger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+import appearance
 
-def _menu_btn(text, style=None):
+
+def _menu_btn(text, style=None, icon_custom_emoji_id=None):
     kwargs = {}
+    extra = {}
+    if icon_custom_emoji_id:
+        extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
     if style:
         try:
-            return KeyboardButton(text, style=style)
+            return KeyboardButton(
+                text, style=style, icon_custom_emoji_id=icon_custom_emoji_id
+            )
         except TypeError:
-            kwargs['api_kwargs'] = {'style': style}
-    return KeyboardButton(text, **kwargs)
+            extra['style'] = style
+            kwargs['api_kwargs'] = extra
+            return KeyboardButton(text, **kwargs)
+    if extra:
+        kwargs['api_kwargs'] = extra
+        try:
+            return KeyboardButton(text, icon_custom_emoji_id=icon_custom_emoji_id)
+        except TypeError:
+            return KeyboardButton(text, **kwargs)
+    return KeyboardButton(text)
+
+
+def _kbtn(key, default, style=None):
+    return _menu_btn(
+        appearance.user_label(key, default),
+        style,
+        appearance.user_emoji(key) or None,
+    )
+
+
+def _ibtn(key, default, callback_data):
+    return InlineKeyboardButton(
+        appearance.user_label(key, default),
+        callback_data=callback_data,
+        icon_custom_emoji_id=appearance.user_emoji(key) or None,
+    )
 
 GEM_PRODUCTS_PER_PAGE = 8
 
@@ -21,10 +52,13 @@ def _fmt(n):
 def main_menu():
     return ReplyKeyboardMarkup(
         [
-            [_menu_btn('🎮 محصولات فری‌فایر', 'primary'), _menu_btn('💰 کیف پول', 'success')],
-            [_menu_btn('📦 سفارش‌های من', 'primary'), _menu_btn('👤 حساب من', 'primary')],
-            [_menu_btn('🛍 فروشگاه اکانت', 'success'), _menu_btn('🎯 پک سنس', 'primary')],
-            [_menu_btn('🎧 پشتیبانی', 'danger')],
+            [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary'),
+             _kbtn('b.menu.wal', '💰 کیف پول', 'success')],
+            [_kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
+             _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
+            [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
+             _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
+            [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
         ],
         resize_keyboard=True,
         input_field_placeholder='از منوی پایین انتخاب کن…',
@@ -39,23 +73,22 @@ def updating_keyboard(back='home'):
 
 def freefire_products_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            '🆔 جم با آیدی · تحویل لحظه‌ای', callback_data='gems_by_id'
-        )],
-        [InlineKeyboardButton(
-            '🔐 جم با اطلاعات · هفتگی / ماهانه', callback_data='gems_credentials'
-        )],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+        [_ibtn('b.gems.id', '🆔 جم با آیدی · تحویل لحظه‌ای', 'gems_by_id')],
+        [_ibtn('b.gems.cr', '🔐 جم با اطلاعات · هفتگی / ماهانه', 'gems_credentials')],
+        [_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')],
     ])
 
 
 def credential_products_keyboard(products):
-    rows = [
-        [InlineKeyboardButton(
-            f'{p[1]} • {_fmt(p[4])} تومان', callback_data=f'cred_product_{p[0]}'
-        )]
-        for p in products
-    ]
+    rows = []
+    for p in products:
+        key = f'c.{p[0]}'
+        title = appearance.user_label(key, p[1])
+        rows.append([InlineKeyboardButton(
+            f'{title} • {_fmt(p[4])} تومان',
+            callback_data=f'cred_product_{p[0]}',
+            icon_custom_emoji_id=appearance.user_emoji(key) or None,
+        )])
     rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
     return InlineKeyboardMarkup(rows)
 
@@ -142,8 +175,8 @@ def credential_confirm_keyboard():
 
 def sens_platform_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🖥 PC', callback_data='sens_pc')],
-        [InlineKeyboardButton('📱 موبایل', callback_data='sens_mobile')],
+        [_ibtn('b.se.pc', '🖥 PC', 'sens_pc')],
+        [_ibtn('b.se.mob', '📱 موبایل', 'sens_mobile')],
         [InlineKeyboardButton('منوی اصلی', callback_data='home')],
     ])
 
@@ -158,8 +191,9 @@ def sens_pc_packs_keyboard(packs):
             key, title, price = p[0], p[1], p[3]
         rows.append([
             InlineKeyboardButton(
-                f"{title} — {price:,} ت",
+                f"{appearance.user_label(f's.{key}', title)} — {price:,} ت",
                 callback_data=f"sens_buy_{key}",
+                icon_custom_emoji_id=appearance.user_emoji(f's.{key}') or None,
             )
         ])
     rows.append([InlineKeyboardButton('بازگشت', callback_data='sens')])
@@ -186,12 +220,18 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
         # Id, Title, Amount, BonusAmount, Price, ...
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
-        label = f"{auto} {g[1]}  •  {_fmt(g[4])} تومان"
+        title = appearance.user_label(f'g.{g[0]}', g[1])
+        icon = appearance.user_emoji(f'g.{g[0]}') or None
+        label = f"{auto} {title}  •  {_fmt(g[4])} تومان"
         if sold_out and not g[8]:
-            label = f"❌ ناموجود — {g[1]}"
-            buttons.append([InlineKeyboardButton(label, callback_data='noop')])
+            label = f"❌ ناموجود — {title}"
+            buttons.append([InlineKeyboardButton(
+                label, callback_data='noop', icon_custom_emoji_id=icon,
+            )])
         else:
-            buttons.append([InlineKeyboardButton(label, callback_data=f'gem_{g[0]}')])
+            buttons.append([InlineKeyboardButton(
+                label, callback_data=f'gem_{g[0]}', icon_custom_emoji_id=icon,
+            )])
     if total_pages > 1:
         nav = [
             InlineKeyboardButton(
@@ -207,7 +247,7 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
 
 def gem_detail_keyboard(gem_id, page=1):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✅ خرید این بسته', callback_data=f'gbuy_{gem_id}')],
+        [_ibtn('b.gem.buy', '✅ خرید این بسته', f'gbuy_{gem_id}')],
         [InlineKeyboardButton(
             '🔙 بازگشت به لیست', callback_data=f'gems_page_{max(1, int(page))}'
         )],
@@ -216,15 +256,15 @@ def gem_detail_keyboard(gem_id, page=1):
 
 def gem_cancel_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✖️ انصراف', callback_data='gem_cancel')],
+        [_ibtn('b.gem.no', '✖️ انصراف', 'gem_cancel')],
     ])
 
 
 def gem_confirm_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✅ تایید و ادامه پرداخت', callback_data='gem_confirm')],
+        [_ibtn('b.gem.ok', '✅ تایید و ادامه پرداخت', 'gem_confirm')],
         [InlineKeyboardButton('✏️ اصلاح آیدی', callback_data='gem_reedit')],
-        [InlineKeyboardButton('✖️ انصراف', callback_data='gem_cancel')],
+        [_ibtn('b.gem.no', '✖️ انصراف', 'gem_cancel')],
     ])
 
 
@@ -233,25 +273,29 @@ def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=N
     bal = int(wallet_balance or 0)
     rem = int(remaining) if remaining is not None else None
     rows = [
-        [InlineKeyboardButton('💳 زرین‌پال', callback_data=f'pay_zp_{order_id}')],
-        [InlineKeyboardButton('🏧 کارت‌به‌کارت', callback_data=f'pay_card_{order_id}')],
+        [_ibtn('b.pay.zp', '💳 زرین‌پال', f'pay_zp_{order_id}')],
+        [_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'pay_card_{order_id}')],
     ]
     if can_wallet and (rem is None or rem > 0):
         if bal <= 0:
-            label = '💰 کیف پول (موجودی صفر)'
+            label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} (موجودی صفر)'
         elif rem is not None and bal >= rem:
-            label = '💰 پرداخت کامل از کیف پول'
+            label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} — پرداخت کامل'
         else:
-            label = f'💰 استفاده از کیف پول ({bal:,} ت)'
-        rows.append([InlineKeyboardButton(label, callback_data=f'pay_wallet_{order_id}')])
+            label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} ({bal:,} ت)'
+        rows.append([InlineKeyboardButton(
+            label,
+            callback_data=f'pay_wallet_{order_id}',
+            icon_custom_emoji_id=appearance.user_emoji('b.pay.wal') or None,
+        )])
     rows.append([InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')])
     return InlineKeyboardMarkup(rows)
 
 
 def wallet_charge_method_keyboard(amount):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('💳 درگاه زرین‌پال', callback_data=f'wpay_zp_{amount}')],
-        [InlineKeyboardButton('🏧 کارت‌به‌کارت', callback_data=f'wpay_card_{amount}')],
+        [_ibtn('b.pay.zp', '💳 درگاه زرین‌پال', f'wpay_zp_{amount}')],
+        [_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'wpay_card_{amount}')],
         [InlineKeyboardButton('بازگشت', callback_data='wallet')],
     ])
 
@@ -335,18 +379,42 @@ def admin_card_confirm_keyboard(order_id, action):
     ])
 
 
+def site_card_keyboard(payment_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                '✅ بررسی برای تأیید', callback_data=f'site_review_ok_{payment_id}'
+            ),
+            InlineKeyboardButton(
+                '❌ بررسی برای رد', callback_data=f'site_review_no_{payment_id}'
+            ),
+        ],
+    ])
+
+
+def site_card_confirm_keyboard(payment_id, action):
+    if action == 'ok':
+        label, callback = '⚠️ تأیید نهایی رسید سایت', f'site_ok_{payment_id}'
+    else:
+        label, callback = '⚠️ رد نهایی رسید سایت', f'site_no_{payment_id}'
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=callback)],
+        [InlineKeyboardButton('🔙 بازگشت', callback_data=f'site_review_back_{payment_id}')],
+    ])
+
+
 def wallet_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton('۵۰٬۰۰۰ ت', callback_data='wchg_50000'),
-            InlineKeyboardButton('۱۰۰٬۰۰۰ ت', callback_data='wchg_100000'),
+            _ibtn('b.wal.50', '۵۰٬۰۰۰ ت', 'wchg_50000'),
+            _ibtn('b.wal.100', '۱۰۰٬۰۰۰ ت', 'wchg_100000'),
         ],
         [
-            InlineKeyboardButton('۲۰۰٬۰۰۰ ت', callback_data='wchg_200000'),
-            InlineKeyboardButton('۵۰۰٬۰۰۰ ت', callback_data='wchg_500000'),
+            _ibtn('b.wal.200', '۲۰۰٬۰۰۰ ت', 'wchg_200000'),
+            _ibtn('b.wal.500', '۵۰۰٬۰۰۰ ت', 'wchg_500000'),
         ],
-        [InlineKeyboardButton('✏️ مبلغ دلخواه', callback_data='wchg_custom')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+        [_ibtn('b.wal.custom', '✏️ مبلغ دلخواه', 'wchg_custom')],
+        [_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')],
     ])
 
 
@@ -378,6 +446,7 @@ def admin_home_keyboard(counts=None):
     support_label = f'🎧 پشتیبانی ({tickets_n})' if tickets_n else '🎧 پشتیبانی'
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(ops_label, callback_data='admx_ops')],
+        [InlineKeyboardButton('✨ ظاهر', callback_data='ap_home')],
         [
             InlineKeyboardButton(orders_label, callback_data='admx_hub_orders'),
             InlineKeyboardButton('👥 کاربران', callback_data='admx_hub_users'),
@@ -461,6 +530,7 @@ def admin_hub_support_keyboard(counts=None):
 
 def admin_hub_system_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✨ ظاهر متن و دکمه‌ها', callback_data='ap_home')],
         [InlineKeyboardButton('🏪 ظاهر و متن فروشگاه', callback_data='admx_settings')],
         [InlineKeyboardButton('📢 جوین اجباری کانال', callback_data='admx_forcedjoin')],
         [InlineKeyboardButton('🔄 سینک قیمت جم از G2B', callback_data='admx_pricesync')],
