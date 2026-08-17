@@ -2598,6 +2598,13 @@ def ensure_admin_schema():
            ON "AdminAuditLogs" ("CreatedAt" DESC)''',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "Role" VARCHAR(20) NOT NULL DEFAULT \'admin\'',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "AddedBy" VARCHAR(64)',
+        '''CREATE TABLE IF NOT EXISTS "Appearance" (
+            "Key" VARCHAR(80) PRIMARY KEY,
+            "TextValue" TEXT,
+            "EmojiId" VARCHAR(64) NOT NULL DEFAULT '',
+            "EmojiChar" VARCHAR(16) NOT NULL DEFAULT '',
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -2714,6 +2721,74 @@ def set_setting(key, value):
             (str(key), str(value or '')),
         )
         conn.commit()
+
+
+def list_appearance_rows():
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'SELECT "Key","TextValue","EmojiId","EmojiChar" FROM "Appearance"'
+            )
+            return {
+                str(row[0]): {
+                    'text': row[1],
+                    'emoji_id': str(row[2] or ''),
+                    'emoji_char': str(row[3] or ''),
+                }
+                for row in cur.fetchall()
+            }
+    except Exception:
+        return {}
+
+
+def upsert_appearance(key, *, text=None, emoji_id=None, emoji_char=None, clear_text=False, clear_emoji=False):
+    key = str(key or '').strip()
+    if not key:
+        raise ValueError('کلید ظاهر نامعتبر است.')
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "TextValue","EmojiId","EmojiChar" FROM "Appearance" WHERE "Key"=%s',
+            (key,),
+        )
+        row = cur.fetchone()
+        current_text = row[0] if row else None
+        current_emoji = str(row[1] or '') if row else ''
+        current_char = str(row[2] or '') if row else ''
+        if clear_text:
+            current_text = None
+        elif text is not None:
+            current_text = str(text)
+        if clear_emoji:
+            current_emoji, current_char = '', ''
+        elif emoji_id is not None:
+            current_emoji = str(emoji_id or '')
+            current_char = str(emoji_char or current_char or '⭐')
+        if current_text is None and not current_emoji:
+            cur.execute('DELETE FROM "Appearance" WHERE "Key"=%s', (key,))
+        else:
+            cur.execute(
+                '''INSERT INTO "Appearance" ("Key","TextValue","EmojiId","EmojiChar","UpdatedAt")
+                   VALUES (%s,%s,%s,%s,now())
+                   ON CONFLICT ("Key") DO UPDATE SET
+                     "TextValue"=EXCLUDED."TextValue",
+                     "EmojiId"=EXCLUDED."EmojiId",
+                     "EmojiChar"=EXCLUDED."EmojiChar",
+                     "UpdatedAt"=now()''',
+                (key, current_text, current_emoji, current_char),
+            )
+        conn.commit()
+    return {
+        'text': current_text,
+        'emoji_id': current_emoji,
+        'emoji_char': current_char,
+    }
+
+
+def reset_appearance(key):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('DELETE FROM "Appearance" WHERE "Key"=%s', (str(key),))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def list_forced_join_channels(active_only=True):
