@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu, wallet_keyboard
+import appearance
 from db import get_or_create_user, get_user_orders, get_wallet_balance
 from text_safety import markdown_safe
 
@@ -23,7 +24,7 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     balance = await asyncio.to_thread(get_wallet_balance, db_id)
 
     text = (
-        f"✦ *حساب من*\n"
+        f"{appearance.user_label('t.account.hdr', appearance.DEFAULTS['t.account.hdr'])}\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"نام: {name}\n"
         f"آیدی: *{username}*\n"
@@ -51,7 +52,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     orders = await asyncio.to_thread(get_user_orders, db_id)
     if not orders:
-        text = "📦 *سفارش‌های من*\n\nهنوز سفارشی ثبت نکردی!"
+        text = appearance.user_label('t.orders.empty', appearance.DEFAULTS['t.orders.empty'])
     else:
         STATUS_FA = {
             'pending': '⏳ در انتظار پرداخت/تایید',
@@ -63,7 +64,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'cancelled': '❌ لغو شده',
             'failed': '❌ ناموفق',
         }
-        lines = ["📦 *سفارش‌های من*", "━━━━━━━━━━━━━━━"]
+        lines = [appearance.user_label('t.orders.hdr', appearance.DEFAULTS['t.orders.hdr']), "━━━━━━━━━━━━━━━"]
         for o in orders[:10]:
             status_fa = STATUS_FA.get(o[2], o[2])
             lines.append(f"🔹 سفارش #{o[0]} • {o[1]:,} ت • {status_fa}")

@@ -19,6 +19,7 @@ from keyboards import (
     credential_products_keyboard, freefire_products_keyboard, main_menu,
     pay_method_keyboard,
 )
+import appearance
 from payment_safety import checked_amount
 from text_safety import markdown_safe
 
@@ -145,45 +146,44 @@ def _clear_secrets(info):
 
 
 async def freefire_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        '🎮 *محصولات فری‌فایر*\n'
-        '━━━━━━━━━━━━━━━\n'
-        'روش خرید را انتخاب کن:\n\n'
-        '🆔 *جم با آیدی*\n'
-        '⚡ تحویل لحظه‌ای · قیمت پایین\n'
-        'فقط آیدی بازی را می‌فرستی و جم خودکار واریز می‌شود.\n\n'
-        '🔐 *جم با اطلاعات*\n'
-        '📅 عضویت هفتگی و ماهانه\n'
-        'با اطلاعات ورود اکانت، توسط پشتیبانی انجام می‌شود.'
-    )
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=freefire_products_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            text, parse_mode='Markdown', reply_markup=freefire_products_keyboard()
-        )
+    payload = appearance.message_kwargs('t.ff.hdr', appearance.DEFAULTS['t.ff.hdr'])
+    try:
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                **payload, reply_markup=freefire_products_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                **payload, reply_markup=freefire_products_keyboard()
+            )
+    except Exception:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                payload['text'], reply_markup=freefire_products_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                payload['text'], reply_markup=freefire_products_keyboard()
+            )
 
 
 async def credential_products_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     products = await asyncio.to_thread(get_gems_by_credentials)
-    text = (
-        '🔐 *جم با اطلاعات اکانت*\n'
-        '━━━━━━━━━━━━━━━\n'
-        'عضویت *هفتگی* یا *ماهانه* را انتخاب کن.\n'
-        'بعد از انتخاب بسته، تعداد را بفرست؛ سپس روش ورود ← شناسه ← رمز ← بک‌آپ.\n\n'
-        'راهنمای گرفتن بک‌آپ برای Gmail / Facebook / VK داخل چت می‌آید.\n'
-        '🔒 بعد از پرداخت، دسترسی به آیدی پشتیبان باز می‌شود.'
-    )
+    payload = appearance.message_kwargs('t.creds.hdr', appearance.DEFAULTS['t.creds.hdr'])
+    text = payload['text']
     if not products:
         text += '\n\n❌ فعلاً محصول فعالی وجود ندارد.'
+        payload['text'] = text
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        text, parse_mode='Markdown',
-        reply_markup=credential_products_keyboard(products),
-    )
+    try:
+        await update.callback_query.edit_message_text(
+            **payload, reply_markup=credential_products_keyboard(products),
+        )
+    except Exception:
+        await update.callback_query.edit_message_text(
+            text, reply_markup=credential_products_keyboard(products),
+        )
 
 
 async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -194,9 +194,10 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
     if not product or product[7] != 'by_credentials':
         await query.edit_message_text('❌ محصول پیدا نشد یا غیرفعال شده است.')
         return
+    title = appearance.user_label(f'c.{product_id}', product[1])
     plan = 'هفتگی' if product[6] == 'weekly' else 'ماهانه'
     text = (
-        f'🔐 *{markdown_safe(product[1], 120)}*\n'
+        f'🔐 *{markdown_safe(title, 120)}*\n'
         '━━━━━━━━━━━━━━━\n'
         f'📅 دوره: *{plan}*\n'
         f'💰 قیمت هر عدد: *{int(product[4]):,} تومان*\n'

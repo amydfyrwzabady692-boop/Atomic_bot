@@ -8,6 +8,7 @@ from keyboards import (
     main_menu, sens_platform_keyboard, sens_pc_packs_keyboard,
     pay_method_keyboard, updating_keyboard,
 )
+import appearance
 from db import (
     get_or_create_user, create_sense_order_atomic, get_wallet_balance,
     list_sense_packages, get_sense_package, get_bool_setting,
@@ -16,26 +17,26 @@ from payment_safety import checked_amount
 from text_safety import markdown_safe
 
 async def sens_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "✦ *پک سنس*\n"
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        "پلتفرم را انتخاب کن:"
-    )
+    payload = appearance.message_kwargs('t.sense.hdr', appearance.DEFAULTS['t.sense.hdr'])
     kb = sens_platform_keyboard()
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=kb
-        )
-    else:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
+    try:
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(**payload, reply_markup=kb)
+        else:
+            await update.message.reply_text(**payload, reply_markup=kb)
+    except Exception:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(payload['text'], reply_markup=kb)
+        else:
+            await update.message.reply_text(payload['text'], reply_markup=kb)
 
 
 async def sens_pc_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     lines = [
-        "✦ *پک سنس — PC*",
+        appearance.user_label('t.sense.pc', appearance.DEFAULTS['t.sense.pc']),
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
         "بسته را انتخاب کن:",
         "",
@@ -57,7 +58,7 @@ async def sens_mobile_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     packs = await asyncio.to_thread(list_sense_packages, 'mobile', active_only=True)
     if packs:
-        lines = ["✦ *پک سنس — موبایل*", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄", "بسته را انتخاب کن:", ""]
+        lines = [appearance.user_label('t.sense.mob', appearance.DEFAULTS['t.sense.mob']), "┄┄┄┄┄┄┄┄┄┄┄┄┄┄", "بسته را انتخاب کن:", ""]
         for p in packs:
             lines.append(f"• *{markdown_safe(p[1], 120)}* — {p[3]:,} تومان")
         await query.edit_message_text(

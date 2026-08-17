@@ -4,17 +4,28 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+import appearance
 from db import get_setting, simple_list
-from keyboards import main_menu
+from keyboards import _inline_btn, main_menu
 from text_safety import markdown_safe
 
 
 def _categories_keyboard(rows):
-    buttons = [
-        [InlineKeyboardButton(r[1], callback_data=f'storecat_{r[0]}')]
-        for r in rows if r[2]
-    ]
-    buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    buttons = []
+    for r in rows:
+        if not r[2]:
+            continue
+        key = f'sc.{r[0]}'
+        buttons.append([_inline_btn(
+            appearance.user_label(key, r[1]),
+            f'storecat_{r[0]}',
+            appearance.user_emoji(key),
+        )])
+    buttons.append([_inline_btn(
+        appearance.user_label('b.nav.home', '🔙 منوی اصلی'),
+        'home',
+        appearance.user_emoji('b.nav.home'),
+    )])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -26,18 +37,26 @@ async def store_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ),
     )
     active = [r for r in category_rows if r[2]]
+    pick = appearance.user_label('t.store.pick', appearance.DEFAULTS['t.store.pick'])
     text = f"🛍 *{markdown_safe(title, 120)}*\n━━━━━━━━━━━━━━━\n"
-    text += "دسته‌بندی را انتخاب کن:" if active else "فعلاً محصول فعالی ثبت نشده است."
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=_categories_keyboard(category_rows)
-        )
-    else:
-        await update.message.reply_text(
-            text, parse_mode='Markdown',
-            reply_markup=_categories_keyboard(category_rows) if active else main_menu(),
-        )
+    text += pick if active else "فعلاً محصول فعالی ثبت نشده است."
+    payload = appearance.with_emoji('t.store.pick', text)
+    markup = _categories_keyboard(category_rows) if active else main_menu()
+    try:
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                **payload, reply_markup=_categories_keyboard(category_rows)
+            )
+        else:
+            await update.message.reply_text(**payload, reply_markup=markup)
+    except Exception:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                text, reply_markup=_categories_keyboard(category_rows)
+            )
+        else:
+            await update.message.reply_text(text, reply_markup=markup)
 
 
 async def show_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -50,9 +69,15 @@ async def show_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'StoreProducts', ['Id', 'CategoryId', 'Title', 'Price', 'Stock', 'IsActive']
         ) if r[1] == category_id and r[5] and int(r[4] or 0) > 0
     ]
-    buttons = [[InlineKeyboardButton(
-        f'{p[2]} · {p[3]:,} ت', callback_data=f'storeprod_{p[0]}'
-    )] for p in products]
+    buttons = []
+    for p in products:
+        key = f'sp.{p[0]}'
+        title = appearance.user_label(key, p[2])
+        buttons.append([_inline_btn(
+            f'{title} · {p[3]:,} ت',
+            f'storeprod_{p[0]}',
+            appearance.user_emoji(key),
+        )])
     buttons.append([InlineKeyboardButton('🔙 دسته‌بندی‌ها', callback_data='store')])
     text = '📦 محصولات\n━━━━━━━━━━━━━━━\n'
     text += 'یک محصول را انتخاب کن:' if products else 'محصول فعالی در این دسته نیست.'

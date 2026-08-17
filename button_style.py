@@ -63,8 +63,12 @@ def _patch_init(cls):
     except AttributeError:
         accepts_style = False
 
-    def wrapped(self, text, *args, style=None, **kwargs):
+    def wrapped(self, text, *args, style=None, icon_custom_emoji_id=None, **kwargs):
         guessed = style or guess_style(text, kwargs.get('callback_data')) or 'primary'
+        if icon_custom_emoji_id:
+            extra = dict(kwargs.get('api_kwargs') or {})
+            extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
+            kwargs['api_kwargs'] = extra
         if accepts_style:
             orig(self, text, *args, style=guessed, **kwargs)
             return

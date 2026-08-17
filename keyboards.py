@@ -35,11 +35,27 @@ def _kbtn(key, default, style=None):
     )
 
 
+def _inline_btn(text, callback_data, icon_custom_emoji_id=None):
+    """دکمه اینلاین؛ ایموجی پریمیوم را بدون شکستن PTB قدیمی پاس می‌دهد."""
+    icon = str(icon_custom_emoji_id or '') or None
+    try:
+        if icon:
+            return InlineKeyboardButton(
+                text, callback_data=callback_data, icon_custom_emoji_id=icon,
+            )
+        return InlineKeyboardButton(text, callback_data=callback_data)
+    except TypeError:
+        kwargs = {'callback_data': callback_data}
+        if icon:
+            kwargs['api_kwargs'] = {'icon_custom_emoji_id': icon}
+        return InlineKeyboardButton(text, **kwargs)
+
+
 def _ibtn(key, default, callback_data):
-    return InlineKeyboardButton(
+    return _inline_btn(
         appearance.user_label(key, default),
-        callback_data=callback_data,
-        icon_custom_emoji_id=appearance.user_emoji(key) or None,
+        callback_data,
+        appearance.user_emoji(key),
     )
 
 GEM_PRODUCTS_PER_PAGE = 8
@@ -84,10 +100,10 @@ def credential_products_keyboard(products):
     for p in products:
         key = f'c.{p[0]}'
         title = appearance.user_label(key, p[1])
-        rows.append([InlineKeyboardButton(
+        rows.append([_inline_btn(
             f'{title} • {_fmt(p[4])} تومان',
-            callback_data=f'cred_product_{p[0]}',
-            icon_custom_emoji_id=appearance.user_emoji(key) or None,
+            f'cred_product_{p[0]}',
+            appearance.user_emoji(key),
         )])
     rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
     return InlineKeyboardMarkup(rows)
@@ -190,10 +206,10 @@ def sens_pc_packs_keyboard(packs):
         else:
             key, title, price = p[0], p[1], p[3]
         rows.append([
-            InlineKeyboardButton(
+            _inline_btn(
                 f"{appearance.user_label(f's.{key}', title)} — {price:,} ت",
-                callback_data=f"sens_buy_{key}",
-                icon_custom_emoji_id=appearance.user_emoji(f's.{key}') or None,
+                f"sens_buy_{key}",
+                appearance.user_emoji(f's.{key}'),
             )
         ])
     rows.append([InlineKeyboardButton('بازگشت', callback_data='sens')])
@@ -225,13 +241,9 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
         label = f"{auto} {title}  •  {_fmt(g[4])} تومان"
         if sold_out and not g[8]:
             label = f"❌ ناموجود — {title}"
-            buttons.append([InlineKeyboardButton(
-                label, callback_data='noop', icon_custom_emoji_id=icon,
-            )])
+            buttons.append([_inline_btn(label, 'noop', icon)])
         else:
-            buttons.append([InlineKeyboardButton(
-                label, callback_data=f'gem_{g[0]}', icon_custom_emoji_id=icon,
-            )])
+            buttons.append([_inline_btn(label, f'gem_{g[0]}', icon)])
     if total_pages > 1:
         nav = [
             InlineKeyboardButton(
@@ -283,10 +295,10 @@ def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=N
             label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} — پرداخت کامل'
         else:
             label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} ({bal:,} ت)'
-        rows.append([InlineKeyboardButton(
+        rows.append([_inline_btn(
             label,
-            callback_data=f'pay_wallet_{order_id}',
-            icon_custom_emoji_id=appearance.user_emoji('b.pay.wal') or None,
+            f'pay_wallet_{order_id}',
+            appearance.user_emoji('b.pay.wal'),
         )])
     rows.append([InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')])
     return InlineKeyboardMarkup(rows)

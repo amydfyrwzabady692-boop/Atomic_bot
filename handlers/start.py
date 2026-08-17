@@ -3,6 +3,7 @@ import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu
+import appearance
 from db import get_or_create_user, is_user_blocked, get_setting
 from admin_notify import is_admin, is_premium_admin, is_credential_admin
 
@@ -33,52 +34,37 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = user.first_name or 'کاربر'
     welcome = "🆕 خوش اومدی!" if is_new else "👋 خوش برگشتی!"
 
-    default_text = (
-        "✨ به اتومیک شاپ خوش اومدی! ✨\n\n"
-        "اینجا جاییه که سرعت، امنیت و قیمت مناسب کنار هم جمع شدن "
-        "تا خرید راحت‌تری داشته باشی 🚀\n\n"
-        "💎 خرید جم و محصولات بازی\n"
-        "🎯 پک‌های حرفه‌ای سنسیویتی موبایل و PC\n"
-        "💳 پرداخت امن با درگاه یا کارت‌به‌کارت\n"
-        "🎁 کدهای هدیه و تخفیف‌های ویژه\n"
-        "🧑‍💻 پشتیبانی مستقیم و پیگیری سفارش\n\n"
-        "تمام سفارش‌ها و پرداخت‌های تو از داخل ربات قابل مشاهده و پیگیری هستند.\n\n"
-        "👇 برای شروع، یکی از گزینه‌های منوی پایین را انتخاب کن.\n\n"
-        "⚛️ Atomic Shop"
+    stored = (await asyncio.to_thread(get_setting, 'welcome_text', '')).strip()
+    payload = appearance.message_kwargs(
+        't.welcome', stored or appearance.DEFAULTS['t.welcome']
     )
-    custom = (await asyncio.to_thread(get_setting, 'welcome_text', '')).strip()
-    text = custom.replace('{name}', name).replace('{welcome}', welcome) if custom else default_text
+    text = payload['text'].replace('{name}', name).replace('{welcome}', welcome)
     if admin:
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
     elif await asyncio.to_thread(is_credential_admin, user.id):
         text += "\n\n🔐 پشتیبان جم با اطلاعات: دستور `/credadmin` را بزن."
     elif bool(user.is_premium) and await asyncio.to_thread(is_premium_admin, user.id):
         text += "\n\n⭐ مدیر پریمیوم: دستور `/studio` را بزن."
+    payload['text'] = text
     try:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+        await update.message.reply_text(**payload, reply_markup=main_menu())
     except Exception:
         # متن سفارشی مدیر ممکن است Markdown نامعتبر داشته باشد؛ ربات نباید از کار بیفتد.
         await update.message.reply_text(text, reply_markup=main_menu())
 
 
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📋 *راهنمای Atomic Bot*\n"
-        "━━━━━━━━━━━━━━━\n"
-        "🎮 *محصولات فری‌فایر* — خرید با آیدی (فعال)\n"
-        "💰 *کیف پول* — شارژ و موجودی (فعال)\n"
-        "📦 *سفارش‌های من* — وضعیت سفارش‌ها\n"
-        "👤 *حساب من* — پروفایل و موجودی\n"
-        "🎧 *پشتیبانی* — پیام به ادمین\n\n"
-        "سایر بخش‌ها در حال بروزرسانی هستند.\n\n"
-        "⚠️ پرداخت زرین‌پال: لینک را *کپی* کن → VPN خاموش → در مرورگر باز کن.\n"
-        "🆔 دستور `/myid` آیدی عددی تلگرام تو را نشان می‌دهد."
-    )
+    payload = appearance.message_kwargs('t.help', appearance.DEFAULTS['t.help'])
+    text = payload['text']
     if is_admin(update.effective_user.id):
         text += "\n🛠 ادمین: `/admin`"
     elif is_credential_admin(update.effective_user.id):
         text += "\n🔐 پشتیبان جم با اطلاعات: `/credadmin`"
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+    payload['text'] = text
+    try:
+        await update.message.reply_text(**payload, reply_markup=main_menu())
+    except Exception:
+        await update.message.reply_text(text, reply_markup=main_menu())
 
 
 async def myid_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -98,5 +84,9 @@ async def myid_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def home_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("از منوی پایین یک گزینه انتخاب کن 👇")
+    payload = appearance.message_kwargs('t.home', appearance.DEFAULTS['t.home'])
+    try:
+        await query.edit_message_text(**payload)
+    except Exception:
+        await query.edit_message_text(payload.get('text') or 'از منوی پایین یک گزینه انتخاب کن 👇')
     await query.message.reply_text("منوی اصلی:", reply_markup=main_menu())

@@ -6,6 +6,7 @@ from telegram.ext import (
 )
 
 from keyboards import main_menu, support_cancel_keyboard, admin_ticket_keyboard
+import appearance
 from admin_notify import (
     notify_admin, notify_credential_admins, is_admin, is_credential_admin,
 )
@@ -52,23 +53,21 @@ async def support_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['support_category'] = 'bot'
     ctx.user_data.pop('support_order_id', None)
 
-    default_text = (
-        "🎧 *پشتیبانی Atomic*\n"
-        "━━━━━━━━━━━━━━━\n"
-        "پیامت را همین‌جا بفرست (متن).\n"
-        "ادمین در تلگرام می‌بیند و جواب می‌دهد.\n\n"
-        "برای انصراف /cancel"
+    stored = get_setting('support_text', '').strip()
+    payload = appearance.message_kwargs(
+        't.support', stored or appearance.DEFAULTS['t.support']
     )
-    text = get_setting('support_text', '').strip() or default_text
+    text = payload['text']
     from db import get_support_contact
     support = get_support_contact()
     if support.get('handle'):
         text += f"\n\n🎧 آیدی پشتیبانی:\n`{support['handle']}`"
+    payload['text'] = text
     if update.callback_query:
         await update.callback_query.answer()
         try:
             await update.callback_query.edit_message_text(
-                text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
+                **payload, reply_markup=support_cancel_keyboard()
             )
         except Exception:
             await update.callback_query.edit_message_text(
@@ -77,7 +76,7 @@ async def support_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         try:
             await update.message.reply_text(
-                text, parse_mode='Markdown', reply_markup=support_cancel_keyboard()
+                **payload, reply_markup=support_cancel_keyboard()
             )
         except Exception:
             await update.message.reply_text(text, reply_markup=support_cancel_keyboard())
@@ -223,7 +222,7 @@ async def support_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def support_conversation_handler():
     return ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex('^🎧 پشتیبانی$'), support_menu),
+            MessageHandler(appearance.MenuActionFilter('support'), support_menu),
             CallbackQueryHandler(support_menu, pattern='^support$'),
             CallbackQueryHandler(
                 credential_support_ticket_start, pattern=r'^cred_ticket_\d+$'

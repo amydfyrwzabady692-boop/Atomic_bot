@@ -8,6 +8,7 @@ from telegram.ext import (
 )
 
 import g2bulk
+import appearance
 from keyboards import (
     gems_list_keyboard, gem_detail_keyboard, gem_cancel_keyboard,
     gem_confirm_keyboard, pay_method_keyboard, main_menu,
@@ -28,11 +29,8 @@ ID_ZARINPAL_INSTANT_NOTE = (
     'جم به‌صورت آنی به اکانتت واریز می‌شود.'
 )
 
-_MENU_BUTTONS = {
-    '💎 جم فری‌فایر', '🎮 محصولات فری‌فایر', '💰 کیف پول',
-    '📦 سفارش‌های من', '👤 حساب من',
-    '🛍 فروشگاه اکانت', '🎯 پک سنس', '🛒 سبد خرید', '🎧 پشتیبانی',
-}
+def _is_menu_tap(text):
+    return (text or '').strip() in appearance.all_menu_labels()
 
 
 def _md_escape(text):
@@ -69,21 +67,29 @@ async def gems_by_id_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         (len(gems) + GEM_PRODUCTS_PER_PAGE - 1) // GEM_PRODUCTS_PER_PAGE,
     )
     page = max(1, min(page, total_pages))
-    text = (
-        "🆔 *جم فری‌فایر با آیدی*\n"
-        f"بسته موردنظرت را انتخاب کن — صفحه {page} از {total_pages} 👇"
+    payload = appearance.message_kwargs(
+        't.gems.hdr', appearance.DEFAULTS['t.gems.hdr'],
+        page=page, total=total_pages,
     )
+    text = payload['text']
     if not gems:
-        text += "❌ فعلاً بسته‌ای فعال نیست. کمی بعد دوباره سر بزن."
+        text += "\n❌ فعلاً بسته‌ای فعال نیست. کمی بعد دوباره سر بزن."
+        payload['text'] = text
         kb = gem_cancel_keyboard()
     else:
         kb = gems_list_keyboard(gems, page=page)
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
+        try:
+            await update.callback_query.edit_message_text(**payload, reply_markup=kb)
+        except Exception:
+            await update.callback_query.edit_message_text(text, reply_markup=kb)
     else:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
+        try:
+            await update.message.reply_text(**payload, reply_markup=kb)
+        except Exception:
+            await update.message.reply_text(text, reply_markup=kb)
 
 
 async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -99,6 +105,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total = g[2] + (g[3] or 0)
     bonus = f"  (+{g[3]:,} هدیه 🎁)" if g[3] else ""
     catalogue_name = str(g[9] or g[2]).strip()
+    title = appearance.user_label(f'g.{pk}', g[1])
     if catalogue_name.isdigit():
         product_line = f"🔢 مقدار: *{total:,} الماس*{bonus}"
     elif catalogue_name.startswith('Level Up Package'):
@@ -118,7 +125,7 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     deliver = "⚡️ تحویل آنی (خودکار)" if g[8] else "⏳ تحویل دستی پس از تایید"
     text = (
-        f"🎮 *{markdown_safe(g[1], 120)}*\n"
+        f"🎮 *{markdown_safe(title, 120)}*\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{product_line}\n"
         f"🚚 {deliver}\n"
@@ -174,7 +181,7 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'catalogue': g[9] or str(g[2]),
     }
     await query.edit_message_text(
-        f"🆔 *ثبت سفارش — {markdown_safe(g[1], 120)}*\n"
+        f"🆔 *ثبت سفارش — {markdown_safe(appearance.user_label(f'g.{pk}', g[1]), 120)}*\n"
         "━━━━━━━━━━━━━━━\n"
         "آیدی فری‌فایر (UID) را بفرست.\n"
         "_(عددی در پروفایل بازی، معمولاً حدود ۱۰ رقم)_",
@@ -186,7 +193,7 @@ async def gem_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def gem_get_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = (update.message.text or '').strip()
-    if uid in _MENU_BUTTONS:
+    if uid in appearance.all_menu_labels() or _is_menu_tap(uid):
         ctx.user_data.pop('gem_buy', None)
         await update.message.reply_text("✖️ ثبت سفارش لغو شد.", reply_markup=main_menu())
         return ConversationHandler.END
