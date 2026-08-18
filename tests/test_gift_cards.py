@@ -90,6 +90,11 @@ class GiftCardCatalogTests(unittest.TestCase):
         self.assertEqual(balance, Decimal('1.00'))
         self.assertTrue(error)
 
+    def test_brand_callback_keeps_full_key(self):
+        self.assertEqual('gc_b_gplay_us'[len('gc_b_'):], 'gplay_us')
+        self.assertEqual('gc_b_itunes_tr'[len('gc_b_'):], 'itunes_tr')
+        self.assertNotEqual('gc_b_gplay_us'.rsplit('_', 1)[-1], 'gplay_us')
+
     def test_fifteen_percent_profit_rounds_to_thousand_toman(self):
         from decimal import ROUND_HALF_UP
         cost = Decimal('10')

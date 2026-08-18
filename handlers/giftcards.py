@@ -25,6 +25,17 @@ from payment_safety import checked_amount
 from text_safety import markdown_safe
 
 _BRANDS = g2bulk.GIFT_CARD_BRAND_ORDER
+_BRAND_PREFIX = 'gc_b_'
+
+
+def parse_gift_brand(data):
+    """کلید کامل دسته را برمی‌گرداند؛ gc_b_gplay_us → gplay_us نه us."""
+    raw = str(data or '')
+    if raw.startswith(_BRAND_PREFIX):
+        brand = raw[len(_BRAND_PREFIX):]
+        if brand in _BRANDS:
+            return brand
+    return None
 
 
 async def giftcard_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -57,8 +68,8 @@ async def giftcard_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def giftcard_brand(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    brand = query.data.rsplit('_', 1)[-1]
-    if brand not in _BRANDS:
+    brand = parse_gift_brand(query.data)
+    if not brand:
         await query.edit_message_text('❌ این دسته گیفت‌کارت معتبر نیست.')
         return
     catalog = await asyncio.to_thread(priced_gift_cards, brand=brand)
