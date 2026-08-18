@@ -74,11 +74,61 @@ def main_menu():
              _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
             [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
              _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
+            [_kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
             [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
         ],
         resize_keyboard=True,
         input_field_placeholder='از منوی پایین انتخاب کن…',
     )
+
+
+def giftcard_menu_keyboard(catalog=None):
+    rows = []
+    brands = (catalog or {}).get('brands') or {}
+    for brand in (
+        'gplay_us', 'itunes_us', 'itunes_tr', 'gplay_tr',
+    ):
+        title = appearance.user_label(
+            f'b.gc.{brand}',
+            {
+                'gplay_us': '🇺🇸 گوگل‌پلی آمریکا',
+                'itunes_us': '🇺🇸 آیتونز آمریکا',
+                'itunes_tr': '🇹🇷 آیتونز ترکیه',
+                'gplay_tr': '🇹🇷 گوگل‌پلی ترکیه',
+            }[brand],
+        )
+        items = brands.get(brand) or []
+        live = sum(1 for item in items if item.get('can_buy'))
+        suffix = f' · {live} موجود' if items else ''
+        rows.append([_inline_btn(f'{title}{suffix}', f'gc_b_{brand}')])
+    rows.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    return InlineKeyboardMarkup(rows)
+
+
+def giftcard_list_keyboard(brand, items):
+    rows = []
+    for item in items or []:
+        face = item.get('face_label') or item.get('title')
+        price = int(item.get('sale_toman') or 0)
+        if item.get('can_buy') and price > 0:
+            rows.append([_inline_btn(
+                f'{face}  •  {_fmt(price)} تومان',
+                f'gc_p_{item["id"]}',
+            )])
+        else:
+            rows.append([_inline_btn(
+                f'❌ ناموجود — {face}',
+                'noop',
+            )])
+    rows.append([InlineKeyboardButton('🔙 دسته‌ها', callback_data='gc_home')])
+    return InlineKeyboardMarkup(rows)
+
+
+def giftcard_buy_keyboard(product_id, brand):
+    return InlineKeyboardMarkup([
+        [_inline_btn('✅ خرید این گیفت‌کارت', f'gc_buy_{int(product_id)}')],
+        [InlineKeyboardButton('🔙 بازگشت به لیست', callback_data=f'gc_b_{brand}')],
+    ])
 
 
 def updating_keyboard(back='home'):
@@ -584,6 +634,7 @@ def admin_shop_keyboard():
             InlineKeyboardButton('🎁 کد هدیه', callback_data='admx_gift'),
             InlineKeyboardButton('🏷 کد تخفیف', callback_data='admx_discount'),
         ],
+        [InlineKeyboardButton('🎁 گیفت‌کارت G2B', callback_data='admx_giftcards')],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 
@@ -622,6 +673,7 @@ def admin_pricing_keyboard():
     """هاب قیمت‌گذاری: بهای دلاری + درصد سود جدا برای آیدی / هفتگی / ماهانه."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('💎 سود جم با آیدی', callback_data='admi_gemprofit')],
+        [InlineKeyboardButton('🎁 سود گیفت‌کارت', callback_data='admi_giftprofit')],
         [
             InlineKeyboardButton('📅 سود هفتگی', callback_data='admi_credprofit_weekly'),
             InlineKeyboardButton('📆 سود ماهانه', callback_data='admi_credprofit_monthly'),

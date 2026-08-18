@@ -3,6 +3,7 @@
 جدول‌ها و ستون‌ها PascalCase هستند و داخل گیومه قرار می‌گیرند.
 """
 import os
+import json
 import logging
 import threading
 from decimal import Decimal, InvalidOperation
@@ -419,6 +420,310 @@ def create_sense_order_atomic(user_db_id, package_id, expected_price, *,
         except Exception:
             conn.rollback()
             raise
+
+
+def giftcard_profit_percent():
+    raw = str(get_setting('giftcard_profit_percent', '15') or '15')
+    try:
+        value = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
+    except (TypeError, ValueError):
+        value = 15
+    return max(1, min(200, value))
+
+
+def _gift_card_sale_toman(cost_usd, rate, profit=None):
+    return compute_gem_sale_price(
+        cost_usd, rate, profit if profit is not None else giftcard_profit_percent()
+    )
+
+
+def _gift_codes_from_row(raw):
+    text = str(raw or '').strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return [str(item).strip() for item in data if str(item).strip()]
+    except (TypeError, ValueError):
+        pass
+    return [text] if text else []
+
+
+def priced_gift_cards(*, brand=None, force=False):
+    """لیست گیفت‌کارت با قیمت تومنی و وضعیت موجودی زنده."""
+    fx = profitability.get_usd_toman_rate(force=force)
+    if not fx.get('ok'):
+        return {
+            'ok': False,
+            'error': fx.get('error') or 'نرخ دلار در دسترس نیست.',
+            'items': [],
+            'brands': {},
+            'profit_percent': giftcard_profit_percent(),
+        }
+    catalog = g2bulk.list_gift_card_products(force=force)
+    if not catalog.get('ok'):
+        return {
+            'ok': False,
+            'error': catalog.get('error') or 'کاتالوگ گیفت‌کارت در دسترس نیست.',
+            'items': [],
+            'brands': {},
+            'profit_percent': giftcard_profit_percent(),
+        }
+    profit = giftcard_profit_percent()
+    rate = int(fx['rate'])
+    snapshot = g2bulk.get_inventory_snapshot(force=False)
+    balance = snapshot.get('balance') if snapshot.get('ok') else None
+    wanted = str(brand or '').strip()
+    items = []
+    brands = {key: [] for key in g2bulk.GIFT_CARD_BRAND_ORDER}
+    for row in catalog.get('items') or []:
+        if wanted and row['brand'] != wanted:
+            continue
+        sale = _gift_card_sale_toman(row['unit_price'], rate, profit)
+        can_buy = bool(
+            row.get('in_stock')
+            and g2bulk.is_configured()
+            and balance is not None
+            and Decimal(str(balance)) >= Decimal(str(row['unit_price']))
+        )
+        priced = {
+            **row,
+            'sale_toman': sale,
+            'can_buy': can_buy,
+            'usd_toman_rate': rate,
+            'profit_percent': profit,
+        }
+        items.append(priced)
+        brands.setdefault(row['brand'], []).append(priced)
+    return {
+        'ok': True,
+        'items': items,
+        'brands': brands,
+        'profit_percent': profit,
+        'usd_toman_rate': rate,
+        'balance': balance,
+        'fx_fallback': bool(fx.get('fallback')),
+    }
+
+
+def get_priced_gift_card(product_id, force=False):
+    catalog = priced_gift_cards(force=force)
+    if not catalog.get('ok'):
+        return catalog
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'شناسه گیفت‌کارت نامعتبر است.'}
+    for row in catalog.get('items') or []:
+        if int(row['id']) == product_id:
+            return {'ok': True, **row, 'profit_percent': catalog['profit_percent']}
+    return {'ok': False, 'error': 'این گیفت‌کارت پیدا نشد یا از کاتالوگ خارج شده است.'}
+
+
+def create_gift_card_order_atomic(
+    user_db_id, product_id, expected_price, *, telegram_id='', full_name='',
+):
+    """ثبت سفارش گیفت با قفل قیمت/موجودی زنده؛ بدون ساخت سفارش اگر موجود نباشد."""
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    live = get_priced_gift_card(product_id, force=True)
+    if not live.get('ok'):
+        raise ValueError(live.get('error') or 'گیفت‌کارت در دسترس نیست.')
+    if not live.get('can_buy'):
+        raise ValueError('موجودی این گیفت‌کارت تمام شده یا سرویس تأمین کافی نیست.')
+    price = checked_amount(live['sale_toman'], label='قیمت گیفت‌کارت')
+    if price != expected_price:
+        raise ValueError('قیمت گیفت‌کارت تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
+    brand_title = live['brand_title']
+    face_label = live['face_label']
+    title = f"{brand_title} — {face_label}"
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            order_id = _insert_pending_order(
+                cur, user_db_id, price, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId", "ProductId", "ProductName", "Price", "Quantity") '
+                'VALUES (%s, NULL, %s, %s, 1) RETURNING "Id"',
+                (order_id, title, price),
+            )
+            item_id = cur.fetchone()[0]
+            cur.execute(
+                'INSERT INTO "GiftCardOrders" '
+                '("OrderId","OrderItemId","Brand","G2ProductId","ProductTitle",'
+                '"FaceLabel","CostUsd","SaleToman","UsdTomanRate","G2Status") '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,\'\')',
+                (
+                    order_id, item_id, live['brand'], int(live['id']),
+                    live['title'], face_label, str(live['unit_price']),
+                    price, int(live['usd_toman_rate']),
+                ),
+            )
+            conn.commit()
+            return order_id, title, price
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def get_gift_card_order(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","OrderId","Brand","G2ProductId","ProductTitle","FaceLabel",'
+            '"CostUsd","SaleToman","UsdTomanRate","G2OrderId","G2Status","DeliveryCodes" '
+            'FROM "GiftCardOrders" WHERE "OrderId"=%s',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    brand = row[2]
+    return {
+        'id': row[0],
+        'order_id': row[1],
+        'brand': brand,
+        'brand_title': g2bulk.gift_card_brand_title(brand),
+        'product_id': row[3],
+        'product_title': row[4],
+        'face_label': row[5],
+        'cost_usd': row[6],
+        'sale_toman': row[7],
+        'usd_toman_rate': row[8],
+        'g2_order_id': row[9],
+        'g2_status': str(row[10] or '').upper(),
+        'codes': _gift_codes_from_row(row[11]),
+    }
+
+
+def gift_card_user_delivery_text(order_id):
+    info = get_gift_card_order(order_id)
+    if not info:
+        return None
+    codes = info.get('codes') or []
+    if not codes:
+        return (
+            f"✅ سفارش #{order_id} پرداخت شد و گیفت‌کارت در حال صدور است.\n"
+            f"🎁 {info['brand_title']} — {info['face_label']}\n"
+            "کد به‌محض آماده شدن برایت ارسال می‌شود."
+        )
+    code_lines = '\n'.join(codes)
+    return (
+        f"✅ سفارش #{order_id} تحویل شد\n"
+        f"🎁 {info['brand_title']} — {info['face_label']}\n"
+        f"مبلغ پرداختی: {int(info['sale_toman']):,} تومان\n\n"
+        f"کد گیفت‌کارت:\n{code_lines}\n\n"
+        "این کد را در همان فروشگاه منطقه‌ای که خریدی وارد کن."
+    )
+
+
+def update_gift_card_g2(gift_id, *, order_id_g2=None, status=None, codes=None):
+    with get_conn() as conn, conn.cursor() as cur:
+        fields = ['"UpdatedAt"=now()']
+        values = []
+        if order_id_g2 is not None:
+            fields.append('"G2OrderId"=%s')
+            values.append(str(order_id_g2))
+        if status is not None:
+            fields.append('"G2Status"=%s')
+            values.append(str(status))
+        if codes is not None:
+            fields.append('"DeliveryCodes"=%s')
+            values.append(json.dumps(list(codes), ensure_ascii=False))
+        values.append(int(gift_id))
+        cur.execute(
+            f'UPDATE "GiftCardOrders" SET {", ".join(fields)} WHERE "Id"=%s',
+            values,
+        )
+        conn.commit()
+
+
+def claim_gift_card_submission(gift_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "GiftCardOrders" SET '
+            '"G2Status"=\'SUBMITTING\',"UpdatedAt"=now() '
+            'WHERE "Id"=%s AND "G2OrderId" IS NULL '
+            'AND COALESCE("G2Status",\'\')=\'\' '
+            'RETURNING "Id"',
+            (int(gift_id),),
+        )
+        claimed = bool(cur.fetchone())
+        conn.commit()
+        return claimed
+
+
+def _fulfill_gift_card(order_id, gift):
+    """تحویل کد گیفت پس از اثبات پرداخت؛ خرید جم را صدا نمی‌زند."""
+    status = str(gift.get('g2_status') or '').upper()
+    if status == 'COMPLETED' and gift.get('codes'):
+        update_order_status(order_id, 'delivered')
+        return True, 'delivered'
+    if gift.get('g2_order_id') and status in {'PENDING', 'PROCESSING', 'SUBMITTING'}:
+        live = g2bulk.poll_gift_card_delivery(gift['g2_order_id'])
+        if live.get('ok') and live.get('status') == 'COMPLETED' and live.get('codes'):
+            update_gift_card_g2(
+                gift['id'],
+                order_id_g2=live.get('order_id') or gift['g2_order_id'],
+                status='COMPLETED',
+                codes=live['codes'],
+            )
+            update_order_status(order_id, 'delivered')
+            return True, 'delivered'
+        if live.get('refunded') or live.get('status') == 'FAILED':
+            update_gift_card_g2(gift['id'], status='FAILED')
+            ok_refund, refunded = _refund_failed_order(order_id)
+            if ok_refund:
+                return False, f'refunded:{int(refunded)}'
+            return False, live.get('error') or 'تحویل گیفت‌کارت ناموفق بود.'
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+
+    available, cost, _balance, error = g2bulk.can_fulfill_gift_card(
+        gift['product_id'], force=True
+    )
+    if not available:
+        update_gift_card_g2(gift['id'], status='REJECTED')
+        ok_refund, refunded = _refund_failed_order(order_id)
+        if ok_refund:
+            return False, f'refunded:{int(refunded)}'
+        return False, error or 'موجودی گیفت‌کارت کافی نیست.'
+
+    if not claim_gift_card_submission(gift['id']):
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+
+    result = g2bulk.purchase_gift_card(
+        gift['product_id'],
+        idempotency_key=g2bulk.gift_card_idempotency_key(order_id, gift['id']),
+    )
+    if result.get('ok') and result.get('status') == 'COMPLETED' and result.get('codes'):
+        update_gift_card_g2(
+            gift['id'],
+            order_id_g2=result.get('order_id'),
+            status='COMPLETED',
+            codes=result['codes'],
+        )
+        update_order_status(order_id, 'delivered')
+        return True, 'delivered'
+    if result.get('ok') and result.get('order_id'):
+        update_gift_card_g2(
+            gift['id'],
+            order_id_g2=result['order_id'],
+            status=result.get('status') or 'PENDING',
+        )
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+    if result.get('uncertain'):
+        update_gift_card_g2(gift['id'], status='SUBMIT_UNKNOWN')
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+    update_gift_card_g2(gift['id'], status='REJECTED')
+    ok_refund, refunded = _refund_failed_order(order_id)
+    if ok_refund:
+        return False, f'refunded:{int(refunded)}'
+    return False, result.get('error') or 'خرید گیفت‌کارت ناموفق بود.'
 
 
 def set_order_authority(order_id, authority, payment_method='zarinpal',
@@ -1588,6 +1893,9 @@ def fulfill_order(order_id):
             update_order_status(order_id, 'processing')
 
             infos = get_gem_infos_for_order(order_id)
+            gift = get_gift_card_order(order_id)
+            if gift and not infos:
+                return _fulfill_gift_card(order_id, gift)
             if not infos and is_sense_order(order_id):
                 update_order_status(order_id, 'delivered')
                 return True, 'sense_manual'
@@ -2360,6 +2668,9 @@ def ensure_admin_schema():
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('giftcard_profit_percent','15',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('credential_weekly_cost_usd','1.328',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
@@ -2496,6 +2807,28 @@ def ensure_admin_schema():
             "SortOrder" INTEGER NOT NULL DEFAULT 0,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''CREATE TABLE IF NOT EXISTS "GiftCardOrders" (
+            "Id" SERIAL PRIMARY KEY,
+            "OrderId" INTEGER NOT NULL UNIQUE REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "OrderItemId" INTEGER REFERENCES "OrderItems"("Id") ON DELETE SET NULL,
+            "Brand" VARCHAR(32) NOT NULL,
+            "G2ProductId" INTEGER NOT NULL,
+            "ProductTitle" VARCHAR(255) NOT NULL,
+            "FaceLabel" VARCHAR(80) NOT NULL DEFAULT '',
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+            "UsdTomanRate" INTEGER,
+            "G2OrderId" VARCHAR(50),
+            "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+            "DeliveryCodes" TEXT NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_giftcard_orders_status
+           ON "GiftCardOrders" ("G2Status")''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('giftcard_profit_percent','15',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''CREATE TABLE IF NOT EXISTS "PromoCodes" (
             "Id" SERIAL PRIMARY KEY,
             "Code" VARCHAR(80) UNIQUE NOT NULL,
@@ -4584,7 +4917,11 @@ def list_processing_auto_orders(limit=50):
             'AND p."AutoDeliver"=true AND (g."G2BulkOrderId" IS NOT NULL '
             'OR COALESCE(g."G2BulkStatus",\'\') '
             'IN (\'SUBMITTING\',\'SUBMIT_UNKNOWN\',\'FAILED\',\'REJECTED\')) '
-            'ORDER BY o."Id" LIMIT %s',
+            'UNION '
+            'SELECT DISTINCT o."Id" FROM "Orders" o '
+            'JOIN "GiftCardOrders" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
+            'ORDER BY 1 LIMIT %s',
             (max(1, min(int(limit), 100)),),
         )
         return [int(row[0]) for row in cur.fetchall()]
@@ -4640,7 +4977,19 @@ def list_unnotified_auto_deliveries(limit=50):
             'AND g."G2BulkStatus"=\'COMPLETED\' '
             'AND (o."DeliveryUserNotifiedAt" IS NULL '
             'OR o."DeliveryAdminNotifiedAt" IS NULL) '
-            'ORDER BY o."Id" LIMIT %s',
+            'UNION '
+            'SELECT DISTINCT o."Id",o."TelegramId",'
+            '(o."DeliveryUserNotifiedAt" IS NOT NULL),'
+            '(o."DeliveryAdminNotifiedAt" IS NOT NULL) '
+            'FROM "Orders" o '
+            'JOIN "GiftCardOrders" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'delivered\',\'completed\') '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND g."G2Status"=\'COMPLETED\' '
+            'AND COALESCE(g."DeliveryCodes",\'\') <> \'\' '
+            'AND (o."DeliveryUserNotifiedAt" IS NULL '
+            'OR o."DeliveryAdminNotifiedAt" IS NULL) '
+            'ORDER BY 1 LIMIT %s',
             (max(1, min(int(limit), 100)),),
         )
         return cur.fetchall()

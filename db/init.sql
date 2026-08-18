@@ -265,3 +265,24 @@ WHERE NOT EXISTS (
     SELECT 1 FROM "GemPackages" p
     WHERE p."PurchaseType"='by_credentials' AND p."PlanType"=seed.plan_type
 );
+
+CREATE TABLE IF NOT EXISTS "GiftCardOrders" (
+    "Id" SERIAL PRIMARY KEY,
+    "OrderId" INTEGER NOT NULL UNIQUE REFERENCES "Orders"("Id") ON DELETE CASCADE,
+    "OrderItemId" INTEGER REFERENCES "OrderItems"("Id") ON DELETE SET NULL,
+    "Brand" VARCHAR(32) NOT NULL,
+    "G2ProductId" INTEGER NOT NULL,
+    "ProductTitle" VARCHAR(255) NOT NULL,
+    "FaceLabel" VARCHAR(80) NOT NULL DEFAULT '',
+    "CostUsd" NUMERIC(18,6) NOT NULL,
+    "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+    "UsdTomanRate" INTEGER,
+    "G2OrderId" VARCHAR(50),
+    "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+    "DeliveryCodes" TEXT NOT NULL DEFAULT '',
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+VALUES ('giftcard_profit_percent','15',now())
+ON CONFLICT ("Key") DO NOTHING;

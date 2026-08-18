@@ -40,6 +40,7 @@ from db import (
     get_credential_pricing_config, compute_gem_sale_price,
     get_credential_support_contact, count_open_tickets, list_credential_admins,
     set_credential_support_from_admin, get_user_profile,
+    priced_gift_cards, giftcard_profit_percent,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from handlers.site_panel import site_ops_counts
@@ -934,6 +935,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'آخرین سینک خودکار: `{_md_safe(str(last_sync)[:19], 40)}`\n\n'
             f'💎 جم با آیدی — سود: *{gem_profit}٪*\n'
             f'(بهای دلاری از کاتالوگ G2B هر ۲۴ ساعت)\n\n'
+            f'🎁 گیفت‌کارت — سود: *{giftcard_profit_percent()}٪*\n'
+            f'(قیمت تومنی زنده از موجودی و نرخ دلار)\n\n'
             f'📅 *هفتگی با اطلاعات*\n'
             f'بهای دلاری: *${cfg["weekly_cost"]}*\n'
             f'سود شما: *{cfg["weekly_profit"]}٪*\n'
@@ -1155,6 +1158,40 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, text, [
             _back('admx_pricing'),
         ], markdown=False)
+    elif data == 'admx_giftcards':
+        catalog = await asyncio.to_thread(priced_gift_cards, force=True)
+        profit = giftcard_profit_percent()
+        lines = [
+            '🎁 *گیفت‌کارت G2Bulk*',
+            f'سود فروش: *{profit}٪*',
+            'قیمت کاربر فقط تومان است. اگر موجودی/استوک صفر باشد خرید بسته می‌شود.',
+            '━━━━━━━━━━━━━━━',
+        ]
+        if not catalog.get('ok'):
+            lines.append(f'❌ {catalog.get("error") or "کاتالوگ در دسترس نیست."}')
+        else:
+            rate = int(catalog.get('usd_toman_rate') or 0)
+            lines.append(f'نرخ دلار: *{rate:,}* تومان')
+            for brand in ('gplay_us', 'itunes_us', 'itunes_tr', 'gplay_tr'):
+                title = g2bulk.gift_card_brand_title(brand)
+                items = (catalog.get('brands') or {}).get(brand) or []
+                live = sum(1 for item in items if item.get('can_buy'))
+                lines.append(f'\n*{_md_safe(title)}* — {live}/{len(items)} قابل فروش')
+                for item in items[:8]:
+                    mark = '✅' if item.get('can_buy') else '❌'
+                    lines.append(
+                        f'{mark} {_md_safe(item.get("face_label") or item.get("title"), 40)}'
+                        f' · *{int(item["sale_toman"]):,}* ت'
+                    )
+                if len(items) > 8:
+                    lines.append('…')
+        buttons = [
+            [InlineKeyboardButton('✏️ تغییر سود گیفت‌کارت', callback_data='admi_giftprofit')],
+            [InlineKeyboardButton('🔄 بروزرسانی موجودی', callback_data='admx_giftcards')],
+            [InlineKeyboardButton('💱 قیمت‌گذاری', callback_data='admx_pricing')],
+            _back('admx_shop'),
+        ]
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_profit':
         current_fx = await asyncio.to_thread(
             profitability.get_usd_toman_rate, True
@@ -1905,6 +1942,10 @@ INPUT_ACTIONS = {
         'setting:gem_profit_percent',
         'درصد سود بسته‌های جم با آیدی را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
     ),
+    'admi_giftprofit': (
+        'setting:giftcard_profit_percent',
+        'درصد سود گیفت‌کارت را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 15',
+    ),
     'admi_credprofit_weekly': (
         'setting:credential_weekly_profit_percent',
         'درصد سود عضویت هفتگی (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 40',
@@ -2095,6 +2136,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 raw = str(threshold)
             if key in (
                 'gem_profit_percent',
+                'giftcard_profit_percent',
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',
@@ -2141,6 +2183,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             pricing_keys = {
                 'gem_profit_percent',
+                'giftcard_profit_percent',
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',

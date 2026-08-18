@@ -25,6 +25,7 @@ from handlers.gem_credentials import (
 )
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
+from handlers.giftcards import giftcard_menu, giftcard_brand, giftcard_show, giftcard_buy
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
     start_card, pay_wallet, cancel_order, change_payment_method,
@@ -70,7 +71,7 @@ from db import (
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
     admin_operations_snapshot, get_bool_setting, get_setting,
-    open_db_pool, close_db_pool,
+    open_db_pool, close_db_pool, gift_card_user_delivery_text,
 )
 from payments import verify_payment_detailed
 from webapp import start_web_server
@@ -93,6 +94,7 @@ MENU_ACTIONS = {
     'account': my_account,
     'store': store_menu,
     'sense': sens_menu,
+    'giftcards': giftcard_menu,
     'cart': show_cart,
 }
 
@@ -273,11 +275,16 @@ async def _g2_reconcile_loop(app):
                 if not user_done:
                     if telegram_id:
                         try:
+                            gift_text = await asyncio.to_thread(
+                                gift_card_user_delivery_text, order_id
+                            )
                             await app.bot.send_message(
                                 chat_id=int(telegram_id),
                                 text=(
-                                    f"✅ سفارش #{order_id} با موفقیت انجام شد.\n"
-                                    "💎 جم توسط سرویس تأمین به اکانتت واریز شد."
+                                    gift_text or (
+                                        f"✅ سفارش #{order_id} با موفقیت انجام شد.\n"
+                                        "💎 جم توسط سرویس تأمین به اکانتت واریز شد."
+                                    )
                                 ),
                             )
                             await asyncio.to_thread(
@@ -592,6 +599,10 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
+    app.add_handler(CallbackQueryHandler(giftcard_menu, pattern=r'^gc_home$'))
+    app.add_handler(CallbackQueryHandler(giftcard_brand, pattern=r'^gc_b_(?:gplay_us|itunes_us|itunes_tr|gplay_tr)$'))
+    app.add_handler(CallbackQueryHandler(giftcard_show, pattern=r'^gc_p_\d+$'))
+    app.add_handler(CallbackQueryHandler(giftcard_buy, pattern=r'^gc_buy_\d+$'))
 
     app.add_handler(CallbackQueryHandler(start_zarinpal, pattern=r'^pay_zp_\d+$'))
     app.add_handler(CallbackQueryHandler(check_zarinpal, pattern=r'^zp_check_\d+$'))

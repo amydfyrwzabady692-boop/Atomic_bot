@@ -275,6 +275,253 @@ def get_itunes_turkey_costs(force=False):
     return result
 
 
+GIFT_CARD_BRANDS = {
+    'gplay_us': {
+        'title': 'گوگل‌پلی آمریکا',
+        'category_ids': {86},
+        'category_names': ('google play usa',),
+    },
+    'itunes_us': {
+        'title': 'آیتونز آمریکا',
+        'category_ids': {3},
+        'category_names': ('itunes usa',),
+    },
+    'itunes_tr': {
+        'title': 'آیتونز ترکیه',
+        'category_ids': {95},
+        'category_names': ('apple itunes turkey', 'itunes turkey'),
+    },
+    'gplay_tr': {
+        'title': 'گوگل‌پلی ترکیه',
+        'category_ids': {83},
+        'category_names': ('google play turkey',),
+    },
+}
+GIFT_CARD_BRAND_ORDER = ('gplay_us', 'itunes_us', 'itunes_tr', 'gplay_tr')
+_gift_catalog_cache = {'at': 0.0, 'value': None}
+_GIFT_CATALOG_CACHE_SECONDS = 90
+
+
+def gift_card_brand_title(brand):
+    info = GIFT_CARD_BRANDS.get(str(brand or '').strip())
+    return (info or {}).get('title') or str(brand or '')
+
+
+def _parse_gift_face(title):
+    text = str(title or '')
+    match = re.search(r'(\d+)\s*TRY\b', text, re.I)
+    if match:
+        amount = int(match.group(1))
+        return amount, 'TRY', f'{amount:,} لیر'
+    match = re.search(r'(\d+)\s*USD\b', text, re.I)
+    if match:
+        amount = int(match.group(1))
+        return amount, 'USD', f'{amount:,} دلار'
+    match = re.search(r'(\d+)\s*\$', text)
+    if match:
+        amount = int(match.group(1))
+        return amount, 'USD', f'{amount:,} دلار'
+    return None, '', text.strip()
+
+
+def _gift_brand_for_product(item):
+    try:
+        category_id = int(item.get('category_id') or 0)
+    except (TypeError, ValueError):
+        category_id = 0
+    category = _normalise_catalogue_name(item.get('category_title'))
+    for brand, info in GIFT_CARD_BRANDS.items():
+        if category_id in info['category_ids']:
+            return brand
+        if category in info['category_names']:
+            return brand
+    return None
+
+
+def _gift_in_stock(stock):
+    try:
+        value = int(stock)
+    except (TypeError, ValueError):
+        return False
+    return value != 0
+
+
+def list_gift_card_products(force=False):
+    """کاتالوگ زنده چهار برند گیفت‌کارت از G2Bulk."""
+    now = time.monotonic()
+    cached = _gift_catalog_cache.get('value')
+    if (
+        cached and not force
+        and now - _gift_catalog_cache.get('at', 0) < _GIFT_CATALOG_CACHE_SECONDS
+    ):
+        return cached
+    data = _request('GET', '/products')
+    if not data.get('success'):
+        result = {
+            'ok': False,
+            'error': data.get('message') or 'دریافت گیفت‌کارت G2Bulk ناموفق بود.',
+            'items': [],
+            'by_id': {},
+        }
+        _gift_catalog_cache.update(at=now, value=result)
+        return result
+    items = []
+    by_id = {}
+    for item in data.get('products') or []:
+        brand = _gift_brand_for_product(item)
+        if not brand:
+            continue
+        try:
+            product_id = int(item.get('id'))
+            unit_price = Decimal(str(item.get('unit_price')))
+            stock = int(item.get('stock') if item.get('stock') is not None else 0)
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if product_id <= 0 or unit_price <= 0:
+            continue
+        face_amount, face_currency, face_label = _parse_gift_face(item.get('title'))
+        row = {
+            'id': product_id,
+            'brand': brand,
+            'brand_title': gift_card_brand_title(brand),
+            'title': str(item.get('title') or '').strip(),
+            'unit_price': unit_price,
+            'stock': stock,
+            'in_stock': _gift_in_stock(stock),
+            'face_amount': face_amount,
+            'face_currency': face_currency,
+            'face_label': face_label or str(item.get('title') or '').strip(),
+        }
+        items.append(row)
+        by_id[product_id] = row
+    items.sort(key=lambda row: (
+        GIFT_CARD_BRAND_ORDER.index(row['brand'])
+        if row['brand'] in GIFT_CARD_BRAND_ORDER else 99,
+        row['face_amount'] or 10_000,
+        row['unit_price'],
+    ))
+    result = {'ok': True, 'items': items, 'by_id': by_id}
+    _gift_catalog_cache.update(at=now, value=result)
+    return result
+
+
+def get_gift_card_product(product_id, force=False):
+    catalog = list_gift_card_products(force=force)
+    if not catalog.get('ok'):
+        return {'ok': False, 'error': catalog.get('error') or 'کاتالوگ در دسترس نیست.'}
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'شناسه گیفت‌کارت نامعتبر است.'}
+    row = (catalog.get('by_id') or {}).get(product_id)
+    if not row:
+        return {'ok': False, 'error': 'این گیفت‌کارت در کاتالوگ G2Bulk نیست.'}
+    return {'ok': True, **row}
+
+
+def can_fulfill_gift_card(product_id, force=False):
+    """موجودی انبار و موجودی دلاری G2Bulk را برای یک گیفت‌کارت چک می‌کند."""
+    product = get_gift_card_product(product_id, force=force)
+    if not product.get('ok'):
+        return False, None, None, product.get('error')
+    if not product.get('in_stock'):
+        return False, product['unit_price'], None, 'موجودی این گیفت‌کارت تمام شده است.'
+    snapshot = get_inventory_snapshot(force=force)
+    if not snapshot.get('ok'):
+        return False, product['unit_price'], None, snapshot.get('error')
+    cost = product['unit_price']
+    balance = Decimal(str(snapshot['balance']))
+    if balance < cost:
+        return False, cost, balance, 'موجودی سرویس تأمین برای این گیفت‌کارت کافی نیست.'
+    return True, cost, balance, None
+
+
+def purchase_gift_card(product_id, *, quantity=1, idempotency_key=None):
+    """خرید کد گیفت از G2Bulk. خروجی شامل کدهای تحویل است."""
+    if not is_configured():
+        return {'ok': False, 'error': 'API key not configured'}
+    try:
+        product_id = int(product_id)
+        quantity = int(quantity or 1)
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'شناسه یا تعداد گیفت‌کارت نامعتبر است.'}
+    if product_id <= 0 or quantity != 1:
+        return {'ok': False, 'error': 'فقط خرید تکی گیفت‌کارت مجاز است.'}
+    data = _request(
+        'POST',
+        f'/products/{product_id}/purchase',
+        {'quantity': quantity},
+        idempotency_key=idempotency_key,
+    )
+    return _normalize_gift_purchase(data)
+
+
+def poll_gift_card_delivery(provider_order_id):
+    if not is_configured() or not str(provider_order_id or '').strip():
+        return {'ok': False, 'error': 'شناسه سفارش گیفت‌کارت موجود نیست.'}
+    provider_id = str(provider_order_id).strip()
+    data = _request('GET', f'/orders/{provider_id}/delivery')
+    http_status = data.get('_http_status')
+    if http_status == 410 or str(data.get('status') or '').upper() in {
+        'REFUNDED', 'FAILED', 'CANCELED', 'CANCELLED',
+    }:
+        return {
+            'ok': False,
+            'status': 'FAILED',
+            'refunded': True,
+            'error': data.get('message') or 'سفارش گیفت‌کارت ناموفق بود و برگشت خورد.',
+        }
+    return _normalize_gift_purchase(data, fallback_order_id=provider_id)
+
+
+def _normalize_gift_purchase(data, fallback_order_id=None):
+    status = str(data.get('status') or '').strip().upper()
+    codes = [
+        str(item).strip()
+        for item in (data.get('delivery_items') or [])
+        if str(item).strip()
+    ]
+    provider_order_id = data.get('order_id') or fallback_order_id
+    if status == 'COMPLETED' and codes:
+        return {
+            'ok': True,
+            'status': 'COMPLETED',
+            'order_id': provider_order_id,
+            'codes': codes,
+            'cost_usd': data.get('total_price') or data.get('unit_price'),
+        }
+    if status in {'PENDING', 'PROCESSING'} or (
+        data.get('success') and data.get('poll_url') and not codes
+    ):
+        return {
+            'ok': True,
+            'status': 'PROCESSING' if status == 'PROCESSING' else 'PENDING',
+            'order_id': provider_order_id,
+            'codes': [],
+            'poll_url': data.get('poll_url') or '',
+        }
+    if data.get('_transport_uncertain'):
+        return {
+            'ok': False,
+            'uncertain': True,
+            'order_id': provider_order_id,
+            'error': data.get('message') or 'وضعیت خرید گیفت‌کارت نامشخص است.',
+        }
+    return {
+        'ok': False,
+        'status': status or 'FAILED',
+        'order_id': provider_order_id,
+        'error': data.get('message') or 'خرید گیفت‌کارت از G2Bulk ناموفق بود.',
+    }
+
+
+def gift_card_idempotency_key(order_pk, gift_pk):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_DNS,
+        f'atomicbot-gift-{order_pk}-{gift_pk}',
+    ))
+
+
 def can_fulfill(amount, catalogue_name='', force=False):
     """بررسی می‌کند یک بسته با موجودی فعلی حساب API قابل سفارش است."""
     try:

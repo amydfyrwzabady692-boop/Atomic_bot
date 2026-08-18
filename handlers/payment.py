@@ -32,6 +32,7 @@ from db import (
     log_payment_attempt, log_admin_action, detach_order_authority_to_wallet,
     get_gateway_wallet_charge, complete_wallet_charge_by_authority,
     get_credential_order,
+    get_gift_card_order, gift_card_user_delivery_text,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, notify_credential_admins, is_admin
@@ -192,6 +193,14 @@ async def _order_for_user(update, ctx, order_id):
 
 def _delivery_preflight(order_id, force=True):
     """پیش از دریافت پول، موجودی سرویس تحویل خودکار را بررسی می‌کند."""
+    gift = get_gift_card_order(order_id)
+    if gift:
+        available, cost, balance, error = g2bulk.can_fulfill_gift_card(
+            gift['product_id'], force=force
+        )
+        if not available:
+            return False, error or 'موجودی گیفت‌کارت کافی نیست.', cost, balance
+        return True, None, cost, balance
     for info in get_gem_infos_for_order(order_id):
         (_info_id, _pkg_id, _uid, _name, auto_deliver,
          catalogue, _g2_id, amount, _g2_status) = info
@@ -359,6 +368,9 @@ def _parse_refunded_amount(status):
 
 
 def _success_user_text(order_id, status, ref_id=None):
+    gift_text = gift_card_user_delivery_text(order_id)
+    if gift_text and status in ('delivered', 'processing', 'paid'):
+        return gift_text
     if status == 'sense_manual':
         msg = (
             f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
@@ -434,9 +446,22 @@ async def _handle_fulfill_result(
     from db import mark_delivery_notified
 
     refunded = _parse_refunded_amount(status)
+    gift_text = None
+    if success and status in ('delivered', 'processing', 'paid'):
+        gift_text = gift_card_user_delivery_text(order_id)
     if success and status == 'delivered':
-        text = _success_user_text(order_id, status, ref_id)
-        if edit_message:
+        text = gift_text or _success_user_text(order_id, status, ref_id)
+        if gift_text:
+            if edit_message:
+                try:
+                    await edit_message(
+                        f"✅ سفارش #{order_id} تحویل شد.\nکد گیفت‌کارت در پیام بعدی است."
+                    )
+                except Exception:
+                    pass
+            if tg_id:
+                await _notify_user(bot, tg_id, gift_text, parse_mode=None)
+        elif edit_message:
             await edit_message(text)
         elif tg_id:
             await _notify_user(bot, tg_id, text)
@@ -519,14 +544,14 @@ def _pending(ctx, order_id=None):
     return p
 
 
-async def _notify_user(bot, tg_id, text, reply_markup=None):
+async def _notify_user(bot, tg_id, text, reply_markup=None, parse_mode='Markdown'):
     if not tg_id:
         return
     try:
         await bot.send_message(
             chat_id=int(tg_id),
             text=text,
-            parse_mode='Markdown',
+            parse_mode=parse_mode,
             reply_markup=reply_markup if reply_markup is not None else main_menu(),
         )
     except Exception:

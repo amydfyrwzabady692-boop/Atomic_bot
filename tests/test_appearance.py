@@ -92,7 +92,8 @@ class AppearanceTests(unittest.TestCase):
         with patch.object(appearance, '_CACHE', {}):
             rows = main_menu().keyboard
             self.assertEqual(rows[0][0].text, '🎮 محصولات فری‌فایر')
-            self.assertEqual(rows[3][0].text, '🎧 پشتیبانی')
+            self.assertEqual(rows[3][0].text, '🎁 خرید گیفت کارت')
+            self.assertEqual(rows[4][0].text, '🎧 پشتیبانی')
 
 
 if __name__ == '__main__':
