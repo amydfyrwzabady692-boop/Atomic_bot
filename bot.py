@@ -160,16 +160,20 @@ async def error_handler(update, ctx):
     """Log unexpected failures and leave the user with a usable response."""
     log = logging.getLogger(__name__)
     error = ctx.error
-    # «Message is not modified» خطای امن تلگرام است که دکمه‌های رفرش/بروزرسانی
-    # پنل ادمین (که همان متن قبلی را دوباره edit می‌کنند) ایجاد می‌کنند. اعلان
-    # «خطای داکر» به ادمین نباید برای این مورد ارسال شود؛ فقط لاگ debug کافی است.
+    # خطاهای امن تلگرام: دکمه/کوئری منقضی یا ویرایش همان متن قبلی.
+    # خرید و تحویل قبلاً انجام شده؛ اعلان «خطای داکر» نباید برای این‌ها برود.
     err_text = str(
         getattr(error, 'message', '')
         or getattr(error, 'description', '')
         or error
     )
-    if 'message is not modified' in err_text.lower():
-        log.debug('Benign "Message is not modified" error ignored: %s', err_text)
+    err_l = err_text.lower()
+    if (
+        'message is not modified' in err_l
+        or 'query is too old' in err_l
+        or 'query id is invalid' in err_l
+    ):
+        log.debug('Benign Telegram callback/edit error ignored: %s', err_text)
         return
     log.error(
         'Unhandled update error',

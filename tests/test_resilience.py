@@ -90,6 +90,25 @@ class UpdateRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         channel_post.reply_text.assert_not_awaited()
 
+    async def test_error_handler_ignores_stale_callback_query(self):
+        reply = AsyncMock()
+        update = SimpleNamespace(
+            effective_message=SimpleNamespace(reply_text=reply),
+            effective_chat=SimpleNamespace(type='private'),
+        )
+        error = SimpleNamespace(
+            message=(
+                'Query is too old and response timeout expired or query id is invalid'
+            )
+        )
+        ctx = SimpleNamespace(error=error, bot=object())
+
+        with patch.object(bot, 'notify_admin', new=AsyncMock()) as notify:
+            await bot.error_handler(update, ctx)
+
+        notify.assert_not_awaited()
+        reply.assert_not_awaited()
+
 
 class AccessFailureModeTests(unittest.TestCase):
     def test_block_lookup_fails_closed(self):
