@@ -169,6 +169,7 @@ async def _show_home(update, ctx, via_message=False):
         f"━━━━━━━━━━━━━━━\n"
         f"📅 فروش امروز: *{ops['sales_today_amount']:,}* ت "
         f"({ops['sales_today_count']:,} سفارش)\n"
+        f"🔎 استعلام سفارش: `/order 12345`\n"
         f"{'🚨 نیاز به اقدام:' if alerts else '✅ وضعیت عادی — هشدار:'} *{alerts:,}*"
     )
     kb = admin_home_keyboard({

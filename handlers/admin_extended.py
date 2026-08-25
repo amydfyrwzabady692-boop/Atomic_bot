@@ -370,6 +370,82 @@ def _order_admin_card(detail):
     return text, buttons
 
 
+async def _reply_order_admin_card(message, raw):
+    oid = parse_admin_order_id(raw)
+    detail = await asyncio.to_thread(get_order_admin_detail, oid)
+    if not detail:
+        await message.reply_text(
+            f'سفارش `{oid}` پیدا نشد.',
+            parse_mode='Markdown',
+            reply_markup=admin_home_keyboard(),
+        )
+        return
+    text, buttons = _order_admin_card(detail)
+    receipt = None
+    if (
+        str(detail.get('status') or '') == 'pending'
+        and str(detail.get('method') or '') == 'card_transfer'
+    ):
+        receipt = await asyncio.to_thread(
+            get_payment_receipt, order_id=oid, pending_only=True
+        )
+    if receipt and receipt[2]:
+        buttons.insert(0, [
+            InlineKeyboardButton(
+                '🖼 بررسی رسید', callback_data=f'admx_receipt_{oid}'
+            ),
+        ])
+    await message.reply_text(text, parse_mode='Markdown', reply_markup=_kb(buttons))
+
+
+async def admin_order_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """استعلام مستقیم: /order 12345 یا /o_12345"""
+    if not await _guard(update):
+        return
+    raw = ' '.join(ctx.args or []).strip()
+    if not raw:
+        raw = (update.message.text or '').replace('/order', '').replace('/o_', ' ')
+    try:
+        await _reply_order_admin_card(update.message, raw)
+    except ValueError:
+        await update.message.reply_text(
+            '🔎 استعلام سفارش\nمثال: `/order 12345`',
+            parse_mode='Markdown',
+        )
+
+
+async def admin_order_search_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """دکمه استعلام — بیرون از ConversationHandler تا قفل نشود."""
+    query = update.callback_query
+    await query.answer()
+    if not await _guard(update):
+        return
+    ctx.user_data['await_order_id'] = True
+    await query.edit_message_text(
+        '🔎 شماره سفارش را همین‌جا بفرست.\n'
+        'یا دستور: `/order 12345`',
+        parse_mode='Markdown',
+        reply_markup=_kb([_back('adm_home')]),
+    )
+
+
+async def admin_order_text_lookup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """اگر ادمین بعد از دکمه استعلام عدد فرستاد."""
+    if not ctx.user_data.pop('await_order_id', None):
+        return False
+    if not await _guard(update):
+        return True
+    try:
+        await _reply_order_admin_card(update.message, update.message.text or '')
+    except ValueError as exc:
+        ctx.user_data['await_order_id'] = True
+        await update.message.reply_text(
+            f'❌ {exc}\nدوباره شماره سفارش را بفرست یا `/order 12345` بزن.',
+            parse_mode='Markdown',
+        )
+    return True
+
+
 def _html_esc(value):
     return (
         str(value or '')
@@ -2614,4 +2690,5 @@ def admin_extended_conversation_handler():
         states={WAIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_input_receive)]},
         fallbacks=[CommandHandler('cancel', admin_input_cancel)],
         allow_reentry=True,
+        block=False,
     )

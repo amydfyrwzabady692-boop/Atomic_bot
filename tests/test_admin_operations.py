@@ -100,6 +100,13 @@ class AdminOperationsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             admin_extended.parse_admin_order_id('بدون عدد')
 
+    def test_bot_registers_direct_order_lookup_command(self):
+        import inspect
+        import bot as bot_module
+        source = inspect.getsource(bot_module.main)
+        self.assertIn("CommandHandler('order', admin_order_cmd)", source)
+        self.assertIn("admin_order_search_start", source)
+
     def test_invalid_low_stock_setting_falls_back_safely(self):
         with patch.object(admin_extended, 'get_setting', return_value='not-a-number'):
             self.assertEqual(admin_extended._low_stock_threshold(), 5)

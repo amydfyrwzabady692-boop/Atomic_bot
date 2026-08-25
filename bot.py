@@ -51,6 +51,7 @@ from handlers.admin import (
 )
 from handlers.admin_extended import (
     admin_ext_router, admin_extended_conversation_handler, credadmin_cmd,
+    admin_order_cmd, admin_order_search_start, admin_order_text_lookup,
 )
 from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
@@ -148,6 +149,8 @@ async def text_router(update, ctx):
             "🚫 حساب شما بلاک شده است.\nبرای پیگیری از طریق پشتیبانی سایت اقدام کن."
         )
         return
+    if admin and await admin_order_text_lookup(update, ctx):
+        return
 
     # اگر ادمین در حالت پاسخ/جستجو نیست، منوی عادی
     action = appearance.menu_action(message.text)
@@ -174,6 +177,17 @@ async def error_handler(update, ctx):
         'message is not modified' in err_l
         or 'query is too old' in err_l
         or 'query id is invalid' in err_l
+        or 'message to edit not found' in err_l
+        or 'message can\'t be edited' in err_l
+        or 'bot was blocked by the user' in err_l
+        or 'user is deactivated' in err_l
+        or 'chat not found' in err_l
+        or 'timed out' in err_l
+        or 'timeout' in err_l
+        or 'httpx' in err_l
+        or 'network' in err_l
+        or 'temporarily unavailable' in err_l
+        or 'conflict: terminated by other getupdates' in err_l
     ):
         log.debug('Benign Telegram callback/edit error ignored: %s', err_text)
         return
@@ -191,14 +205,8 @@ async def error_handler(update, ctx):
             )
     except Exception:
         log.exception('Could not send user-facing error message')
-    try:
-        await notify_admin(
-            ctx.bot,
-            '⚠️ خطای کنترل‌نشده در ربات ثبت شد. جزئیات کامل در لاگ Docker موجود است.',
-            parse_mode=None,
-        )
-    except Exception:
-        log.exception('Could not notify admins about unhandled error')
+    # اعلان تلگرامی «خطای داکر» برای ادمین عمداً ارسال نمی‌شود؛
+    # جزئیات فقط در لاگ کانتینر می‌ماند تا پنل پر از هشدار نشود.
 
 
 async def post_init(app):
@@ -571,9 +579,14 @@ def main():
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
     app.add_handler(CommandHandler('admin', admin_cmd))
+    app.add_handler(CommandHandler('order', admin_order_cmd))
     app.add_handler(CommandHandler('credadmin', credadmin_cmd))
     app.add_handler(CommandHandler('studio', studio_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^/u_\d+$'), admin_user_cmd))
+    app.add_handler(MessageHandler(filters.Regex(r'^/o_\d+$'), admin_order_cmd))
+    app.add_handler(CallbackQueryHandler(
+        admin_order_search_start, pattern=r'^admi_ordersearch$'
+    ))
 
     app.add_handler(gem_conversation_handler())
     app.add_handler(credential_conversation_handler())

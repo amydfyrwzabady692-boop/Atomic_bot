@@ -128,7 +128,7 @@ class FinancialKeyboardTests(unittest.TestCase):
             markup.inline_keyboard[0][0].url,
             'https://payment.zarinpal.com/pay',
         )
-        self.assertIn('wchk_77', self._callbacks(markup))
+        self.assertNotIn('wchk_77', self._callbacks(markup))
 
     def test_order_gateway_offers_safe_method_change(self):
         markup = zarinpal_pay_keyboard(
@@ -139,6 +139,7 @@ class FinancialKeyboardTests(unittest.TestCase):
             'https://payment.zarinpal.com/pg/StartPay/AUTH',
         )
         self.assertIn('change_pay_42', self._callbacks(markup))
+        self.assertNotIn('zp_check_42', self._callbacks(markup))
         self.assertNotIn('cancel_order_42', self._callbacks(markup))
 
 

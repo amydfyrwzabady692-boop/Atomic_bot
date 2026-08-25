@@ -404,7 +404,6 @@ def zarinpal_pay_keyboard(order_id, pay_url=None):
     if pay_url:
         rows.append([InlineKeyboardButton('🔗 باز کردن درگاه پرداخت', url=pay_url)])
     rows.extend([
-        [InlineKeyboardButton('✅ پرداخت کردم', callback_data=f'zp_check_{order_id}')],
         [InlineKeyboardButton('🔄 تغییر امن روش پرداخت', callback_data=f'change_pay_{order_id}')],
     ])
     return InlineKeyboardMarkup(rows)
@@ -491,7 +490,6 @@ def wallet_charge_pay_keyboard(tx_key, pay_url=None):
     if pay_url:
         rows.append([InlineKeyboardButton('🔗 باز کردن درگاه پرداخت', url=pay_url)])
     rows.extend([
-        [InlineKeyboardButton('✅ پرداخت کردم', callback_data=f'wchk_{tx_key}')],
         [InlineKeyboardButton('بازگشت به کیف پول', callback_data='wallet')],
     ])
     return InlineKeyboardMarkup(rows)

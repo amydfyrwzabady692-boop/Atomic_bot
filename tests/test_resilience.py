@@ -109,6 +109,17 @@ class UpdateRoutingTests(unittest.IsolatedAsyncioTestCase):
         notify.assert_not_awaited()
         reply.assert_not_awaited()
 
+    async def test_error_handler_does_not_page_admin_for_unhandled_errors(self):
+        reply = AsyncMock()
+        update = SimpleNamespace(
+            effective_message=SimpleNamespace(reply_text=reply),
+            effective_chat=SimpleNamespace(type='private'),
+        )
+        ctx = SimpleNamespace(error=RuntimeError('boom'), bot=object())
+        with patch.object(bot, 'notify_admin', new=AsyncMock()) as notify:
+            await bot.error_handler(update, ctx)
+        notify.assert_not_awaited()
+
 
 class AccessFailureModeTests(unittest.TestCase):
     def test_block_lookup_fails_closed(self):
