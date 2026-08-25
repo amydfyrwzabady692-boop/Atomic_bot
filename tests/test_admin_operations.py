@@ -79,10 +79,13 @@ class AdminOperationsTests(unittest.TestCase):
     def test_admin_home_shows_alert_counts(self):
         first = admin_home_keyboard({'ops_alerts': 4}).inline_keyboard[0][0]
         self.assertIn('(4)', first.text)
-        orders = admin_home_keyboard({'orders_action': 2}).inline_keyboard[2][0]
+        orders = admin_home_keyboard({'orders_action': 2}).inline_keyboard[3][0]
         self.assertEqual(orders.callback_data, 'admx_hub_orders')
         self.assertIn('(2)', orders.text)
-        appear = admin_home_keyboard().inline_keyboard[1][0]
+        inquiry = admin_home_keyboard().inline_keyboard[1]
+        self.assertEqual(inquiry[0].callback_data, 'admi_ordersearch')
+        self.assertEqual(inquiry[1].callback_data, 'admx_allorders')
+        appear = admin_home_keyboard().inline_keyboard[2][0]
         self.assertEqual(appear.callback_data, 'ap_home')
 
     def test_orders_hub_has_inquiry_and_full_list(self):

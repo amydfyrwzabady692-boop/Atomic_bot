@@ -514,6 +514,11 @@ def admin_home_keyboard(counts=None):
     support_label = f'🎧 پشتیبانی ({tickets_n})' if tickets_n else '🎧 پشتیبانی'
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(ops_label, callback_data='admx_ops')],
+        [InlineKeyboardButton(
+            '🔎 استعلام سفارش', callback_data='admi_ordersearch'
+        ), InlineKeyboardButton(
+            '📋 همه سفارش‌ها', callback_data='admx_allorders'
+        )],
         [InlineKeyboardButton('✨ ظاهر', callback_data='ap_home')],
         [
             InlineKeyboardButton(orders_label, callback_data='admx_hub_orders'),
