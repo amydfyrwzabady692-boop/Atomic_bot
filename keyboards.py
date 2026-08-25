@@ -552,6 +552,11 @@ def admin_hub_orders_keyboard(counts=None):
         f'🌐 رسیدهای سایت ({site_receipts})' if site_receipts else '🌐 رسیدهای سایت'
     )
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            '🔎 استعلام سفارش', callback_data='admi_ordersearch'
+        ), InlineKeyboardButton(
+            '📋 همه سفارش‌ها', callback_data='admx_allorders'
+        )],
         [InlineKeyboardButton(cred_label, callback_data='admx_credentials')],
         [InlineKeyboardButton(site_cred_label, callback_data='admx_sitecreds')],
         [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],

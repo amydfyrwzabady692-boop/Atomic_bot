@@ -33,6 +33,7 @@ from db import (
     get_gateway_wallet_charge, complete_wallet_charge_by_authority,
     get_credential_order,
     get_gift_card_order, gift_card_user_delivery_text,
+    resolve_late_zarinpal_recovery, credit_verified_gateway_to_wallet,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, notify_credential_admins, is_admin
@@ -766,6 +767,27 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"✅ سفارش #{order_id} قبلاً پرداخت/تحویل شده است.\nوضعیت: `{order[3]}`",
             parse_mode='Markdown',
         )
+        return
+    if str(order[3] or '') in ('canceled', 'cancelled'):
+        ok, detail = await recover_late_zarinpal(
+            ctx.bot, order_id, authority=order[5], notify_user=False
+        )
+        if ok:
+            await query.edit_message_text(
+                f"✅ پرداخت دیرهنگام سفارش `#{order_id}` پیدا شد.\n"
+                f"چون مهلت سفارش تمام شده بود، مبلغ به کیف پول واریز شد "
+                f"و جم خودکار ارسال نشد.\n"
+                f"جزئیات: {detail}",
+                parse_mode='Markdown',
+                reply_markup=main_menu(),
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ سفارش `#{order_id}` لغو شده است و پرداخت تأیید نشد.\n"
+                f"{detail}\n"
+                "اگر پول از حسابت کم شده، شماره سفارش را برای پشتیبانی بفرست.",
+                parse_mode='Markdown',
+            )
         return
 
     authority = order[5]
@@ -1519,6 +1541,57 @@ def payment_conversation_handler():
     )
 
 
+async def recover_late_zarinpal(
+    bot, order_id, authority=None, *, notify_user=True, notify_admin=True,
+):
+    """Credit wallet when Zarinpal was paid after the order expired/canceled."""
+    info, error = await asyncio.to_thread(
+        resolve_late_zarinpal_recovery, order_id, authority,
+    )
+    if error:
+        return False, error
+    if info.get('already'):
+        return True, 'کیف پول قبلاً با این پرداخت شارژ شده است'
+    verify_status, ref_id = await asyncio.to_thread(
+        verify_payment_detailed, info['amount'], info['authority']
+    )
+    if verify_status != 'verified':
+        return False, f'وضعیت درگاه: {verify_status}'
+    done, _uid, credited, new_balance = await asyncio.to_thread(
+        credit_verified_gateway_to_wallet,
+        info['user_id'], info['amount'], info['authority'], ref_id,
+        f'پرداخت دیرهنگام سفارش #{int(order_id)}',
+    )
+    if not done:
+        return False, 'واریز به کیف پول انجام نشد'
+    log_payment_attempt(
+        provider='zarinpal', event='late_wallet_verified', status='success',
+        amount=credited, order_id=order_id, authority=info['authority'],
+        ref_id=ref_id, telegram_id=info.get('telegram_id'),
+        message='expired order credited to wallet',
+    )
+    if notify_user:
+        await _notify_user(
+            bot,
+            info.get('telegram_id'),
+            f"✅ پرداخت سفارش #{order_id} بعد از تمام شدن مهلت تأیید شد.\n"
+            f"چون سفارش لغو شده بود، مبلغ به کیف پولت واریز شد "
+            f"و جم خودکار ارسال نشد.\n"
+            f"مبلغ: {credited:,} تومان\n"
+            f"موجودی: {new_balance:,} تومان\n"
+            f"کد پیگیری: {ref_id}\n\n"
+            "از کیف پول دوباره جم سفارش بده یا به پشتیبانی پیام بده.",
+        )
+    if notify_admin:
+        await notify_admin(
+            bot,
+            f"💳 پرداخت دیرهنگام سفارش `#{order_id}` به کیف پول واریز شد.\n"
+            f"کاربر `{info.get('telegram_id') or '—'}`\n"
+            f"مبلغ: *{credited:,}* تومان\nپیگیری: `{ref_id}`",
+        )
+    return True, f'{credited:,} تومان به کیف پول واریز شد'
+
+
 # برای callback HTTP زرین‌پال
 async def process_zarinpal_callback(bot, order_id, authority, status_ok):
     order = get_order(order_id)
@@ -1566,6 +1639,9 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
                 f"کد پیگیری: {ref_id}",
             )
             return True, 'detached gateway credited to wallet'
+        if str(order[3] or '') in ('canceled', 'cancelled'):
+            ok, detail = await recover_late_zarinpal(bot, order_id, authority)
+            return ok, detail
         log_payment_attempt(
             provider='zarinpal', event='callback', status='failed',
             order_id=order_id, authority=authority,

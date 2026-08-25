@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 import uuid
 from urllib.parse import urlparse
@@ -19,10 +20,12 @@ from forced_join_logic import (
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
     add_sense_package, add_store_product, admin_list_gems, admin_stats_full,
-    delete_simple_record, get_gem_admin, get_order_admin, get_payment_receipt,
+    delete_simple_record, get_gem_admin, get_order_admin, get_order_admin_detail,
+    get_payment_receipt,
     get_promo_code, get_sense_package, get_setting, get_store_product,
     list_all_telegram_ids, list_bot_admins, list_pending_receipts,
-    list_pending_wallet_card_charges, list_sense_packages, list_users_filtered, mass_charge_wallets,
+    list_pending_wallet_card_charges, list_recent_orders_admin,
+    list_sense_packages, list_users_filtered, mass_charge_wallets,
     remove_bot_admin, set_setting, simple_list, update_gem_package,
     move_catalogue_item, update_promo_code, update_store_product,
     update_sense_package, list_payment_attempts, payment_attempt_stats,
@@ -206,6 +209,167 @@ def _md_safe(value, limit=80):
     return text
 
 
+_DIGIT_TRANS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+_ORDER_STATUS_FA = {
+    'pending': 'در انتظار پرداخت',
+    'processing': 'در حال تحویل',
+    'paid': 'پرداخت‌شده',
+    'delivered': 'تحویل‌شده',
+    'completed': 'تکمیل',
+    'canceled': 'لغو / منقضی',
+    'cancelled': 'لغو / منقضی',
+}
+
+
+def parse_admin_order_id(raw):
+    text = str(raw or '').translate(_DIGIT_TRANS).replace(',', '').strip()
+    match = re.search(r'(\d{1,12})', text)
+    if not match:
+        raise ValueError('شماره سفارش پیدا نشد.')
+    return int(match.group(1))
+
+
+def _order_admin_card(detail):
+    """متن و دکمه‌های استعلام کامل یک سفارش برای ادمین."""
+    oid = detail['id']
+    status = str(detail.get('status') or '')
+    status_fa = _ORDER_STATUS_FA.get(status.lower(), status or '—')
+    method = str(detail.get('method') or '—').replace('_', '-')
+    name = f"{detail.get('first_name') or ''} {detail.get('last_name') or ''}".strip() or '—'
+    username = (detail.get('username') or '').lstrip('@')
+    handle = f'@{username}' if username else '—'
+    tg = str(detail.get('telegram_id') or '').strip()
+    lines = [
+        f'🔎 سفارش `#{oid}`',
+        '━━━━━━━━━━━━━━━',
+        f'وضعیت: *{status_fa}* (`{status or "—"}`)',
+        f'مبلغ: *{int(detail.get("total") or 0):,}* ت · '
+        f'تخفیف {int(detail.get("discount") or 0):,} · '
+        f'کیف‌پول سفارش {int(detail.get("wallet_paid") or 0):,}',
+        f'روش: `{_md_safe(method, 40)}`',
+        f'تاریخ: `{_md_safe(str(detail.get("created_at") or "—")[:19], 24)}`',
+        '',
+        f'👤 {_md_safe(name)} {_md_safe(handle)}',
+        f'شناسه تلگرام: `{tg or "—"}`',
+        f'کیف پول فعلی: *{int(detail.get("wallet_balance") or 0):,}* ت',
+    ]
+    if detail.get('expected'):
+        lines.append(f'مبلغ درگاه: {int(detail["expected"]):,} ت')
+    if detail.get('authority'):
+        lines.append(f'کد درگاه: `{_md_safe(detail["authority"], 40)}`')
+    if detail.get('ref_id'):
+        lines.append(f'پیگیری درگاه: `{_md_safe(detail["ref_id"], 40)}`')
+    if detail.get('verified_at'):
+        lines.append(f'تأیید پرداخت: `{_md_safe(str(detail["verified_at"])[:19], 24)}`')
+    items = detail.get('items') or []
+    if items:
+        lines.append('')
+        lines.append('📦 اقلام:')
+        for item in items[:8]:
+            lines.append(
+                f'• {_md_safe(item[1], 40)} × {int(item[3] or 1)} · '
+                f'{int(item[2] or 0):,} ت'
+            )
+    gems = detail.get('gems') or []
+    if gems:
+        lines.append('')
+        lines.append('💎 جم / آیدی بازی:')
+        for gem in gems[:6]:
+            uid = str(gem[2] or '').strip() or '—'
+            player = str(gem[3] or '').strip() or '—'
+            g2 = str(gem[8] or '').strip() or '—'
+            amount = gem[7]
+            lines.append(
+                f'• {int(amount or 0)} جم · آیدی `{_md_safe(uid, 32)}`'
+            )
+            lines.append(
+                f'  نام: {_md_safe(player, 32)} · G2: {_md_safe(g2, 24)}'
+            )
+    gift = detail.get('gift')
+    if gift:
+        lines.append('')
+        lines.append(
+            f'🎁 گیفت: {_md_safe(gift.get("brand_title") or gift.get("brand"), 40)} '
+            f'{_md_safe(gift.get("face_label"), 20)} · '
+            f'{_md_safe(gift.get("g2_status"), 16)}'
+        )
+    parked = detail.get('parked')
+    if parked:
+        parked_paid = 'واریز شده' if parked[2] else 'در انتظار پرداخت درگاه'
+        lines.append('')
+        lines.append(
+            f'💳 شارژ کیف پول رزروشده: *{int(parked[1] or 0):,}* ت · {parked_paid}'
+        )
+    attempts = detail.get('attempts') or []
+    if attempts:
+        lines.append('')
+        lines.append('🧾 آخرین رویدادهای پرداخت:')
+        for event, att_status, amount, att_auth, ref, message, created in attempts[:5]:
+            amt = f'{int(amount):,}' if amount else '—'
+            lines.append(
+                f'• `{_md_safe(str(created)[:16], 20)}` {_md_safe(event, 20)}/'
+                f'{_md_safe(att_status, 12)} · {amt}'
+            )
+            extra = ' · '.join(
+                part for part in (
+                    f'auth {_md_safe(att_auth, 16)}' if att_auth else '',
+                    f'ref {_md_safe(ref, 16)}' if ref else '',
+                    _md_safe(message, 40) if message else '',
+                ) if part
+            )
+            if extra:
+                lines.append(f'  {extra}')
+    canceled = status.lower() in ('canceled', 'cancelled')
+    if canceled:
+        lines.append('')
+        lines.append(
+            '⚠️ اگر کاربر بعد از تمام شدن مهلت در درگاه پرداخت کرده، '
+            'جم خودکار نمی‌رود. دکمه استعلام درگاه را بزن؛ '
+            'در صورت تأیید زرین‌پال مبلغ به کیف پولش می‌رود.'
+        )
+    text = '\n'.join(lines)
+    if len(text) > 3800:
+        text = text[:3790] + '\n…'
+    buttons = []
+    copy_row = []
+    if tg:
+        btn = _copy_btn('📋 کپی آیدی تلگرام', tg)
+        if btn:
+            copy_row.append(btn)
+    first_uid = ''
+    for gem in gems:
+        if str(gem[2] or '').strip():
+            first_uid = str(gem[2]).strip()
+            break
+    if first_uid:
+        btn = _copy_btn('📋 کپی آیدی بازی', first_uid)
+        if btn:
+            copy_row.append(btn)
+    if copy_row:
+        buttons.append(copy_row)
+    action_row = []
+    if tg:
+        action_row.append(InlineKeyboardButton(
+            '👤 کارت کاربر', callback_data=f'adm_user_{tg}'
+        ))
+    if canceled:
+        action_row.append(InlineKeyboardButton(
+            '💳 استعلام درگاه → کیف پول',
+            callback_data=f'admx_zpcredit_{oid}',
+        ))
+    if action_row:
+        buttons.append(action_row)
+    if status.lower() in ('processing', 'paid'):
+        buttons.append([
+            InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}'),
+        ])
+    buttons.extend([
+        [InlineKeyboardButton('📋 لیست سفارش‌ها', callback_data='admx_allorders')],
+        _back('admx_hub_orders'),
+    ])
+    return text, buttons
+
+
 def _html_esc(value):
     return (
         str(value or '')
@@ -365,6 +529,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         or data.startswith('admx_massconfirm_')
         or data.startswith('admx_adminremove_')
         or data.startswith('admx_gemtoggle_')
+        or data.startswith('admx_zpcredit_')
     )
     if not self_answer:
         await query.answer()
@@ -392,7 +557,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         site = await asyncio.to_thread(site_ops_counts)
         await query.edit_message_text(
             '📦 *مدیریت سفارش‌ها*\n'
-            'جم ربات / جم سایت · رسید ربات / رسید سایت',
+            'استعلام با شماره سفارش · لیست کامل · جم · رسید',
             parse_mode='Markdown',
             reply_markup=admin_hub_orders_keyboard({
                 'ready_creds': ready_creds,
@@ -403,6 +568,78 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 'site_receipts': site['site_receipts'],
             }),
         )
+        return
+    if data == 'admx_allorders':
+        rows = await asyncio.to_thread(list_recent_orders_admin, 20)
+        lines = [
+            '📋 *آخرین سفارش‌ها*',
+            'همه وضعیت‌ها · با اطلاعات کاربر و آیدی بازی',
+            '━━━━━━━━━━━━━━━',
+        ]
+        buttons = [[InlineKeyboardButton(
+            '🔎 استعلام با شماره سفارش', callback_data='admi_ordersearch'
+        )]]
+        if not rows:
+            lines.append('سفارشی ثبت نشده است.')
+        else:
+            for (
+                oid, tg, total, status, _method, _created, first, username, game_uid
+            ) in rows:
+                status_fa = _ORDER_STATUS_FA.get(str(status or '').lower(), status or '—')
+                handle = f'@{username}' if username else (first or '—')
+                uid = str(game_uid or '').strip()
+                uid_bit = f' · UID `{_md_safe(uid, 16)}`' if uid else ''
+                lines.append(
+                    f'• `#{oid}` · {int(total or 0):,} ت · {status_fa}\n'
+                    f'  `{tg or "—"}` · {_md_safe(handle, 20)}'
+                    f'{uid_bit}'
+                )
+                buttons.append([InlineKeyboardButton(
+                    f'🔎 #{oid} · {_md_safe(handle, 12)}',
+                    callback_data=f'admx_orddetail_{oid}',
+                )])
+                if len('\n'.join(lines)) > 3200:
+                    lines.append('…')
+                    break
+        buttons.extend([
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_allorders')],
+            _back('admx_hub_orders'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+        return
+    if data.startswith('admx_orddetail_'):
+        oid = int(data.rsplit('_', 1)[1])
+        detail = await asyncio.to_thread(get_order_admin_detail, oid)
+        if not detail:
+            await _edit(query, 'سفارش پیدا نشد.', [_back('admx_allorders')])
+            return
+        text, buttons = _order_admin_card(detail)
+        await _edit(query, text, buttons, markdown=True)
+        return
+    if data.startswith('admx_zpcredit_'):
+        await query.answer('در حال استعلام زرین‌پال…')
+        oid = int(data.rsplit('_', 1)[1])
+        from handlers.payment import recover_late_zarinpal
+        ok, detail_msg = await recover_late_zarinpal(
+            ctx.bot, oid, notify_admin=False,
+        )
+        log_admin_action(
+            update.effective_user.id, 'late_zarinpal_credit', 'order', oid,
+            f'ok={ok} detail={detail_msg}',
+        )
+        detail = await asyncio.to_thread(get_order_admin_detail, oid)
+        extra = (
+            f'\n\n✅ {detail_msg}' if ok else f'\n\n❌ بازیابی نشد: {detail_msg}'
+        )
+        if not detail:
+            await _edit(
+                query,
+                extra.strip(),
+                [_back('admx_allorders')],
+            )
+            return
+        text, buttons = _order_admin_card(detail)
+        await _edit(query, text + extra, buttons, markdown=True)
         return
     if data == 'admx_hub_users':
         await query.edit_message_text(
@@ -781,6 +1018,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )],
             [InlineKeyboardButton(
                 '📦 منوی سفارش‌ها', callback_data='admx_hub_orders',
+            )],
+            [InlineKeyboardButton(
+                '🔎 استعلام سفارش', callback_data='admi_ordersearch'
+            ), InlineKeyboardButton(
+                '📋 همه سفارش‌ها', callback_data='admx_allorders'
             )],
             [InlineKeyboardButton(
                 f'📦 موجودی کم ({ops["low_gem_stock"] + ops["low_store_stock"]})',
@@ -1915,7 +2157,10 @@ async def _show_simple_list(query, data):
 INPUT_ACTIONS = {
     'admi_broadcast': ('broadcast', 'متن پیام همگانی را بفرست.'),
     'admi_masscharge': ('masscharge', 'مبلغ شارژ همگانی را به تومان بفرست.'),
-    'admi_ordersearch': ('ordersearch', 'شماره سفارش را بفرست (مثلاً 123).'),
+    'admi_ordersearch': (
+        'ordersearch',
+        'شماره سفارش را بفرست (مثلاً 123 یا #123).',
+    ),
     'admi_zpmerchant': ('setting:zarinpal_merchant_id', 'مرچنت آیدی زرین‌پال را بفرست.'),
     'admi_callback': ('setting:payment_callback_base', 'آدرس HTTPS پایه callback را بفرست.'),
     'admi_usdrate': (
@@ -2089,26 +2334,25 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 ]]),
             )
         elif action == 'ordersearch':
-            order = get_order_admin(int(raw.lstrip('#')))
-            if not order:
+            oid = parse_admin_order_id(raw)
+            detail = get_order_admin_detail(oid)
+            if not detail:
                 raise ValueError('سفارش پیدا نشد.')
+            text, buttons = _order_admin_card(detail)
             receipt = None
-            if order[5] == 'pending' and order[4] == 'card_transfer':
-                receipt = get_payment_receipt(order_id=order[0], pending_only=True)
-            kb = (
-                admin_card_keyboard(order[0])
-                if receipt and receipt[2]
-                else admin_home_keyboard()
-            )
+            if (
+                str(detail.get('status') or '') == 'pending'
+                and str(detail.get('method') or '') == 'card_transfer'
+            ):
+                receipt = get_payment_receipt(order_id=oid, pending_only=True)
+            if receipt and receipt[2]:
+                buttons.insert(0, [
+                    InlineKeyboardButton(
+                        '🖼 بررسی رسید', callback_data=f'admx_receipt_{oid}'
+                    ),
+                ])
             await update.message.reply_text(
-                f'🔎 سفارش #{order[0]}\n'
-                f'کاربر: {_md_safe(order[7])} @{_md_safe(order[8])}\n'
-                f'شناسه تلگرام: `{order[1]}`\nمبلغ: {order[2]:,} تومان\n'
-                f'تخفیف: {order[3]:,}\nروش: {order[4]}\nوضعیت: {order[5]}\n'
-                f'تاریخ: {order[6]}'
-                + ('\n📸 رسید تصویری در انتظار بررسی دارد.' if receipt else ''),
-                parse_mode='Markdown',
-                reply_markup=kb,
+                text, parse_mode='Markdown', reply_markup=_kb(buttons)
             )
         elif action.startswith('setting:'):
             key = action.split(':', 1)[1]

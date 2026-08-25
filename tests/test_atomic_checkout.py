@@ -39,6 +39,7 @@ class AtomicCheckoutTests(unittest.TestCase):
         self.assertIn("MANUAL_RESERVED", fulfill_source)
         self.assertIn("_release_manual_gem_reservations", cancel_source)
         self.assertIn("_release_manual_gem_reservations", expire_source)
+        self.assertIn("_park_zarinpal_authority_for_order", expire_source)
 
     def test_catalogue_sort_and_order_history_are_durable(self):
         source = inspect.getsource(db.ensure_admin_schema)

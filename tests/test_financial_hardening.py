@@ -149,14 +149,17 @@ class PaymentMethodChangeSafetyTests(unittest.TestCase):
             __import__('handlers.payment', fromlist=['process_zarinpal_callback'])
             .process_zarinpal_callback
         )
+        self.assertIn('_park_zarinpal_authority_for_order', database_source)
         self.assertIn('"PaymentAuthority"=NULL', database_source)
         self.assertIn('"PaymentMethod"=\\\'pending\\\'', database_source)
         self.assertNotIn('"PaymentMethod"=NULL', database_source)
         self.assertNotIn('"PaymentExpiresAt"=NULL', database_source)
-        self.assertIn('"WalletTransactions"', database_source)
-        self.assertIn("charge", database_source)
+        helper_source = inspect.getsource(db._ensure_pending_gateway_wallet_charge)
+        self.assertIn('"WalletTransactions"', helper_source)
+        self.assertIn("charge", helper_source)
         self.assertIn('complete_wallet_charge_by_authority', callback_source)
         self.assertIn('detached gateway credited to wallet', callback_source)
+        self.assertIn('recover_late_zarinpal', callback_source)
 
 
 class ReceiptInputTests(unittest.TestCase):

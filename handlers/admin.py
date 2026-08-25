@@ -637,15 +637,25 @@ async def admin_user_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not profile:
         await query.edit_message_text("کاربر پیدا نشد.")
         return
+    from db import get_gem_infos_for_order
     handle = _tg_handle(profile[2])
     orders = get_user_orders(profile[0], limit=15)
     txs = list_wallet_txs(profile[0], limit=8)
     lines = [f"✦ سفارش‌های *{handle}*", f"`{tg}`", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    buttons = []
     if not orders:
         lines.append("سفارشی نیست.")
     else:
         for o in orders:
-            lines.append(f"#{o[0]} · {o[1]:,} ت · `{o[2]}`")
+            gems = get_gem_infos_for_order(o[0])
+            uid = ''
+            if gems and str(gems[0][2] or '').strip():
+                uid = str(gems[0][2]).strip()
+            uid_bit = f" · `{uid}`" if uid else ''
+            lines.append(f"#{o[0]} · {o[1]:,} ت · `{o[2]}`{uid_bit}")
+            buttons.append([InlineKeyboardButton(
+                f'🔎 جزئیات #{o[0]}', callback_data=f'admx_orddetail_{o[0]}'
+            )])
     lines.append("\nتراکنش کیف پول:")
     if not txs:
         lines.append("—")
@@ -653,13 +663,14 @@ async def admin_user_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for t in txs:
             paid = "✓" if t[3] else "…"
             lines.append(f"{paid} {t[1]} {t[0]:,} — {(t[2] or '')[:36]}")
+    buttons.extend([
+        [InlineKeyboardButton('کارت کاربر', callback_data=f'adm_user_{tg}')],
+        [InlineKeyboardButton('بازگشت', callback_data='adm_home')],
+    ])
     await query.edit_message_text(
         "\n".join(lines),
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton('کارت کاربر', callback_data=f'adm_user_{tg}')],
-            [InlineKeyboardButton('بازگشت', callback_data='adm_home')],
-        ]),
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 

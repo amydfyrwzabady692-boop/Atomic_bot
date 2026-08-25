@@ -839,6 +839,57 @@ def prepare_card_order_payment(order_id, user_db_id):
         return False, 0, str(e)
 
 
+def _ensure_pending_gateway_wallet_charge(cur, user_id, amount, authority, description):
+    """Park a Zarinpal authority as an unpaid wallet charge in the caller transaction."""
+    authority = str(authority or '').strip()
+    if not authority or len(authority) > 100 or authority.startswith('wcard_'):
+        raise ValueError('کد درگاه نامعتبر است.')
+    amount = checked_amount(amount, minimum=1, label='مبلغ درگاه کیف پول')
+    cur.execute(
+        'SELECT "Id","Amount","IsPaid","PaymentExpectedAmount" '
+        'FROM "WalletTransactions" '
+        'WHERE "Authority"=%s AND "Kind"=\'charge\' FOR UPDATE',
+        (authority,),
+    )
+    existing = cur.fetchone()
+    if existing:
+        tx_id, tx_amount, _is_paid, expected = existing
+        if int(tx_amount) != amount or int(expected or tx_amount) != amount:
+            raise ValueError('مبلغ لینک درگاه با تراکنش کیف پول موجود یکی نیست.')
+        return tx_id
+    cur.execute(
+        'SELECT "Id" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
+        (int(user_id),),
+    )
+    wallet = cur.fetchone()
+    if not wallet:
+        cur.execute(
+            'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
+            'VALUES (%s,0,now()) RETURNING "Id"',
+            (int(user_id),),
+        )
+        wallet = cur.fetchone()
+    cur.execute(
+        'INSERT INTO "WalletTransactions" '
+        '("WalletId","Amount","Kind","Description","Authority","IsPaid",'
+        '"PaymentExpectedAmount","CreatedAt") '
+        'VALUES (%s,%s,\'charge\',%s,%s,false,%s,now()) RETURNING "Id"',
+        (wallet[0], amount, str(description or '')[:200], authority, amount),
+    )
+    return cur.fetchone()[0]
+
+
+def _park_zarinpal_authority_for_order(cur, row, order_id, description):
+    """Keep a late Zarinpal payment recoverable after the order is closed."""
+    authority = str(row[8] or '').strip()
+    expected = int(row[9] or 0)
+    if row[7] != 'zarinpal' or not authority or expected <= 0:
+        return None
+    return _ensure_pending_gateway_wallet_charge(
+        cur, row[1], expected, authority, description,
+    )
+
+
 def detach_order_authority_to_wallet(order_id, user_db_id):
     """Allow a safe method change while preserving a possible late payment.
 
@@ -856,28 +907,9 @@ def detach_order_authority_to_wallet(order_id, user_db_id):
             expected = int(row[9] or 0)
             if not authority or row[7] != 'zarinpal' or expected != payable:
                 return False, 'لینک درگاه فعالی برای تغییر پیدا نشد.'
-            cur.execute(
-                'SELECT "Id" FROM "Wallets" WHERE "UserId"=%s FOR UPDATE',
-                (int(user_db_id),),
-            )
-            wallet = cur.fetchone()
-            if not wallet:
-                cur.execute(
-                    'INSERT INTO "Wallets" ("UserId","Balance","UpdatedAt") '
-                    'VALUES (%s,0,now()) RETURNING "Id"',
-                    (int(user_db_id),),
-                )
-                wallet = cur.fetchone()
-            cur.execute(
-                'INSERT INTO "WalletTransactions" '
-                '("WalletId","Amount","Kind","Description","Authority","IsPaid",'
-                '"PaymentExpectedAmount","CreatedAt") '
-                'VALUES (%s,%s,\'charge\',%s,%s,false,%s,now())',
-                (
-                    wallet[0], expected,
-                    f'لینک کنارگذاشته‌شده سفارش #{order_id}',
-                    authority, expected,
-                ),
+            _park_zarinpal_authority_for_order(
+                cur, row, order_id,
+                f'لینک کنارگذاشته‌شده سفارش #{int(order_id)}',
             )
             cur.execute(
                 'UPDATE "Orders" SET "PaymentMethod"=\'pending\','
@@ -1179,6 +1211,14 @@ def expire_order_and_refund(order_id):
         )
         if cur.fetchone():
             return False, 0, 'رسید سفارش در انتظار بررسی است.'
+        try:
+            _park_zarinpal_authority_for_order(
+                cur, row, order_id,
+                f'پرداخت دیرهنگام سفارش #{int(order_id)}',
+            )
+        except ValueError as exc:
+            conn.rollback()
+            return False, 0, str(exc)
         _release_manual_gem_reservations(cur, order_id)
         refunded = int(row[5] or 0)
         if refunded:
@@ -2411,6 +2451,22 @@ def complete_wallet_charge_by_authority(authority, verified_amount=None, ref_id=
         return True, user_id, amount, new_bal
 
 
+def credit_verified_gateway_to_wallet(user_db_id, amount, authority, ref_id, description):
+    """Idempotent wallet credit for a captured Zarinpal payment that cannot fulfill an order."""
+    try:
+        amount = checked_amount(amount, minimum=1, label='مبلغ واریز دیرهنگام')
+        with get_conn() as conn, conn.cursor() as cur:
+            _ensure_pending_gateway_wallet_charge(
+                cur, user_db_id, amount, authority, description,
+            )
+            conn.commit()
+    except ValueError:
+        return False, None, 0, 0
+    return complete_wallet_charge_by_authority(
+        authority, verified_amount=amount, ref_id=ref_id,
+    )
+
+
 def approve_wallet_card_charge(tx_id):
     """شارژ کارت‌به‌کارت فقط با رسید تصویری pending و به‌صورت اتمیک."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -3387,6 +3443,169 @@ def get_order_admin(order_id):
         return cur.fetchone()
 
 
+def _parked_gateway_charge_for_order(user_id, order_id):
+    """Unpaid/paid wallet row created when a Zarinpal link was detached or expired."""
+    oid = int(order_id)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT t."Id",t."Amount",t."IsPaid",t."Authority" '
+            'FROM "WalletTransactions" t '
+            'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+            'WHERE w."UserId"=%s AND t."Kind"=\'charge\' '
+            'AND t."Authority" IS NOT NULL AND t."Authority" NOT LIKE \'wcard_%%\' '
+            'AND t."Description" IN (%s, %s) '
+            'ORDER BY t."Id" DESC LIMIT 1',
+            (
+                int(user_id),
+                f'پرداخت دیرهنگام سفارش #{oid}',
+                f'لینک کنارگذاشته‌شده سفارش #{oid}',
+            ),
+        )
+        return cur.fetchone()
+
+
+def get_order_admin_detail(order_id):
+    """Full admin inquiry card: user, gems UID, payment, attempts."""
+    order_id = int(order_id)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."UserId",o."TelegramId",o."TotalAmount",'
+            'o."DiscountAmount",COALESCE(o."WalletPaid",0),o."PaymentMethod",'
+            'o."Status",o."CreatedAt",o."PaymentAuthority",'
+            'o."PaymentExpectedAmount",o."PaymentVerifiedAt",o."PaymentRefId",'
+            'o."PaymentExpiresAt",u."FirstName",'
+            'COALESCE(u."TelegramUsername",\'\'),u."LastName",'
+            'COALESCE(w."Balance",0) '
+            'FROM "Orders" o '
+            'LEFT JOIN "Users" u ON u."Id"=o."UserId" '
+            'LEFT JOIN "Wallets" w ON w."UserId"=o."UserId" '
+            'WHERE o."Id"=%s',
+            (order_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    gems = get_gem_infos_for_order(order_id)
+    items = get_order_items(order_id)
+    gift = get_gift_card_order(order_id)
+    attempts = list_payment_attempts_for_order(order_id, 8)
+    parked = None
+    authority = str(row[9] or '').strip()
+    if authority:
+        parked = get_gateway_wallet_charge(authority)
+    if not parked and row[1] is not None:
+        parked_row = _parked_gateway_charge_for_order(row[1], order_id)
+        if parked_row:
+            parked = (
+                parked_row[0], parked_row[1], parked_row[2],
+                row[1], row[2],
+            )
+            if not authority:
+                authority = str(parked_row[3] or '').strip()
+    last_attempt_authority = ''
+    last_attempt_amount = 0
+    for _event, _att_status, amount, att_auth, _ref, _msg, _created in attempts:
+        if str(att_auth or '').strip():
+            last_attempt_authority = str(att_auth).strip()
+            last_attempt_amount = int(amount or 0)
+            break
+    return {
+        'id': row[0],
+        'user_id': row[1],
+        'telegram_id': row[2] or '',
+        'total': int(row[3] or 0),
+        'discount': int(row[4] or 0),
+        'wallet_paid': int(row[5] or 0),
+        'method': row[6] or '',
+        'status': row[7] or '',
+        'created_at': row[8],
+        'authority': authority,
+        'expected': int(row[10] or 0),
+        'verified_at': row[11],
+        'ref_id': row[12] or '',
+        'expires_at': row[13],
+        'first_name': row[14] or '',
+        'username': row[15] or '',
+        'last_name': row[16] or '',
+        'wallet_balance': int(row[17] or 0),
+        'items': items,
+        'gems': gems,
+        'gift': gift,
+        'attempts': attempts,
+        'parked': parked,
+        'last_attempt_authority': last_attempt_authority,
+        'last_attempt_amount': last_attempt_amount,
+    }
+
+
+def resolve_late_zarinpal_recovery(order_id, authority=None):
+    """Locate a captured-but-undelivered Zarinpal payment for a closed order."""
+    detail = get_order_admin_detail(order_id)
+    if not detail:
+        return None, 'سفارش پیدا نشد.'
+    status = str(detail['status'] or '').lower()
+    if status in ('paid', 'delivered', 'completed', 'processing'):
+        return None, 'این سفارش قبلاً پرداخت یا تحویل شده است.'
+    if status not in ('canceled', 'cancelled'):
+        return None, 'فقط سفارش لغو/منقضی‌شده قابل بازیابی کیف پول است.'
+    auth = str(authority or detail['authority'] or '').strip()
+    if not auth:
+        auth = str(detail.get('last_attempt_authority') or '').strip()
+    if not auth:
+        return None, 'کد درگاه این سفارش پیدا نشد.'
+    parked = get_gateway_wallet_charge(auth) or detail.get('parked')
+    amount = 0
+    if parked:
+        amount = int(parked[1] or 0)
+        already_paid = bool(parked[2])
+        if already_paid:
+            return {
+                'already': True,
+                'user_id': detail['user_id'],
+                'telegram_id': detail['telegram_id'],
+                'amount': amount,
+                'authority': auth,
+                'order_id': int(order_id),
+            }, None
+    if amount <= 0:
+        amount = int(detail['expected'] or 0)
+    if amount <= 0:
+        amount = int(detail.get('last_attempt_amount') or 0)
+    if amount <= 0:
+        amount = max(0, int(detail['total'] or 0) - int(detail['discount'] or 0))
+    if amount <= 0:
+        return None, 'مبلغ درگاه برای این سفارش مشخص نیست.'
+    if detail['user_id'] is None:
+        return None, 'کاربر سفارش پیدا نشد.'
+    return {
+        'already': False,
+        'user_id': int(detail['user_id']),
+        'telegram_id': detail['telegram_id'],
+        'amount': amount,
+        'authority': auth,
+        'order_id': int(order_id),
+    }, None
+
+
+def list_recent_orders_admin(limit=20):
+    """آخرین سفارش‌ها با اطلاعات کاربر و آیدی بازی — همه وضعیت‌ها."""
+    limit = max(1, min(int(limit), 30))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",'
+            'o."PaymentMethod",o."CreatedAt",u."FirstName",'
+            'COALESCE(u."TelegramUsername",\'\'),'
+            '(SELECT g."GameUID" FROM "GemOrderInfo" g '
+            ' WHERE g."OrderId"=o."Id" AND COALESCE(g."GameUID",\'\')<>\'\' '
+            ' LIMIT 1) '
+            'FROM "Orders" o '
+            'LEFT JOIN "Users" u ON u."Id"=o."UserId" '
+            'ORDER BY o."Id" DESC LIMIT %s',
+            (limit,),
+        )
+        return cur.fetchall()
+
+
 def list_pending_receipts(limit=30):
     """فقط سفارش‌هایی که رسید تصویری pending دارند."""
     with get_conn() as conn, conn.cursor() as cur:
@@ -3558,6 +3777,18 @@ def list_payment_attempts(status=None, limit=30):
             'FROM "PaymentAttempts" ' + where +
             ' ORDER BY "Id" DESC LIMIT %s',
             args,
+        )
+        return cur.fetchall()
+
+
+def list_payment_attempts_for_order(order_id, limit=10):
+    limit = max(1, min(int(limit), 20))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Event","Status","Amount","Authority","RefId","Message","CreatedAt" '
+            'FROM "PaymentAttempts" WHERE "OrderId"=%s '
+            'ORDER BY "Id" DESC LIMIT %s',
+            (int(order_id), limit),
         )
         return cur.fetchall()
 

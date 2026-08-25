@@ -85,6 +85,18 @@ class AdminOperationsTests(unittest.TestCase):
         appear = admin_home_keyboard().inline_keyboard[1][0]
         self.assertEqual(appear.callback_data, 'ap_home')
 
+    def test_orders_hub_has_inquiry_and_full_list(self):
+        from keyboards import admin_hub_orders_keyboard
+        rows = admin_hub_orders_keyboard().inline_keyboard
+        self.assertEqual(rows[0][0].callback_data, 'admi_ordersearch')
+        self.assertEqual(rows[0][1].callback_data, 'admx_allorders')
+
+    def test_parse_admin_order_id_accepts_persian_and_hash(self):
+        self.assertEqual(admin_extended.parse_admin_order_id('#۱۲۳۴'), 1234)
+        self.assertEqual(admin_extended.parse_admin_order_id('سفارش 88'), 88)
+        with self.assertRaises(ValueError):
+            admin_extended.parse_admin_order_id('بدون عدد')
+
     def test_invalid_low_stock_setting_falls_back_safely(self):
         with patch.object(admin_extended, 'get_setting', return_value='not-a-number'):
             self.assertEqual(admin_extended._low_stock_threshold(), 5)
