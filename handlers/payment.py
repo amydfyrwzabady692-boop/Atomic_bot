@@ -409,11 +409,14 @@ def _success_user_text(order_id, status, ref_id=None):
     if status == 'delivered':
         msg += "💎 جم به‌صورت خودکار به اکانتت واریز شد."
     elif status == 'paid' and credential_order:
-        from db import get_credential_support_contact
-        support = get_credential_support_contact()
+        from db import get_credential_support_contact, get_gift_support_contact
         plan_type = str(credential_order[5] or '')
         method = str(credential_order[6] or '')
-        if plan_type == 'gift' or method == 'uid':
+        is_gift = plan_type == 'gift' or method == 'uid'
+        support = (
+            get_gift_support_contact() if is_gift else get_credential_support_contact()
+        )
+        if is_gift:
             msg += (
                 'سفارش بویاه پس گیفتی ثبت شد.\n\n'
                 f'حالا برو پیوی ادمین ({support["handle"]}) و بنویس:\n'
@@ -592,11 +595,15 @@ async def _send_credential_post_pay_support(bot, tg_id, order_id):
     """بعد از پرداخت موفق: گزینه پیام به پشتیبانی با شماره سفارش."""
     if not tg_id or not order_id:
         return
-    from db import get_credential_support_contact, get_credential_order
-    support = await asyncio.to_thread(get_credential_support_contact)
+    from db import (
+        get_credential_support_contact, get_credential_order, get_gift_support_contact,
+    )
     row = await asyncio.to_thread(get_credential_order, order_id)
     is_gift = bool(row) and (
         str(row[5] or '') == 'gift' or str(row[6] or '') == 'uid'
+    )
+    support = await asyncio.to_thread(
+        get_gift_support_contact if is_gift else get_credential_support_contact
     )
     handle_line = (
         f'\n\n🎧 آیدی پشتیبان:\n`{support["handle"]}`'

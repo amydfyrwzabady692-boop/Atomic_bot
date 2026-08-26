@@ -42,7 +42,7 @@ from db import (
     admin_cancel_stuck_order, mark_delivery_notified,
     get_credential_pricing_config, compute_gem_sale_price,
     get_credential_support_contact, count_open_tickets, list_credential_admins,
-    set_credential_support_from_admin, get_user_profile,
+    set_credential_support_from_admin, get_user_profile, get_gift_support_contact,
     priced_gift_cards, giftcard_profit_percent,
 )
 from handlers.forced_join import invalidate_forced_join_cache
@@ -1606,19 +1606,26 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == 'admx_support':
         support_id = get_setting('support_id', '') or 'تنظیم نشده'
         cred_support = get_credential_support_contact()
+        gift_support = get_gift_support_contact()
         await _edit(query, (
             '🎧 تنظیمات پشتیبانی\n\n'
             f'آیدی عمومی / جم با آیدی: {support_id}\n'
-            f'پشتیبان جم با اطلاعات (برای مشتری): '
-            f'{cred_support["handle"] or "تنظیم نشده"}\n\n'
-            '⚠️ آیدی جم با اطلاعات فقط بعد از پرداخت به مشتری نشان داده می‌شود.\n\n'
-            '• آیدی عمومی و آیدی مشتری را جداگانه با دکمه‌های زیر ست کن\n'
+            f'پشتیبان هفتگی / ماهانه (برای مشتری): '
+            f'{cred_support["handle"] or "تنظیم نشده"}\n'
+            f'پشتیبان بویاه پس گیفتی (برای مشتری): '
+            f'{gift_support["handle"] or "تنظیم نشده"}\n\n'
+            '⚠️ این آیدی‌ها فقط بعد از پرداخت به مشتری نشان داده می‌شوند.\n\n'
+            '• آیدی‌ها را جداگانه با دکمه‌های زیر ست کن\n'
             '• افزودن پشتیبان با شناسه عددی فقط دسترسی پنل می‌دهد'
         ), [
             [InlineKeyboardButton('✏️ تنظیم آیدی پشتیبانی عمومی', callback_data='admi_supportid')],
             [InlineKeyboardButton(
-                '✏️ آیدی پشتیبانی جم با اطلاعات (برای مشتری)',
+                '✏️ آیدی پشتیبانی هفتگی / ماهانه',
                 callback_data='admi_credentialsupportid'
+            )],
+            [InlineKeyboardButton(
+                '✏️ آیدی پشتیبانی بویاه پس گیفتی',
+                callback_data='admi_giftsupportid'
             )],
             [InlineKeyboardButton(
                 '🔐 افزودن پشتیبان پنل جم با اطلاعات',
@@ -2271,8 +2278,13 @@ INPUT_ACTIONS = {
     'admi_supportid': ('setting:support_id', 'آیدی پشتیبانی را با @ بفرست.'),
     'admi_credentialsupportid': (
         'setting:credential_support_id',
-        'آیدی پشتیبان سفارش‌های جم با اطلاعات را با @ بفرست.\n'
+        'آیدی پشتیبان سفارش‌های هفتگی / ماهانه را با @ بفرست.\n'
         'مثال: @lookurback',
+    ),
+    'admi_giftsupportid': (
+        'setting:gift_support_id',
+        'آیدی پشتیبان سفارش‌های بویاه پس گیفتی را با @ بفرست.\n'
+        'مثال: @omid_1797',
     ),
     'admi_shopname': ('setting:shop_name', 'نام فروشگاه را بفرست.'),
     'admi_welcome': ('setting:welcome_text', 'متن کامل خوش‌آمد را بفرست. Markdown مجاز است.'),
@@ -2506,7 +2518,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     raw = raw.rstrip('0').rstrip('.')
             if key == 'card_number' and len(''.join(c for c in raw if c.isdigit())) != 16:
                 raise ValueError('شماره کارت باید ۱۶ رقم باشد.')
-            if key in ('support_id', 'credential_support_id'):
+            if key in ('support_id', 'credential_support_id', 'gift_support_id'):
                 raw = raw.strip()
                 if raw.isdigit():
                     pass  # شناسه عددی تلگرام مجاز است

@@ -320,6 +320,21 @@ class UidGiftCredentialTests(unittest.TestCase):
         weekly_texts = [btn.text for row in weekly.inline_keyboard for btn in row]
         self.assertTrue(any('بک‌آپ' in str(t) for t in weekly_texts))
 
+    def test_gift_support_contact_is_separate_from_weekly_monthly(self):
+        import inspect
+        self.assertIn('gift_support_id', inspect.getsource(db.ensure_admin_schema))
+        self.assertIn('@omid_1797', inspect.getsource(db.get_gift_support_contact))
+        self.assertIn('@lookurback', inspect.getsource(db.get_credential_support_contact))
+        admin = inspect.getsource(
+            __import__('handlers.admin_extended', fromlist=['admin_extended'])
+        )
+        self.assertIn('admi_giftsupportid', admin)
+        self.assertIn('gift_support_id', admin)
+        pay = inspect.getsource(
+            __import__('handlers.payment', fromlist=['payment'])._send_credential_post_pay_support
+        )
+        self.assertIn('get_gift_support_contact', pay)
+
 
 if __name__ == '__main__':
     unittest.main()

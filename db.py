@@ -2827,6 +2827,9 @@ def ensure_admin_schema():
            VALUES ('credential_support_id','@lookurback',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('gift_support_id','@omid_1797',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('support_id','@omid_1797',now())
            ON CONFLICT ("Key") DO NOTHING''',
         # اجبار یک‌باره آیدی‌های عمومی پشتیبانی
@@ -3172,6 +3175,31 @@ def get_credential_support_contact():
     raw = str(get_setting('credential_support_id', '@lookurback') or '@lookurback').strip()
     if not raw:
         raw = '@lookurback'
+    if raw.isdigit():
+        return {
+            'handle': raw,
+            'username': '',
+            'url': f'https://t.me/user?id={raw}',
+            'display': raw,
+            'telegram_id': raw,
+        }
+    if not raw.startswith('@'):
+        raw = '@' + raw.lstrip('@')
+    username = raw[1:]
+    return {
+        'handle': raw,
+        'username': username,
+        'url': f'https://t.me/{username}',
+        'display': raw,
+        'telegram_id': '',
+    }
+
+
+def get_gift_support_contact():
+    """آیدی پشتیبان بویاه پس گیفتی برای نمایش به مشتری (پیش‌فرض @omid_1797)."""
+    raw = str(get_setting('gift_support_id', '@omid_1797') or '@omid_1797').strip()
+    if not raw:
+        raw = '@omid_1797'
     if raw.isdigit():
         return {
             'handle': raw,
