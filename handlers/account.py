@@ -1,3 +1,5 @@
+import asyncio
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from keyboards import main_menu, wallet_keyboard
@@ -75,4 +77,3 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=None)
     else:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
-import asyncio

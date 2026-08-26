@@ -31,6 +31,7 @@ from handlers.payment import (
     start_card, pay_wallet, cancel_order, change_payment_method,
     admin_approve, admin_reject,
     admin_review_order_prompt, admin_review_order_back,
+    sweep_pending_zarinpal,
 )
 from handlers.wallet import (
     wallet_menu, wallet_charge_preset, wallet_check, wallet_conversation_handler,
@@ -392,9 +393,10 @@ async def _admin_alert_loop(app):
 
 
 async def _payment_expiry_loop(app):
-    """لغو سفارش منقضی؛ پرداخت زرین‌پال پیش از لغو دوباره از بانک پرسیده می‌شود."""
+    """تأیید پرداخت زرین‌پال معلق، سپس لغو سفارش منقضی."""
     while True:
         try:
+            await sweep_pending_zarinpal(app.bot, 50)
             rows = await asyncio.to_thread(list_expired_unpaid_orders, 50)
             for order_id, method, authority, expected, telegram_id in rows:
                 if method == 'zarinpal' and authority and expected:

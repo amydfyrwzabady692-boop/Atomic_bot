@@ -6,6 +6,65 @@ from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
+_HTML_PAY_OK = (
+    "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
+    "<h2>پرداخت ثبت شد</h2><p>به ربات تلگرام برگرد؛ وضعیت سفارش برایت ارسال می‌شود.</p>"
+    "</body></html>"
+)
+_HTML_PAY_FAIL = (
+    "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
+    "<h2>پرداخت ناموفق یا لغو شد</h2><p>به ربات برگرد و دوباره تلاش کن. VPN را خاموش کن.</p>"
+    "</body></html>"
+)
+_HTML_WALLET_OK = (
+    "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
+    "<h2>شارژ ثبت شد</h2><p>به ربات تلگرام برگرد.</p>"
+    "</body></html>"
+)
+_HTML_WALLET_FAIL = (
+    "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
+    "<h2>شارژ ناموفق</h2><p>VPN را خاموش کن و دوباره تلاش کن.</p>"
+    "</body></html>"
+)
+
+
+async def extract_gateway_params(request):
+    """Query + POST body. زرین‌پال گاهی query سفارشی مثل order را حذف می‌کند."""
+    params = {str(key): str(value) for key, value in request.rel_url.query.items()}
+    if request.method == 'POST':
+        content_type = (request.content_type or '').lower()
+        try:
+            if 'json' in content_type:
+                body = await request.json()
+                if isinstance(body, dict):
+                    for key, value in body.items():
+                        if params.get(key) or value is None:
+                            continue
+                        params[str(key)] = str(value)
+            else:
+                posted = await request.post()
+                for key in posted.keys():
+                    if not params.get(key):
+                        params[key] = str(posted.get(key) or '')
+        except Exception:
+            logger.exception('gateway callback body parse failed')
+    order_id = (
+        params.get('order') or params.get('order_id') or params.get('OrderId') or ''
+    ).strip()
+    authority = (
+        params.get('Authority') or params.get('authority') or params.get('AuthorityId') or ''
+    ).strip()
+    status = (params.get('Status') or params.get('status') or '').strip()
+    return order_id, authority, status
+
+
+def _status_means_ok(status):
+    """NOK یعنی انصراف. خالی را تأیید می‌کنیم تا verify بانک تصمیم بگیرد."""
+    value = str(status or '').strip().upper()
+    if value in ('NOK', 'NO', 'CANCEL', 'CANCELED', 'CANCELLED', 'FAILED'):
+        return False
+    return True
+
 
 def create_web_app(bot_app):
     app = web.Application()
@@ -29,128 +88,80 @@ def create_web_app(bot_app):
         return web.json_response({'status': 'not_ready'}, status=503)
 
     async def payment_callback(request):
-        order_id = request.rel_url.query.get('order')
-        authority = request.rel_url.query.get('Authority') or request.rel_url.query.get('authority')
-        status = request.rel_url.query.get('Status') or request.rel_url.query.get('status') or ''
-        status_ok = status.upper() == 'OK'
-        html_ok = (
-            "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
-            "<h2>پرداخت ثبت شد</h2><p>به ربات تلگرام برگرد؛ وضعیت سفارش برایت ارسال می‌شود.</p>"
-            "</body></html>"
+        order_id, authority, status = await extract_gateway_params(request)
+        status_ok = _status_means_ok(status)
+        logger.info(
+            'Zarinpal order-callback method=%s order=%s authority=%s status=%s',
+            request.method, order_id or '-', authority or '-', status or '-',
         )
-        html_fail = (
-            "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
-            "<h2>پرداخت ناموفق یا لغو شد</h2><p>به ربات برگرد و دوباره تلاش کن. VPN را خاموش کن.</p>"
-            "</body></html>"
-        )
-        if not order_id:
-            return web.Response(text=html_fail, content_type='text/html')
         try:
-            from handlers.payment import process_zarinpal_callback
-            ok, detail = await process_zarinpal_callback(
-                bot_app.bot, int(order_id), authority, status_ok
+            from db import get_order_by_authority
+            from handlers.payment import (
+                process_zarinpal_callback, process_zarinpal_wallet_callback,
             )
-            logger.info('Zarinpal callback order=%s ok=%s detail=%s', order_id, ok, detail)
-            return web.Response(text=html_ok if ok else html_fail, content_type='text/html')
+            if not order_id and authority:
+                row = await asyncio.to_thread(get_order_by_authority, authority)
+                if row:
+                    order_id = str(row[0])
+                    logger.info(
+                        'Zarinpal callback resolved order=%s from authority',
+                        order_id,
+                    )
+            if order_id:
+                ok, detail = await process_zarinpal_callback(
+                    bot_app.bot, int(order_id), authority, status_ok
+                )
+                logger.info(
+                    'Zarinpal callback order=%s ok=%s detail=%s',
+                    order_id, ok, detail,
+                )
+                return web.Response(
+                    text=_HTML_PAY_OK if ok else _HTML_PAY_FAIL,
+                    content_type='text/html',
+                )
+            if authority:
+                ok, detail = await process_zarinpal_wallet_callback(
+                    bot_app.bot, authority, status_ok
+                )
+                logger.info(
+                    'Zarinpal callback fell back to wallet authority=%s ok=%s detail=%s',
+                    authority, ok, detail,
+                )
+                return web.Response(
+                    text=_HTML_PAY_OK if ok else _HTML_PAY_FAIL,
+                    content_type='text/html',
+                )
+            logger.warning('Zarinpal callback missing order and authority')
+            return web.Response(text=_HTML_PAY_FAIL, content_type='text/html')
         except Exception:
             logger.exception('payment callback failed')
-            return web.Response(text=html_fail, content_type='text/html')
+            return web.Response(text=_HTML_PAY_FAIL, content_type='text/html')
 
     async def wallet_callback(request):
-        authority = request.rel_url.query.get('Authority') or request.rel_url.query.get('authority')
-        status = (request.rel_url.query.get('Status') or '').upper()
-        html_ok = (
-            "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
-            "<h2>شارژ ثبت شد</h2><p>به ربات تلگرام برگرد.</p>"
-            "</body></html>"
-        )
-        html_fail = (
-            "<html><body style='font-family:tahoma;text-align:center;padding:40px'>"
-            "<h2>شارژ ناموفق</h2><p>VPN را خاموش کن و دوباره تلاش کن.</p>"
-            "</body></html>"
+        _order_id, authority, status = await extract_gateway_params(request)
+        status_ok = _status_means_ok(status)
+        logger.info(
+            'Zarinpal wallet-callback method=%s authority=%s status=%s',
+            request.method, authority or '-', status or '-',
         )
         if not authority:
-            return web.Response(text=html_fail, content_type='text/html')
+            return web.Response(text=_HTML_WALLET_FAIL, content_type='text/html')
         try:
-            from db import (
-                get_conn, complete_wallet_charge_by_authority, log_payment_attempt,
+            from handlers.payment import process_zarinpal_wallet_callback
+            ok, detail = await process_zarinpal_wallet_callback(
+                bot_app.bot, authority, status_ok
             )
-            from payments import verify_payment
-            def load_wallet_transaction():
-                with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute(
-                        'SELECT t."Id",t."Amount",t."IsPaid",w."UserId",u."TelegramId" '
-                        'FROM "WalletTransactions" t '
-                        'JOIN "Wallets" w ON w."Id"=t."WalletId" '
-                        'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
-                        'WHERE t."Authority"=%s AND t."Kind"=\'charge\' '
-                        'AND t."Authority" NOT LIKE \'wcard_%%\'',
-                        (authority,),
-                    )
-                    return cur.fetchone()
-
-            row = await asyncio.to_thread(load_wallet_transaction)
-            if not row:
-                return web.Response(text=html_fail, content_type='text/html')
-            tx_id, amount, is_paid, user_id, telegram_id = row
-            if status != 'OK':
-                await asyncio.to_thread(
-                    log_payment_attempt,
-                    provider='zarinpal', event='wallet_callback',
-                    status='canceled', amount=amount, wallet_tx_id=tx_id,
-                    telegram_id=telegram_id, authority=authority,
-                    message='user canceled',
-                )
-                return web.Response(text=html_fail, content_type='text/html')
-            if not is_paid:
-                ok, ref = await asyncio.to_thread(
-                    verify_payment, amount, authority
-                )
-                if not ok:
-                    await asyncio.to_thread(
-                        log_payment_attempt,
-                        provider='zarinpal', event='wallet_callback',
-                        status='failed', amount=amount, wallet_tx_id=tx_id,
-                        telegram_id=telegram_id, authority=authority,
-                        message='verify failed',
-                    )
-                    return web.Response(text=html_fail, content_type='text/html')
-                done, _uid, amt, new_bal = await asyncio.to_thread(
-                    complete_wallet_charge_by_authority,
-                    authority, verified_amount=amount, ref_id=ref,
-                )
-                if not done:
-                    logger.warning(
-                        'wallet callback verified but completion failed authority=%s',
-                        authority,
-                    )
-                    return web.Response(text=html_fail, content_type='text/html')
-                await asyncio.to_thread(
-                    log_payment_attempt,
-                    provider='zarinpal', event='wallet_verified',
-                    status='success', amount=amt, wallet_tx_id=tx_id,
-                    telegram_id=telegram_id, authority=authority, ref_id=ref,
-                )
-                if done and telegram_id:
-                    try:
-                        await bot_app.bot.send_message(
-                            chat_id=int(telegram_id),
-                            text=(
-                                f"✅ کیف پول شارژ شد!\n"
-                                f"مبلغ: {amt:,} تومان\n"
-                                f"موجودی: {new_bal:,} تومان\n"
-                                f"پیگیری: {ref}"
-                            ),
-                        )
-                    except Exception:
-                        logger.exception(
-                            'wallet charged but Telegram notification failed tx=%s',
-                            tx_id,
-                        )
-            return web.Response(text=html_ok, content_type='text/html')
+            logger.info(
+                'Zarinpal wallet-callback authority=%s ok=%s detail=%s',
+                authority, ok, detail,
+            )
+            return web.Response(
+                text=_HTML_WALLET_OK if ok else _HTML_WALLET_FAIL,
+                content_type='text/html',
+            )
         except Exception:
             logger.exception('wallet callback failed')
-            return web.Response(text=html_fail, content_type='text/html')
+            return web.Response(text=_HTML_WALLET_FAIL, content_type='text/html')
 
     async def g2bulk_callback(request):
         order_id = request.rel_url.query.get('order')

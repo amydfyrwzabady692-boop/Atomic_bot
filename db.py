@@ -1188,6 +1188,52 @@ def list_expired_unpaid_orders(limit=50):
         return cur.fetchall()
 
 
+def list_pending_zarinpal_orders(limit=50, user_db_id=None):
+    """سفارش زرین‌پال در انتظار که باید بدون منتظر انقضا از بانک پرسیده شود."""
+    limit = max(1, min(int(limit), 100))
+    sql = (
+        'SELECT o."Id",o."PaymentAuthority",o."PaymentExpectedAmount",o."TelegramId" '
+        'FROM "Orders" o '
+        'WHERE o."Status"=\'pending\' AND o."PaymentVerifiedAt" IS NULL '
+        'AND o."PaymentMethod"=\'zarinpal\' '
+        'AND o."PaymentAuthority" IS NOT NULL AND o."PaymentAuthority"<>\'\' '
+    )
+    params = []
+    if user_db_id is not None:
+        sql += 'AND o."UserId"=%s '
+        params.append(int(user_db_id))
+    sql += 'ORDER BY o."Id" LIMIT %s'
+    params.append(limit)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        return cur.fetchall()
+
+
+def list_pending_zarinpal_wallet_charges(limit=50, user_db_id=None):
+    """شارژ زرین‌پال کیف پول که هنوز تأیید نشده."""
+    limit = max(1, min(int(limit), 100))
+    sql = (
+        'SELECT t."Authority",t."Amount",u."TelegramId" '
+        'FROM "WalletTransactions" t '
+        'JOIN "Wallets" w ON w."Id"=t."WalletId" '
+        'LEFT JOIN "Users" u ON u."Id"=w."UserId" '
+        'WHERE t."Kind"=\'charge\' AND t."IsPaid"=false '
+        'AND t."Authority" IS NOT NULL AND t."Authority"<>\'\' '
+        'AND t."Authority" NOT LIKE \'wcard_%%\' '
+        'AND t."Authority" NOT LIKE \'rejected_%%\' '
+        'AND t."PaymentVerifiedAt" IS NULL '
+    )
+    params = []
+    if user_db_id is not None:
+        sql += 'AND w."UserId"=%s '
+        params.append(int(user_db_id))
+    sql += 'ORDER BY t."Id" LIMIT %s'
+    params.append(limit)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        return cur.fetchall()
+
+
 def expire_order_and_refund(order_id):
     """لغو اتمیک فقط اگر هنوز منقضی و پرداخت‌نشده و بدون رسید باشد."""
     with get_conn() as conn, conn.cursor() as cur:

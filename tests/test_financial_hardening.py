@@ -1,5 +1,6 @@
 import inspect
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import db
@@ -161,6 +162,91 @@ class PaymentMethodChangeSafetyTests(unittest.TestCase):
         self.assertIn('complete_wallet_charge_by_authority', callback_source)
         self.assertIn('detached gateway credited to wallet', callback_source)
         self.assertIn('recover_late_zarinpal', callback_source)
+
+
+class GatewayCallbackRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def test_empty_or_ok_status_tries_verify_and_nok_does_not(self):
+        import webapp
+        self.assertTrue(webapp._status_means_ok(''))
+        self.assertTrue(webapp._status_means_ok('OK'))
+        self.assertTrue(webapp._status_means_ok('ok'))
+        self.assertFalse(webapp._status_means_ok('NOK'))
+        self.assertFalse(webapp._status_means_ok('canceled'))
+
+    def test_pending_zarinpal_query_does_not_wait_for_expiry(self):
+        order_sql = inspect.getsource(db.list_pending_zarinpal_orders)
+        wallet_sql = inspect.getsource(db.list_pending_zarinpal_wallet_charges)
+        self.assertIn('PaymentMethod', order_sql)
+        self.assertIn('zarinpal', order_sql)
+        self.assertNotIn('PaymentExpiresAt', order_sql)
+        self.assertIn('NOT LIKE', wallet_sql)
+        self.assertIn('wcard_', wallet_sql)
+
+    def test_expiry_loop_sweeps_pending_gateway_before_cancel(self):
+        bot_src = Path(__file__).resolve().parents[1].joinpath('bot.py').read_text(
+            encoding='utf-8'
+        )
+        self.assertIn('await sweep_pending_zarinpal(app.bot, 50)', bot_src)
+        pay_src = inspect.getsource(
+            __import__('handlers.payment', fromlist=['sweep_pending_zarinpal'])
+            .sweep_pending_zarinpal
+        )
+        self.assertIn('process_zarinpal_callback', pay_src)
+        self.assertIn('process_zarinpal_wallet_callback', pay_src)
+
+    def test_callback_source_resolves_authority_when_order_query_missing(self):
+        import webapp
+        src = inspect.getsource(webapp.create_web_app)
+        self.assertIn('get_order_by_authority', src)
+        self.assertIn('process_zarinpal_wallet_callback', src)
+        self.assertIn('extract_gateway_params', inspect.getsource(webapp))
+
+    async def test_authority_only_callback_resolves_order(self):
+        from aiohttp.test_utils import TestClient, TestServer
+        import webapp
+
+        calls = {}
+
+        async def fake_process(_bot, order_id, authority, status_ok):
+            calls['args'] = (order_id, authority, status_ok)
+            return True, 'ok'
+
+        class App:
+            bot = object()
+
+        import handlers.payment  # noqa: F401 — patch target
+        with patch(
+            'db.get_order_by_authority',
+            return_value=(42, 1, 1000, 'pending', 'zarinpal', 'AUTHXYZ', '99'),
+        ), patch(
+            'handlers.payment.process_zarinpal_callback',
+            fake_process,
+        ):
+            web_app = webapp.create_web_app(App())
+            async with TestClient(TestServer(web_app)) as client:
+                resp = await client.get(
+                    '/payment/callback?Authority=AUTHXYZ&Status=OK'
+                )
+                body = await resp.text()
+        self.assertEqual(resp.status, 200)
+        self.assertIn('پرداخت ثبت شد', body)
+        self.assertEqual(calls['args'], (42, 'AUTHXYZ', True))
+
+    async def test_extracts_authority_from_get_query(self):
+        import webapp
+
+        class RelUrl:
+            query = {'Authority': 'ABC123', 'Status': 'OK'}
+
+        class Request:
+            method = 'GET'
+            content_type = ''
+            rel_url = RelUrl()
+
+        order_id, authority, status = await webapp.extract_gateway_params(Request())
+        self.assertEqual(order_id, '')
+        self.assertEqual(authority, 'ABC123')
+        self.assertEqual(status, 'OK')
 
 
 class ReceiptInputTests(unittest.TestCase):

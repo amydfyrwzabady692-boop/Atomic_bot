@@ -34,6 +34,7 @@ from db import (
     get_credential_order,
     get_gift_card_order, gift_card_user_delivery_text,
     resolve_late_zarinpal_recovery, credit_verified_gateway_to_wallet,
+    list_pending_zarinpal_orders, list_pending_zarinpal_wallet_charges,
 )
 from payments import request_payment, verify_payment, verify_payment_detailed
 from admin_notify import notify_admin, notify_credential_admins, is_admin
@@ -1682,3 +1683,71 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
         ref_id=ref_id,
     )
     return success, st
+
+
+async def process_zarinpal_wallet_callback(bot, authority, status_ok):
+    """تأیید شارژ کیف پول زرین‌پال از callback یا بررسی خودکار."""
+    authority = str(authority or '').strip()
+    if not authority:
+        return False, 'missing authority'
+    row = await asyncio.to_thread(get_gateway_wallet_charge, authority)
+    if not row:
+        return False, 'wallet charge not found'
+    tx_id, amount, is_paid, _user_id, telegram_id = row
+    if not status_ok:
+        log_payment_attempt(
+            provider='zarinpal', event='wallet_callback', status='canceled',
+            amount=amount, wallet_tx_id=tx_id, telegram_id=telegram_id,
+            authority=authority, message='user canceled',
+        )
+        return False, 'user canceled'
+    if is_paid:
+        return True, 'already credited'
+    ok, ref_id = await asyncio.to_thread(verify_payment, amount, authority)
+    if not ok:
+        log_payment_attempt(
+            provider='zarinpal', event='wallet_callback', status='failed',
+            amount=amount, wallet_tx_id=tx_id, telegram_id=telegram_id,
+            authority=authority, message='verify failed',
+        )
+        return False, 'verify failed'
+    done, _uid, credited, new_balance = await asyncio.to_thread(
+        complete_wallet_charge_by_authority,
+        authority,
+        verified_amount=amount,
+        ref_id=ref_id,
+    )
+    if not done:
+        log.warning('wallet verified but completion failed authority=%s', authority)
+        return False, 'wallet credit failed'
+    log_payment_attempt(
+        provider='zarinpal', event='wallet_verified', status='success',
+        amount=credited, wallet_tx_id=tx_id, telegram_id=telegram_id,
+        authority=authority, ref_id=ref_id,
+    )
+    await _notify_user(
+        bot,
+        telegram_id,
+        f"✅ کیف پول شارژ شد!\n"
+        f"مبلغ: {credited:,} تومان\n"
+        f"موجودی: {new_balance:,} تومان\n"
+        f"پیگیری: {ref_id}",
+        parse_mode=None,
+    )
+    return True, 'wallet credited'
+
+
+async def sweep_pending_zarinpal(bot, limit=50):
+    """هر پرداخت زرین‌پال معلق را بدون منتظر انقضا از بانک تأیید کن."""
+    orders = await asyncio.to_thread(list_pending_zarinpal_orders, limit)
+    for order_id, authority, _expected, _telegram_id in orders:
+        try:
+            await process_zarinpal_callback(bot, order_id, authority, True)
+        except Exception:
+            log.exception('pending zarinpal sweep failed order=%s', order_id)
+    charges = await asyncio.to_thread(list_pending_zarinpal_wallet_charges, limit)
+    for authority, _amount, _telegram_id in charges:
+        try:
+            await process_zarinpal_wallet_callback(bot, authority, True)
+        except Exception:
+            log.exception('pending wallet sweep failed authority=%s', authority)
