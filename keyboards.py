@@ -140,7 +140,7 @@ def updating_keyboard(back='home'):
 def freefire_products_keyboard():
     return InlineKeyboardMarkup([
         [_ibtn('b.gems.id', '🆔 جم با آیدی · تحویل لحظه‌ای', 'gems_by_id')],
-        [_ibtn('b.gems.cr', '🔐 جم با اطلاعات · هفتگی / ماهانه', 'gems_credentials')],
+        [_ibtn('b.gems.cr', '🔐 جم با اطلاعات · هفتگی / ماهانه / گیفتی', 'gems_credentials')],
         [_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')],
     ])
 
@@ -179,12 +179,8 @@ def credential_backup_keyboard():
     ])
 
 
-def credential_post_pay_support_keyboard(order_id, support_username='lookurback', support_url=None):
+def credential_post_pay_support_keyboard(order_id, support_username='lookurback', support_url=None, mode='credentials'):
     """بعد از پرداخت: تیکت داخل ربات + لینک پیوی پشتیبانی."""
-    rows = [[InlineKeyboardButton(
-        f'🆘 تیکت راهنمایی بک‌آپ (سفارش #{order_id})',
-        callback_data=f'cred_ticket_{order_id}',
-    )]]
     url = str(support_url or '').strip()
     label = str(support_username or 'پشتیبانی').strip() or 'پشتیبانی'
     if not url:
@@ -197,6 +193,21 @@ def credential_post_pay_support_keyboard(order_id, support_username='lookurback'
             label = f'@{username}'
     elif not label.startswith('@') and not label.isdigit():
         label = f'@{label.lstrip("@")}'
+    if str(mode or '') == 'gift':
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                f'💬 پیوی ادمین — سفارش #{order_id} را بفرست',
+                url=url,
+            )],
+            [InlineKeyboardButton(
+                f'🆘 تیکت داخل ربات (سفارش #{order_id})',
+                callback_data=f'cred_ticket_{order_id}',
+            )],
+        ])
+    rows = [[InlineKeyboardButton(
+        f'🆘 تیکت راهنمایی بک‌آپ (سفارش #{order_id})',
+        callback_data=f'cred_ticket_{order_id}',
+    )]]
     rows.append([InlineKeyboardButton(
         f'💬 پیوی پشتیبانی ({label})',
         url=url,

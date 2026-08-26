@@ -256,11 +256,12 @@ INSERT INTO "GemPackages"
 ("Title", "Amount", "BonusAmount", "Price", "OldPrice", "PlanType", "PurchaseType",
  "AutoDeliver", "G2BulkCatalogueName", "Stock", "IsAvailable", "IsActive", "SortOrder")
 SELECT title, amount, 0, price, NULL, plan_type, 'by_credentials', false,
-       catalogue, 9999, true, true, sort_order
+       catalogue, stock, true, true, sort_order
 FROM (VALUES
-    ('📅 عضویت هفتگی فری‌فایر', 60, 100000, 'weekly', 'itunes_try:60', 10),
-    ('📆 عضویت ماهانه فری‌فایر', 300, 500000, 'monthly', 'itunes_try:300', 20)
-) AS seed(title, amount, price, plan_type, catalogue, sort_order)
+    ('📅 عضویت هفتگی فری‌فایر', 60, 100000, 'weekly', 'itunes_try:60', 10, 9999),
+    ('📆 عضویت ماهانه فری‌فایر', 300, 500000, 'monthly', 'itunes_try:300', 20, 9999),
+    ('🎁 بویاه پس گیفتی', 90004, 299000, 'gift', 'Booyah Pass Gift', 30, 2)
+) AS seed(title, amount, price, plan_type, catalogue, sort_order, stock)
 WHERE NOT EXISTS (
     SELECT 1 FROM "GemPackages" p
     WHERE p."PurchaseType"='by_credentials' AND p."PlanType"=seed.plan_type

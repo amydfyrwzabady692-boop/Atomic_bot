@@ -305,9 +305,13 @@ async def _notify_credential_sale(bot, order_id, *, event='paid'):
     method = row[6]
     method_label = {
         'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
+        'uid': 'آیدی بازی',
     }.get(method, method or '—')
+    plan_type = str(row[5] or '')
+    game_uid = str(row[18] or '').strip() if len(row) > 18 else ''
+    is_gift = plan_type == 'gift' or method == 'uid'
     has_backup = False
-    if row[7]:
+    if row[7] and not is_gift:
         try:
             secret = decrypt_credentials(row[7])
             has_backup = bool(str(secret.get('backup_code') or '').strip())
@@ -318,27 +322,41 @@ async def _notify_credential_sale(bot, order_id, *, event='paid'):
     tg = row[1] or '—'
     qty = int(row[17] or 1) if len(row) > 17 else 1
     if event == 'created':
+        extra = (
+            f'آیدی بازی: {game_uid or "—"}\n'
+            if is_gift else
+            f'روش ورود: {method_label}\n'
+            f'کد بک‌آپ: {"ثبت شده" if has_backup else "ثبت نشده"}\n'
+        )
         text = (
             f'🆕 درخواست جم با اطلاعات — #{order_id}\n'
             f'محصول: {title}\n'
             f'تعداد: {qty} عدد\n'
             f'مبلغ: {amount:,} تومان\n'
-            f'روش ورود: {method_label}\n'
-            f'کد بک‌آپ: {"ثبت شده" if has_backup else "ثبت نشده"}\n'
+            f'{extra}'
             f'کاربر: {tg}\n'
             f'وضعیت: در انتظار پرداخت کاربر\n\n'
             'بعد از پرداخت دوباره خبر می‌دهیم تا تحویل بدهی.'
         )
     else:
+        extra = (
+            f'آیدی بازی: {game_uid or "—"}\n'
+            if is_gift else
+            f'روش ورود: {method_label}\n'
+            f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else "ثبت نشده ⚠️"}\n'
+        )
         text = (
             f'💰 پرداخت شد — جم با اطلاعات #{order_id}\n'
             f'محصول: {title}\n'
             f'تعداد: {qty} عدد از این بسته\n'
             f'مبلغ: {amount:,} تومان\n'
-            f'روش ورود: {method_label}\n'
-            f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else "ثبت نشده ⚠️"}\n'
+            f'{extra}'
             f'کاربر: {tg}\n\n'
-            'الان اطلاعات را باز کن، وارد اکانت شو و «انجام شد» بزن.'
+            + (
+                'گیفتی است؛ با آیدی بازی تحویل بده و «انجام شد» بزن.'
+                if is_gift else
+                'الان اطلاعات را باز کن، وارد اکانت شو و «انجام شد» بزن.'
+            )
         )
     markup = InlineKeyboardMarkup([[
         InlineKeyboardButton(
@@ -393,13 +411,23 @@ def _success_user_text(order_id, status, ref_id=None):
     elif status == 'paid' and credential_order:
         from db import get_credential_support_contact
         support = get_credential_support_contact()
-        msg += (
-            'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n\n'
-            '🆘 اگر بک‌آپ بلد نبودی، پیدا نکردی، یا کد کار نکرد:\n'
-            f'به پشتیبانی ({support["handle"]}) پیام بده و بنویس:\n'
-            f'`سفارش #{order_id}`\n'
-            'از دکمه زیر هم می‌توانی مستقیم پیوی پشتیبانی را باز کنی.'
-        )
+        plan_type = str(credential_order[5] or '')
+        method = str(credential_order[6] or '')
+        if plan_type == 'gift' or method == 'uid':
+            msg += (
+                'سفارش بویاه پس گیفتی ثبت شد.\n\n'
+                f'حالا برو پیوی ادمین ({support["handle"]}) و بنویس:\n'
+                f'`سفارش #{order_id}`\n'
+                'از دکمه زیر مستقیم پیوی ادمین باز می‌شود.'
+            )
+        else:
+            msg += (
+                'سفارش جم با اطلاعات برای بررسی ادمین ثبت شد.\n\n'
+                '🆘 اگر بک‌آپ بلد نبودی، پیدا نکردی، یا کد کار نکرد:\n'
+                f'به پشتیبانی ({support["handle"]}) پیام بده و بنویس:\n'
+                f'`سفارش #{order_id}`\n'
+                'از دکمه زیر هم می‌توانی مستقیم پیوی پشتیبانی را باز کنی.'
+            )
     elif status == 'paid':
         msg += "سفارش ثبت شد."
     else:
@@ -564,21 +592,33 @@ async def _send_credential_post_pay_support(bot, tg_id, order_id):
     """بعد از پرداخت موفق: گزینه پیام به پشتیبانی با شماره سفارش."""
     if not tg_id or not order_id:
         return
-    from db import get_credential_support_contact
+    from db import get_credential_support_contact, get_credential_order
     support = await asyncio.to_thread(get_credential_support_contact)
+    row = await asyncio.to_thread(get_credential_order, order_id)
+    is_gift = bool(row) and (
+        str(row[5] or '') == 'gift' or str(row[6] or '') == 'uid'
+    )
     handle_line = (
-        f'\n\n🎧 آیدی پشتیبان جم با اطلاعات:\n`{support["handle"]}`'
+        f'\n\n🎧 آیدی پشتیبان:\n`{support["handle"]}`'
         if support.get('handle')
         else ''
     )
-    text = (
-        f'✅ *پرداخت سفارش #{order_id} ثبت شد*\n'
-        '━━━━━━━━━━━━━━━\n'
-        'حالا دسترسی به آیدی پشتیبان باز شد.\n'
-        'اگر بک‌آپ بلد نیستی یا کار نمی‌کند، به پشتیبان پیام بده '
-        'و حتماً شماره سفارش را بنویس.'
-        f'{handle_line}'
-    )
+    if is_gift:
+        text = (
+            f'✅ *پرداخت سفارش #{order_id} ثبت شد*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'حالا برو *پیوی ادمین* و همین شماره سفارش را بفرست.'
+            f'{handle_line}'
+        )
+    else:
+        text = (
+            f'✅ *پرداخت سفارش #{order_id} ثبت شد*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'حالا دسترسی به آیدی پشتیبان باز شد.\n'
+            'اگر بک‌آپ بلد نیستی یا کار نمی‌کند، به پشتیبان پیام بده '
+            'و حتماً شماره سفارش را بنویس.'
+            f'{handle_line}'
+        )
     try:
         await bot.send_message(
             chat_id=int(tg_id),
@@ -587,7 +627,8 @@ async def _send_credential_post_pay_support(bot, tg_id, order_id):
             reply_markup=credential_post_pay_support_keyboard(
                 order_id,
                 support.get('handle') or support.get('username') or 'پشتیبانی',
-                support_url=support.get('url'),
+                support.get('url'),
+                mode='gift' if is_gift else 'credentials',
             ),
         )
     except Exception:

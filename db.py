@@ -155,14 +155,34 @@ def get_gems_by_id():
         return []
 
 
+CREDENTIAL_UID_GIFT_PLAN = 'gift'
+CREDENTIAL_UID_GIFT_AMOUNT = 90_004
+CREDENTIAL_UID_GIFT_CATALOGUE = 'Booyah Pass Gift'
+
+
+def is_uid_gift_credential_package(plan_type=None, amount=None, catalogue=None):
+    """بویاه پس گیفتی: جم با اطلاعات، ولی فقط آیدی بازی لازم است."""
+    plan = str(plan_type or '').strip().lower()
+    cat = str(catalogue or '').strip()
+    try:
+        amt = int(amount or 0)
+    except (TypeError, ValueError):
+        amt = 0
+    return (
+        plan == CREDENTIAL_UID_GIFT_PLAN
+        or amt == CREDENTIAL_UID_GIFT_AMOUNT
+        or cat == CREDENTIAL_UID_GIFT_CATALOGUE
+    )
+
+
 def get_gems_by_credentials():
-    """Active weekly/monthly packages fulfilled through temporary account access."""
+    """Active weekly/monthly/gift packages fulfilled by support, not G2Bulk auto."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f'SELECT {_GEM_COLS} FROM "GemPackages" '
             'WHERE "IsActive"=true AND "IsAvailable"=true '
             'AND "PurchaseType"=\'by_credentials\' '
-            'AND "PlanType" IN (\'weekly\',\'monthly\') '
+            'AND "PlanType" IN (\'weekly\',\'monthly\',\'gift\') '
             'ORDER BY "SortOrder","Id"'
         )
         return cur.fetchall()
@@ -378,6 +398,77 @@ def create_credential_gem_order_atomic(
                 (
                     order_id, item_id, int(gem_package_id), str(telegram_id),
                     login_method, credential_ciphertext, bool(two_factor_enabled),
+                ),
+            )
+            conn.commit()
+            return order_id, str(title), total
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def create_credential_uid_gift_order_atomic(
+    user_db_id, gem_package_id, expected_price, *, telegram_id='',
+    full_name='', game_uid='', quantity=1,
+):
+    """سفارش بویاه پس گیفتی: بدون رمز اکانت، فقط آیدی بازی."""
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    quantity = int(quantity or 1)
+    if quantity < 1 or quantity > 50:
+        raise ValueError('تعداد نامعتبر است.')
+    game_uid = str(game_uid or '').strip()
+    if not game_uid.isdigit() or not (5 <= len(game_uid) <= 20):
+        raise ValueError('آیدی بازی نامعتبر است.')
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            cur.execute(
+                'SELECT "Title","Price","Stock","PlanType","Amount",'
+                '"G2BulkCatalogueName" FROM "GemPackages" '
+                'WHERE "Id"=%s AND "IsActive"=true AND "IsAvailable"=true '
+                'AND "PurchaseType"=\'by_credentials\' FOR UPDATE',
+                (int(gem_package_id),),
+            )
+            package = cur.fetchone()
+            if not package:
+                raise ValueError('این محصول دیگر فعال یا موجود نیست.')
+            title, unit_price, stock, plan_type, amount, catalogue = package
+            if not is_uid_gift_credential_package(plan_type, amount, catalogue):
+                raise ValueError('این محصول گیفتی آیدی‌دار نیست.')
+            unit_price = checked_amount(unit_price, label='قیمت محصول')
+            total = checked_amount(unit_price * quantity, label='مبلغ کل')
+            if total != expected_price:
+                raise ValueError('قیمت تغییر کرده است؛ دوباره محصول را انتخاب کن.')
+            if int(stock or 0) < quantity:
+                raise ValueError('ظرفیت این محصول برای این تعداد کافی نیست.')
+            cur.execute(
+                'UPDATE "GemPackages" SET "Stock"="Stock"-%s '
+                'WHERE "Id"=%s AND "Stock">=%s',
+                (quantity, int(gem_package_id), quantity),
+            )
+            if cur.rowcount != 1:
+                raise ValueError('ظرفیت این محصول برای این تعداد کافی نیست.')
+            order_id = _insert_pending_order(
+                cur, user_db_id, total, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId","ProductId","ProductName","Price","Quantity") '
+                'VALUES (%s,NULL,%s,%s,%s) RETURNING "Id"',
+                (order_id, title, unit_price, quantity),
+            )
+            item_id = cur.fetchone()[0]
+            cur.execute(
+                'INSERT INTO "GemOrderInfo" '
+                '("OrderId","OrderItemId","GemPackageId","PurchaseType",'
+                '"TelegramId","GameUID","LoginMethod","CredentialCiphertext",'
+                '"CredentialStatus","CredentialTwoFactorEnabled",'
+                '"CredentialUpdatedAt","G2BulkStatus") '
+                'VALUES (%s,%s,%s,\'by_credentials\',%s,%s,\'uid\',\'\','
+                '\'awaiting_payment\',false,now(),\'MANUAL_RESERVED\')',
+                (
+                    order_id, item_id, int(gem_package_id), str(telegram_id),
+                    game_uid,
                 ),
             )
             conn.commit()
@@ -2707,11 +2798,12 @@ def ensure_admin_schema():
             "PurchaseType","AutoDeliver","G2BulkCatalogueName","Stock",
             "IsAvailable","IsActive","SortOrder")
            SELECT seed.title,seed.amount,0,seed.price,NULL,seed.plan_type,
-                  'by_credentials',false,seed.catalogue,9999,true,true,seed.sort_order
+                  'by_credentials',false,seed.catalogue,seed.stock,true,true,seed.sort_order
            FROM (VALUES
-             ('📅 عضویت هفتگی فری‌فایر',60,100000,'weekly','itunes_try:60',10),
-             ('📆 عضویت ماهانه فری‌فایر',300,500000,'monthly','itunes_try:300',20)
-           ) AS seed(title,amount,price,plan_type,catalogue,sort_order)
+             ('📅 عضویت هفتگی فری‌فایر',60,100000,'weekly','itunes_try:60',10,9999),
+             ('📆 عضویت ماهانه فری‌فایر',300,500000,'monthly','itunes_try:300',20,9999),
+             ('🎁 بویاه پس گیفتی',90004,299000,'gift','Booyah Pass Gift',30,2)
+           ) AS seed(title,amount,price,plan_type,catalogue,sort_order,stock)
            WHERE NOT EXISTS (
              SELECT 1 FROM "GemPackages" p
              WHERE p."PurchaseType"='by_credentials'
@@ -4758,6 +4850,8 @@ def credential_cost_for_package(amount=None, plan_type=None):
         amt = int(amount or 0)
     except (TypeError, ValueError):
         amt = 0
+    if plan == CREDENTIAL_UID_GIFT_PLAN or amt == CREDENTIAL_UID_GIFT_AMOUNT:
+        return None
     if plan == 'weekly' or amt == 60:
         return cfg['weekly_cost']
     if plan == 'monthly' or amt == 300:
@@ -5690,7 +5784,7 @@ def get_credential_order(order_id):
                       g."CredentialTwoFactorEnabled",g."CredentialAdminNote",
                       g."CredentialViewedAt",g."CredentialDeletedAt",
                       u."TelegramUsername",u."FirstName",u."LastName",g."Id",
-                      COALESCE(oi."Quantity",1)
+                      COALESCE(oi."Quantity",1),g."GameUID"
                FROM "GemOrderInfo" g
                JOIN "Orders" o ON o."Id"=g."OrderId"
                JOIN "GemPackages" p ON p."Id"=g."GemPackageId"

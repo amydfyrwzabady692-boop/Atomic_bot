@@ -805,7 +805,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
          cred_status, two_factor, note, viewed_at, deleted_at, username,
          first_name, last_name, _info_id, *rest) = row
         qty = int(rest[0] or 1) if rest else 1
-        method_label = {'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK'}.get(method, method)
+        game_uid = str(rest[1] or '').strip() if len(rest) > 1 else ''
+        is_gift = str(plan or '') == 'gift' or str(method or '') == 'uid'
+        method_label = {
+            'google': 'Gmail/Google', 'facebook': 'Facebook', 'vk': 'VK',
+            'uid': 'آیدی بازی',
+        }.get(method, method)
         status_label = {
             'ready': 'آماده بررسی', 'needs_info': 'اطلاعات ناقص',
             'awaiting_payment': 'در انتظار پرداخت', 'completed': 'تکمیل‌شده',
@@ -813,34 +818,51 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         }.get(cred_status, cred_status or '—')
         masked = '—'
         has_backup = False
-        if ciphertext:
+        if ciphertext and not is_gift:
             try:
                 secret_preview = decrypt_credentials(ciphertext)
                 masked = mask_identifier(secret_preview['identifier'])
                 has_backup = bool(str(secret_preview.get('backup_code') or '').strip())
             except CredentialVaultError:
                 masked = 'خطای رمزگشایی'
-        text = (
-            f'🔐 *سفارش #{oid}*\n'
-            f'━━━━━━━━━━━━━━━\n'
-            f'محصول: {_md_safe(title, 100)}\n'
-            f'تعداد: *{qty}* عدد از این بسته\n'
-            f'مبلغ: {amount:,} تومان\n'
-            f'وضعیت سفارش: `{order_status}`\n'
-            f'وضعیت اطلاعات: *{status_label}*\n'
-            f'روش ورود: {method_label}\n'
-            f'شناسه ماسک‌شده: `{_md_safe(masked, 120)}`\n'
-            f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else ("نامشخص" if not ciphertext else "ثبت نشده ⚠️")}\n'
-            f'۲FA پرچم: {"فعال" if two_factor else "غیرفعال"}\n'
-            f'کاربر: {_md_safe(first_name)} {_md_safe(last_name)} '
-            f'@{_md_safe(username)} · `{tg}`\n'
-            f'آخرین مشاهده: {str(viewed_at)[:19] if viewed_at else "هرگز"}\n'
-            f'حذف رمز: {str(deleted_at)[:19] if deleted_at else "هنوز نگهداری می‌شود"}'
-        )
+        if is_gift:
+            text = (
+                f'🎁 *سفارش گیفتی #{oid}*\n'
+                f'━━━━━━━━━━━━━━━\n'
+                f'محصول: {_md_safe(title, 100)}\n'
+                f'آیدی بازی: `{_md_safe(game_uid or "—", 32)}`\n'
+                f'مبلغ: {amount:,} تومان\n'
+                f'وضعیت سفارش: `{order_status}`\n'
+                f'وضعیت: *{status_label}*\n'
+                f'کاربر: {_md_safe(first_name)} {_md_safe(last_name)} '
+                f'@{_md_safe(username)} · `{tg}`'
+            )
+        else:
+            text = (
+                f'🔐 *سفارش #{oid}*\n'
+                f'━━━━━━━━━━━━━━━\n'
+                f'محصول: {_md_safe(title, 100)}\n'
+                f'تعداد: *{qty}* عدد از این بسته\n'
+                f'مبلغ: {amount:,} تومان\n'
+                f'وضعیت سفارش: `{order_status}`\n'
+                f'وضعیت اطلاعات: *{status_label}*\n'
+                f'روش ورود: {method_label}\n'
+                f'شناسه ماسک‌شده: `{_md_safe(masked, 120)}`\n'
+                f'کد بک‌آپ: {"ثبت شده ✅" if has_backup else ("نامشخص" if not ciphertext else "ثبت نشده ⚠️")}\n'
+                f'۲FA پرچم: {"فعال" if two_factor else "غیرفعال"}\n'
+                f'کاربر: {_md_safe(first_name)} {_md_safe(last_name)} '
+                f'@{_md_safe(username)} · `{tg}`\n'
+                f'آخرین مشاهده: {str(viewed_at)[:19] if viewed_at else "هرگز"}\n'
+                f'حذف رمز: {str(deleted_at)[:19] if deleted_at else "هنوز نگهداری می‌شود"}'
+            )
         if note:
             text += f'\nیادداشت: {_md_safe(note, 300)}'
         buttons = []
-        if ciphertext and order_status in ('paid', 'processing'):
+        if is_gift and game_uid:
+            uid_btn = _copy_btn('📋 کپی آیدی بازی', game_uid)
+            if uid_btn:
+                buttons.append([uid_btn])
+        if ciphertext and not is_gift and order_status in ('paid', 'processing'):
             buttons.append([InlineKeyboardButton(
                 '👁 نمایش اطلاعات ورود', callback_data=f'admx_credreveal_{oid}'
             )])

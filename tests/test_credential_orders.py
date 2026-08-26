@@ -283,5 +283,43 @@ class CredentialAdminActionTests(unittest.TestCase):
         self.assertIn("by_credentials", cancel)
 
 
+class UidGiftCredentialTests(unittest.TestCase):
+    def test_gift_package_is_detected_without_account_secrets(self):
+        self.assertTrue(db.is_uid_gift_credential_package('gift', 90_004, 'Booyah Pass Gift'))
+        self.assertFalse(db.is_uid_gift_credential_package('weekly', 60, 'itunes_try:60'))
+        self.assertIsNone(db.credential_cost_for_package(90_004, 'gift'))
+
+    def test_seed_and_list_include_booyah_pass_gift(self):
+        import inspect
+        source = inspect.getsource(db.ensure_admin_schema)
+        self.assertIn('Booyah Pass Gift', source)
+        self.assertIn('299000', source)
+        self.assertIn("'gift'", inspect.getsource(db.get_gems_by_credentials))
+        create = inspect.getsource(db.create_credential_uid_gift_order_atomic)
+        self.assertIn('"GameUID"', create)
+        self.assertIn("'uid'", create)
+        self.assertIn("'awaiting_payment'", create)
+
+    def test_buy_flow_asks_uid_not_password(self):
+        import inspect
+        source = inspect.getsource(gem_credentials)
+        self.assertIn('CRED_UID', source)
+        self.assertIn('parse_game_uid', source)
+        self.assertIn('create_credential_uid_gift_order_atomic', source)
+        self.assertIn('رمز اکانت لازم نیست', source)
+        self.assertIn('پیوی ادمین', source)
+
+    def test_post_pay_keyboard_sends_user_to_admin_pv(self):
+        from keyboards import credential_post_pay_support_keyboard
+        markup = credential_post_pay_support_keyboard(77, 'lookurback', mode='gift')
+        texts = [btn.text for row in markup.inline_keyboard for btn in row]
+        urls = [getattr(btn, 'url', None) for row in markup.inline_keyboard for btn in row]
+        self.assertTrue(any('پیوی ادمین' in str(t) and '77' in str(t) for t in texts))
+        self.assertIn('https://t.me/lookurback', urls)
+        weekly = credential_post_pay_support_keyboard(77, 'lookurback')
+        weekly_texts = [btn.text for row in weekly.inline_keyboard for btn in row]
+        self.assertTrue(any('بک‌آپ' in str(t) for t in weekly_texts))
+
+
 if __name__ == '__main__':
     unittest.main()

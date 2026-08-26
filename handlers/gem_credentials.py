@@ -10,8 +10,9 @@ from credential_vault import (
     CredentialVaultError, encrypt_credentials, is_configured, mask_identifier,
 )
 from db import (
-    create_credential_gem_order_atomic, get_gem, get_gems_by_credentials,
-    get_or_create_user, get_wallet_balance,
+    create_credential_gem_order_atomic, create_credential_uid_gift_order_atomic,
+    get_gem, get_gems_by_credentials, get_or_create_user, get_wallet_balance,
+    is_uid_gift_credential_package,
 )
 from keyboards import (
     credential_backup_keyboard, credential_cancel_keyboard,
@@ -24,7 +25,7 @@ from payment_safety import checked_amount
 from text_safety import markdown_safe
 
 
-CRED_QUANTITY, CRED_METHOD, CRED_IDENTIFIER, CRED_PASSWORD, CRED_BACKUP, CRED_CONFIRM = range(19, 25)
+CRED_QUANTITY, CRED_METHOD, CRED_IDENTIFIER, CRED_PASSWORD, CRED_BACKUP, CRED_CONFIRM, CRED_UID = range(19, 26)
 
 CREDENTIAL_QTY_MAX = 50
 _DIGIT_MAP = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
@@ -195,6 +196,27 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text('❌ محصول پیدا نشد یا غیرفعال شده است.')
         return
     title = appearance.user_label(f'c.{product_id}', product[1])
+    if is_uid_gift_credential_package(product[6], product[2], product[9]):
+        text = (
+            f'🎁 *{markdown_safe(title, 120)}*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'این بسته *نیاز به اطلاعات اکانت ندارد*.\n'
+            'فقط آیدی بازی (UID) را می‌فرستی.\n\n'
+            f'💰 قیمت: *{int(product[4]):,} تومان*\n'
+            '⏳ تحویل: دستی توسط ادمین\n\n'
+            'مراحل:\n'
+            '۱) آیدی فری‌فایر را بفرست\n'
+            '۲) پرداخت کن\n'
+            '۳) بعد از پرداخت موفق، برو پیوی ادمین و *شماره سفارش* را بفرست\n'
+        )
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        await query.edit_message_text(
+            text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ ادامه و ثبت آیدی', callback_data=f'cbuy_{product_id}')],
+                [InlineKeyboardButton('🔙 بازگشت', callback_data='gems_credentials')],
+            ])
+        )
+        return
     plan = 'هفتگی' if product[6] == 'weekly' else 'ماهانه'
     text = (
         f'🔐 *{markdown_safe(title, 120)}*\n'
@@ -229,7 +251,8 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not product or product[7] != 'by_credentials' or product[11] is False:
         await query.edit_message_text('❌ این محصول در دسترس نیست.')
         return ConversationHandler.END
-    if not is_configured():
+    gift = is_uid_gift_credential_package(product[6], product[2], product[9])
+    if not gift and not is_configured():
         await query.edit_message_text(
             '❌ بخش ثبت اطلاعات اکانت موقتاً در دسترس نیست. با پشتیبانی تماس بگیر.'
         )
@@ -237,7 +260,20 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['credential_buy'] = {
         'pk': product_id, 'title': str(product[1]), 'unit_price': int(product[4]),
         'price': int(product[4]),
+        'quantity': 1 if gift else None,
+        'uid_gift': gift,
     }
+    if gift:
+        await query.edit_message_text(
+            f'🆔 *آیدی فری‌فایر را بفرست*\n'
+            f'محصول: {markdown_safe(product[1], 120)}\n'
+            f'قیمت: *{int(product[4]):,} تومان*\n\n'
+            'آیدی عددی داخل پروفایل بازی است (معمولاً حدود ۱۰ رقم).\n'
+            'رمز اکانت لازم نیست.',
+            parse_mode='Markdown',
+            reply_markup=credential_cancel_keyboard(),
+        )
+        return CRED_UID
     await query.edit_message_text(
         f'🔢 *تعداد را وارد کن*\n'
         f'محصول: {markdown_safe(product[1], 120)}\n'
@@ -248,6 +284,31 @@ async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=credential_cancel_keyboard(),
     )
     return CRED_QUANTITY
+
+
+def parse_game_uid(raw) -> str:
+    uid = str(raw or '').strip().translate(_DIGIT_MAP)
+    if not uid.isdigit() or not (5 <= len(uid) <= 20):
+        raise ValueError('آیدی باید فقط عدد معتبر باشد (معمولاً حدود ۱۰ رقم).')
+    return uid
+
+
+async def credential_uid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    info = ctx.user_data.get('credential_buy')
+    if not info or not info.get('uid_gift'):
+        return ConversationHandler.END
+    try:
+        uid = parse_game_uid(update.message.text)
+    except ValueError as exc:
+        await update.message.reply_text(
+            f'❌ {exc}',
+            reply_markup=credential_cancel_keyboard(),
+        )
+        return CRED_UID
+    info['game_uid'] = uid
+    info['quantity'] = 1
+    info['method'] = 'uid'
+    return await _show_confirm(update, ctx, via_callback=False)
 
 
 async def credential_quantity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -359,6 +420,30 @@ async def _show_confirm(update, ctx, *, via_callback=False):
     info = ctx.user_data.get('credential_buy')
     if not info:
         return ConversationHandler.END
+    qty = int(info.get('quantity') or 1)
+    unit = int(info.get('unit_price') or 0)
+    unit_line = f'قیمت هر عدد: {unit:,} تومان\n' if unit else ''
+    if info.get('uid_gift'):
+        text = (
+            f'✅ *بازبینی سفارش*\n'
+            f'━━━━━━━━━━━━━━━\n'
+            f'محصول: {markdown_safe(info["title"], 120)}\n'
+            f'آیدی بازی: `{markdown_safe(info.get("game_uid") or "—", 32)}`\n'
+            f'{unit_line}'
+            f'جمع کل: *{info["price"]:,} تومان*\n\n'
+            'رمز اکانت لازم نیست.\n'
+            'با تأیید، سفارش ساخته می‌شود. بعد از پرداخت موفق '
+            'برو پیوی ادمین و *شماره سفارش* را بفرست.'
+        )
+        if via_callback:
+            await update.callback_query.edit_message_text(
+                text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
+            )
+        else:
+            await update.effective_chat.send_message(
+                text, parse_mode='Markdown', reply_markup=credential_confirm_keyboard(),
+            )
+        return CRED_CONFIRM
     method_label = METHOD_META[info['method']]['label']
     has_backup = bool(str(info.get('backup_code') or '').strip())
     backup_line = (
@@ -444,7 +529,18 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     info = ctx.user_data.get('credential_buy')
-    if not info or not info.get('password'):
+    if not info:
+        await query.edit_message_text(
+            '❌ اطلاعات ناقص است. دوباره از اول ثبت کن.'
+        )
+        return ConversationHandler.END
+    if info.get('uid_gift'):
+        if not info.get('game_uid'):
+            await query.edit_message_text(
+                '❌ آیدی بازی ثبت نشده. دوباره از اول شروع کن.'
+            )
+            return ConversationHandler.END
+    elif not info.get('password'):
         await query.edit_message_text(
             '❌ اطلاعات ناقص است. دوباره از اول ثبت کن.'
         )
@@ -459,25 +555,31 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         qty = int(info.get('quantity') or 1)
         unit = checked_amount(current[4], label='قیمت محصول')
         price = checked_amount(unit * qty, label='مبلغ کل')
-        ciphertext = encrypt_credentials(
-            info['identifier'],
-            info['password'],
-            backup_code=info.get('backup_code') or '',
-        )
         user = update.effective_user
         full_name = f'{user.first_name or ""} {user.last_name or ""}'.strip() or 'کاربر تلگرام'
-        two_factor = bool(info.get('two_factor') or info.get('backup_code'))
 
         def persist():
             db_id, _ = get_or_create_user(
                 user.id, user.first_name or '', user.last_name or '', user.username or ''
             )
-            order_id, title, saved_price = create_credential_gem_order_atomic(
-                db_id, info['pk'], price, telegram_id=user.id, full_name=full_name,
-                login_method=info['method'], credential_ciphertext=ciphertext,
-                two_factor_enabled=two_factor,
-                quantity=qty,
-            )
+            if info.get('uid_gift'):
+                order_id, title, saved_price = create_credential_uid_gift_order_atomic(
+                    db_id, info['pk'], price, telegram_id=user.id,
+                    full_name=full_name, game_uid=info['game_uid'], quantity=qty,
+                )
+            else:
+                ciphertext = encrypt_credentials(
+                    info['identifier'],
+                    info['password'],
+                    backup_code=info.get('backup_code') or '',
+                )
+                two_factor = bool(info.get('two_factor') or info.get('backup_code'))
+                order_id, title, saved_price = create_credential_gem_order_atomic(
+                    db_id, info['pk'], price, telegram_id=user.id, full_name=full_name,
+                    login_method=info['method'], credential_ciphertext=ciphertext,
+                    two_factor_enabled=two_factor,
+                    quantity=qty,
+                )
             return db_id, order_id, title, saved_price, int(get_wallet_balance(db_id) or 0)
 
         db_id, order_id, title, price, balance = await asyncio.to_thread(persist)
@@ -498,15 +600,22 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _notify_credential_sale(ctx.bot, order_id, event='created')
     except Exception:
         pass
+    pay_note = (
+        'بعد از پرداخت موفق، دکمه پیوی ادمین برایت می‌آید؛ '
+        'حتماً *شماره سفارش* را در پیوی ادمین بفرست.'
+        if info.get('uid_gift') else
+        'بعد از پرداخت موفق، سفارش برای ادمین ارسال می‌شود.\n'
+        'اگر بک‌آپ بلد نبودی، *بعد از پرداخت* دکمه پیام به پشتیبانی با شماره سفارش برایت باز می‌شود.'
+    )
+    qty_line = '' if info.get('uid_gift') else f'تعداد: *{int(info.get("quantity") or 1)}* عدد\n'
     await query.edit_message_text(
         f'✦ *انتخاب روش پرداخت*\n'
         f'سفارش `#{order_id}`\n'
         f'محصول: {markdown_safe(title, 120)}\n'
-        f'تعداد: *{int(info.get("quantity") or 1)}* عدد\n'
+        f'{qty_line}'
         f'مبلغ: *{price:,} تومان*\n'
         f'موجودی کیف پول: *{balance:,} تومان*\n\n'
-        'بعد از پرداخت موفق، سفارش برای ادمین ارسال می‌شود.\n'
-        'اگر بک‌آپ بلد نبودی، *بعد از پرداخت* دکمه پیام به پشتیبانی با شماره سفارش برایت باز می‌شود.',
+        f'{pay_note}',
         parse_mode='Markdown',
         reply_markup=pay_method_keyboard(
             order_id, can_wallet=True, wallet_balance=balance, remaining=price
@@ -531,6 +640,10 @@ def credential_conversation_handler():
         states={
             CRED_QUANTITY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_quantity),
+                CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
+            ],
+            CRED_UID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, credential_uid),
                 CallbackQueryHandler(credential_cancel, pattern='^cred_cancel$'),
             ],
             CRED_METHOD: [
