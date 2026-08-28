@@ -5060,7 +5060,7 @@ def financial_health_snapshot():
             ' SELECT COUNT(*) FROM "WalletTransactions" t '
             ' JOIN "PaymentReceipts" r ON r."WalletTransactionId"=t."Id" '
             ' WHERE t."Kind"=\'charge\' AND COALESCE(t."IsPaid",false)=false '
-            ' AND t."Authority" LIKE \'wcard_%\' '
+            ' AND t."Authority" LIKE \'wcard_%%\' '
             ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\''
             ')'
         ),
@@ -5175,7 +5175,7 @@ def admin_operations_snapshot(low_stock_threshold=5):
             '+(SELECT COUNT(*) FROM "WalletTransactions" t '
             ' JOIN "PaymentReceipts" r ON r."WalletTransactionId"=t."Id" '
             ' WHERE t."Kind"=\'charge\' AND COALESCE(t."IsPaid",false)=false '
-            ' AND t."Authority" LIKE \'wcard_%\' '
+            ' AND t."Authority" LIKE \'wcard_%%\' '
             ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\'),'
             '(SELECT COUNT(*) FROM "Orders" o WHERE o."Status"=\'processing\' '
             ' AND o."PaymentVerifiedAt" IS NOT NULL '

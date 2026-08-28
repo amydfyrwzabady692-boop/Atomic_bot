@@ -61,7 +61,7 @@ class AdminOperationsTests(unittest.TestCase):
         self.assertEqual(conn.cur.executed[0][1], (5, 5))
         sql = conn.cur.executed[0][0]
         self.assertIn('card_transfer', sql)
-        self.assertIn('wcard_%', sql)
+        self.assertIn('wcard_%%', sql)
 
     def test_action_total_ignores_failed_gateway_logs(self):
         total = db.ops_action_total({
