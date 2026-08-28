@@ -3893,7 +3893,7 @@ def _telegram_json(method, payload):
     return data.get('result')
 
 
-def _load_premium_emoji_pack(source_id):
+def _load_premium_emoji_pack(source_id, allow_network=True):
     """کل پکیج ایموجی پریمیوم ثبت‌شده را با انواع یونیکد برمی‌گرداند."""
     import appearance as appearance_mod
     source_id = str(source_id or '').strip()
@@ -3918,6 +3918,8 @@ def _load_premium_emoji_pack(source_id):
                 return pack
     except Exception:
         _LOG.exception('premium emoji pack cache read failed')
+    if not allow_network:
+        return {}
     stickers = _telegram_json(
         'getCustomEmojiStickers', {'custom_emoji_ids': [source_id]}
     ) or []
@@ -4008,7 +4010,28 @@ def _seed_catalog_premium_emoji():
 
 
 def _copy_premium_emoji_to_product_keys():
-    _seed_catalog_premium_emoji()
+    """فقط کلید کالاها را از کش پکیج پر کن؛ به API تلگرام نزن."""
+    import appearance as appearance_mod
+    rows = list_appearance_rows()
+    source_id, source_char = _registered_premium_emoji(rows)
+    if not source_id:
+        return
+    pack = appearance_mod.pack_from_appearance_rows(rows)
+    try:
+        pack.update(_load_premium_emoji_pack(source_id, allow_network=False) or {})
+    except Exception:
+        _LOG.exception('premium emoji cache load for product keys failed')
+    if not pack:
+        pack = {
+            appearance_mod.normalize_emoji_char(source_char): (source_id, source_char),
+        }
+    _apply_typed_premium_emoji(
+        _iter_product_appearance_keys(),
+        rows=rows,
+        pack=pack,
+        source_id=source_id,
+        source_char=source_char,
+    )
 
 
 def _iter_product_appearance_keys():

@@ -111,6 +111,13 @@ class PerformanceGuardTests(unittest.TestCase):
         self.assertIn('_load_gift_catalog_rows', priced)
         self.assertNotIn('list_gift_card_products', priced)
 
+    def test_startup_price_sync_does_not_force_g2b_again(self):
+        source = inspect.getsource(bot._price_sync_loop)
+        self.assertIn("sync_gem_prices_daily, False", source)
+        copy_source = inspect.getsource(db._copy_premium_emoji_to_product_keys)
+        self.assertIn("allow_network=False", copy_source)
+        self.assertNotIn("_seed_catalog_premium_emoji()", copy_source)
+
     def test_forced_join_skips_admin_db_lookup_when_disabled(self):
         source = inspect.getsource(forced_join.force_join_guard)
         self.assertLess(

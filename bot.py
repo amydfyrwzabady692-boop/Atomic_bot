@@ -499,10 +499,10 @@ async def _payment_expiry_loop(app):
 async def _price_sync_loop(app):
     """به‌روزرسانی خودکار قیمت جم، گیفت‌کارت و استارز هر ۲۴ ساعت."""
     log = logging.getLogger(__name__)
-    # اولین اجرا بلافاصله (نرخ لحظه‌ای) + سپس هر ۲۴ ساعت
+    # استارت همین الان کاتالوگ را همگام کرده؛ دوباره G2B نزن مگر ۲۴ ساعت گذشته باشد.
     try:
         from db import sync_gem_prices_daily
-        updated = await asyncio.to_thread(sync_gem_prices_daily, True)
+        updated = await asyncio.to_thread(sync_gem_prices_daily, False)
         if updated:
             log.info('Gem price sync: %d products updated', updated)
     except Exception:

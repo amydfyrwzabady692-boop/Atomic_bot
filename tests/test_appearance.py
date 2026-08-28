@@ -206,6 +206,38 @@ class PremiumEmojiSeedTests(unittest.TestCase):
         self.assertNotIn('b.gem.no', by_key)
         self.assertNotIn('b.stars.no', by_key)
 
+    @patch('db._telegram_json')
+    @patch('db.simple_list', return_value=[])
+    @patch('db.list_sense_packages', return_value=[])
+    @patch('db.get_gems_by_credentials', return_value=[])
+    @patch('db.get_gems_by_id', return_value=[(4,)])
+    @patch('db.list_star_packages', return_value=[{'id': 9}])
+    @patch('db.upsert_appearance')
+    @patch('db.list_appearance_rows')
+    @patch('db.get_setting', return_value='')
+    def test_product_copy_does_not_call_telegram(
+        self, _setting, rows, upsert, _stars, _gems, _creds, _sense, _store, telegram,
+    ):
+        import db
+        rows.return_value = {
+            'b.menu.stars': {'text': None, 'emoji_id': 'id_star', 'emoji_char': '⭐'},
+        }
+        db._copy_premium_emoji_to_product_keys()
+        telegram.assert_not_called()
+        by_key = {call.args[0]: call.kwargs.get('emoji_id') for call in upsert.call_args_list}
+        self.assertEqual(by_key.get('st.9'), 'id_star')
+        self.assertEqual(by_key.get('g.4'), 'id_star')
+        self.assertNotIn('b.menu.ff', by_key)
+
+    def test_pack_cache_miss_skips_network_when_disabled(self):
+        import db
+        with patch('db.get_setting', return_value=''), patch('db._telegram_json') as telegram:
+            self.assertEqual(
+                db._load_premium_emoji_pack('id_star', allow_network=False),
+                {},
+            )
+            telegram.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
