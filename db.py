@@ -1331,29 +1331,45 @@ def sync_star_packages(force=False):
     profit = stars_profit_percent()
     live_names = []
     updated = 0
+    pg_int_max = 2_147_483_647
     with get_conn() as conn, conn.cursor() as cur:
         for index, item in enumerate(snapshot.get('items') or []):
             name = item['name']
+            sale = int(compute_gem_sale_price(item['cost_usd'], rate, profit))
+            if not g2bulk.stars_amount_for_sale(item['stars']) or sale <= 0 or sale > pg_int_max:
+                _LOG.warning(
+                    'skip star package %s amount=%s price=%s',
+                    name, item.get('stars'), sale,
+                )
+                continue
             live_names.append(name)
-            sale = compute_gem_sale_price(item['cost_usd'], rate, profit)
             title = _stars_title(item['stars'], name)
-            cur.execute(
-                '''INSERT INTO "StarPackages"
-                   ("CatalogueName","Title","StarsAmount","CostUsd","Price",
-                    "IsAvailable","IsActive","SortOrder","UpdatedAt")
-                   VALUES (%s,%s,%s,%s,%s,true,true,%s,now())
-                   ON CONFLICT ("CatalogueName") DO UPDATE SET
-                     "Title"=EXCLUDED."Title",
-                     "StarsAmount"=EXCLUDED."StarsAmount",
-                     "CostUsd"=EXCLUDED."CostUsd",
-                     "Price"=EXCLUDED."Price",
-                     "IsAvailable"=true,
-                     "IsActive"=true,
-                     "SortOrder"=EXCLUDED."SortOrder",
-                     "UpdatedAt"=now()''',
-                (name, title, int(item['stars']), str(item['cost_usd']), sale, index),
-            )
-            updated += 1
+            savepoint = f'star_pkg_{index}'
+            cur.execute(f'SAVEPOINT {savepoint}')
+            try:
+                cur.execute(
+                    '''INSERT INTO "StarPackages"
+                       ("CatalogueName","Title","StarsAmount","CostUsd","Price",
+                        "IsAvailable","IsActive","SortOrder","UpdatedAt")
+                       VALUES (%s,%s,%s,%s,%s,true,true,%s,now())
+                       ON CONFLICT ("CatalogueName") DO UPDATE SET
+                         "Title"=EXCLUDED."Title",
+                         "StarsAmount"=EXCLUDED."StarsAmount",
+                         "CostUsd"=EXCLUDED."CostUsd",
+                         "Price"=EXCLUDED."Price",
+                         "IsAvailable"=true,
+                         "IsActive"=true,
+                         "SortOrder"=EXCLUDED."SortOrder",
+                         "UpdatedAt"=now()''',
+                    (name, title, int(item['stars']), str(item['cost_usd']), sale, index),
+                )
+                cur.execute(f'RELEASE SAVEPOINT {savepoint}')
+                updated += 1
+            except Exception:
+                cur.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+                cur.execute(f'RELEASE SAVEPOINT {savepoint}')
+                _LOG.exception('star package upsert failed name=%s', name)
+                continue
         if live_names:
             cur.execute(
                 'UPDATE "StarPackages" SET "IsActive"=false,"IsAvailable"=false,'

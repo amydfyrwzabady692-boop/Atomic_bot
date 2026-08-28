@@ -37,6 +37,8 @@ _FORCED_REFRESH_COALESCE_SECONDS = 30
 _products_cache = {'at': 0.0, 'value': None}
 _PRODUCTS_CACHE_SECONDS = 6 * 60 * 60
 TELEGRAM_GAME_CODE = 'Telegram'
+# بسته‌های ۱M استارز قیمت‌شان از INTEGER دیتابیس رد می‌شود و کل سینک را می‌ترکاند.
+MAX_STARS_FOR_SALE = 100_000
 _stars_cache = {'at': 0.0, 'value': None}
 _stars_refresh_lock = threading.Lock()
 _STARS_CACHE_SECONDS = 5 * 60
@@ -159,6 +161,14 @@ def parse_stars_amount(name):
         value *= Decimal(1_000_000)
     amount = int(value)
     return amount if amount > 0 else None
+
+
+def stars_amount_for_sale(amount):
+    try:
+        value = int(amount)
+    except (TypeError, ValueError):
+        return False
+    return 0 < value <= MAX_STARS_FOR_SALE
 
 
 def get_inventory_snapshot(force=False):
@@ -902,7 +912,7 @@ def get_stars_snapshot(force=False):
         for item in catalogue.get('catalogues') or []:
             name = str(item.get('name') or '').strip()
             stars = parse_stars_amount(name)
-            if not name or stars is None:
+            if not name or not stars_amount_for_sale(stars):
                 continue
             try:
                 cost = Decimal(str(item.get('amount')))

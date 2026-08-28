@@ -301,6 +301,9 @@ class TelegramStarsApiTests(unittest.TestCase):
         self.assertEqual(g2bulk.parse_stars_amount('1M Stars'), 1_000_000)
         self.assertIsNone(g2bulk.parse_stars_amount('3 months premium'))
         self.assertIsNone(g2bulk.parse_stars_amount('Weekly Membership'))
+        self.assertTrue(g2bulk.stars_amount_for_sale(100_000))
+        self.assertFalse(g2bulk.stars_amount_for_sale(1_000_000))
+        self.assertFalse(g2bulk.stars_amount_for_sale(None))
 
     @patch.object(g2bulk, '_api_key', return_value='test-key')
     @patch.object(g2bulk, '_request')
