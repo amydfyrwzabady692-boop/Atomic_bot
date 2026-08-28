@@ -32,7 +32,7 @@ from db import (
     log_payment_attempt, log_admin_action, detach_order_authority_to_wallet,
     get_gateway_wallet_charge, complete_wallet_charge_by_authority,
     get_credential_order,
-    get_gift_card_order, gift_card_user_delivery_text,
+    get_gift_card_order, get_star_order, auto_delivery_user_text,
     resolve_late_zarinpal_recovery, credit_verified_gateway_to_wallet,
     list_pending_zarinpal_orders, list_pending_zarinpal_wallet_charges,
 )
@@ -202,6 +202,14 @@ def _delivery_preflight(order_id, force=True):
         )
         if not available:
             return False, error or 'موجودی گیفت‌کارت کافی نیست.', cost, balance
+        return True, None, cost, balance
+    star = get_star_order(order_id)
+    if star:
+        available, cost, balance, error = g2bulk.can_fulfill_stars(
+            star['catalogue'], force=force
+        )
+        if not available:
+            return False, error or 'موجودی استارز کافی نیست.', cost, balance
         return True, None, cost, balance
     for info in get_gem_infos_for_order(order_id):
         (_info_id, _pkg_id, _uid, _name, auto_deliver,
@@ -388,9 +396,9 @@ def _parse_refunded_amount(status):
 
 
 def _success_user_text(order_id, status, ref_id=None):
-    gift_text = gift_card_user_delivery_text(order_id)
-    if gift_text and status in ('delivered', 'processing', 'paid'):
-        return gift_text
+    auto_text = auto_delivery_user_text(order_id)
+    if auto_text and status in ('delivered', 'processing', 'paid'):
+        return auto_text
     if status == 'sense_manual':
         msg = (
             f"✅ *پرداخت موفق — سفارش #{order_id}*\n"
@@ -481,7 +489,7 @@ async def _handle_fulfill_result(
     refunded = _parse_refunded_amount(status)
     gift_text = None
     if success and status in ('delivered', 'processing', 'paid'):
-        gift_text = gift_card_user_delivery_text(order_id)
+        gift_text = auto_delivery_user_text(order_id)
     if success and status == 'delivered':
         text = gift_text or _success_user_text(order_id, status, ref_id)
         if gift_text:

@@ -95,6 +95,12 @@ class GiftCardCatalogTests(unittest.TestCase):
         self.assertEqual('gc_b_itunes_tr'[len('gc_b_'):], 'itunes_tr')
         self.assertNotEqual('gc_b_gplay_us'.rsplit('_', 1)[-1], 'gplay_us')
 
+    def test_menu_does_not_force_live_supplier_lookup(self):
+        import inspect
+        from handlers import giftcards
+        self.assertNotIn('force=True', inspect.getsource(giftcards.giftcard_menu))
+        self.assertNotIn('force=True', inspect.getsource(giftcards.giftcard_brand))
+
     def test_fifteen_percent_profit_rounds_to_thousand_toman(self):
         from decimal import ROUND_HALF_UP
         cost = Decimal('10')

@@ -95,6 +95,22 @@ class PerformanceGuardTests(unittest.TestCase):
         self.assertNotIn("_gem_api_availability", buy_source)
         self.assertIn("_gem_api_availability(current, force=True)", confirm_source)
 
+    def test_giftcard_and_stars_menus_read_cached_catalog(self):
+        from handlers import giftcards, stars
+        gc_source = inspect.getsource(giftcards.giftcard_menu)
+        gc_brand = inspect.getsource(giftcards.giftcard_brand)
+        st_menu = inspect.getsource(stars.stars_menu)
+        st_show = inspect.getsource(stars.show_star)
+        st_buy = inspect.getsource(stars.stars_buy_start)
+        self.assertNotIn('force=True', gc_source)
+        self.assertNotIn('force=True', gc_brand)
+        self.assertNotIn('get_stars_snapshot', st_menu)
+        self.assertNotIn('get_stars_snapshot', st_show)
+        self.assertNotIn('can_fulfill_stars', st_buy)
+        priced = inspect.getsource(db.priced_gift_cards)
+        self.assertIn('_load_gift_catalog_rows', priced)
+        self.assertNotIn('list_gift_card_products', priced)
+
     def test_forced_join_skips_admin_db_lookup_when_disabled(self):
         source = inspect.getsource(forced_join.force_join_guard)
         self.assertLess(

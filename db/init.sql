@@ -285,5 +285,54 @@ CREATE TABLE IF NOT EXISTS "GiftCardOrders" (
     "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-VALUES ('giftcard_profit_percent','15',now())
+VALUES ('giftcard_profit_percent','10',now())
 ON CONFLICT ("Key") DO NOTHING;
+INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+VALUES ('stars_profit_percent','10',now())
+ON CONFLICT ("Key") DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS "GiftCardCatalog" (
+    "G2ProductId" INTEGER PRIMARY KEY,
+    "Brand" VARCHAR(32) NOT NULL,
+    "ProductTitle" VARCHAR(255) NOT NULL,
+    "FaceLabel" VARCHAR(80) NOT NULL DEFAULT '',
+    "FaceAmount" INTEGER,
+    "FaceCurrency" VARCHAR(8) NOT NULL DEFAULT '',
+    "CostUsd" NUMERIC(18,6) NOT NULL,
+    "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+    "Stock" INTEGER NOT NULL DEFAULT 0,
+    "InStock" BOOLEAN NOT NULL DEFAULT false,
+    "IsActive" BOOLEAN NOT NULL DEFAULT true,
+    "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "StarPackages" (
+    "Id" SERIAL PRIMARY KEY,
+    "CatalogueName" VARCHAR(120) NOT NULL UNIQUE,
+    "Title" VARCHAR(120) NOT NULL,
+    "StarsAmount" INTEGER NOT NULL,
+    "CostUsd" NUMERIC(18,6) NOT NULL,
+    "Price" INTEGER NOT NULL CHECK ("Price" > 0),
+    "IsAvailable" BOOLEAN NOT NULL DEFAULT true,
+    "IsActive" BOOLEAN NOT NULL DEFAULT true,
+    "SortOrder" INTEGER NOT NULL DEFAULT 0,
+    "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS "StarOrders" (
+    "Id" SERIAL PRIMARY KEY,
+    "OrderId" INTEGER NOT NULL UNIQUE REFERENCES "Orders"("Id") ON DELETE CASCADE,
+    "OrderItemId" INTEGER REFERENCES "OrderItems"("Id") ON DELETE SET NULL,
+    "PackageId" INTEGER REFERENCES "StarPackages"("Id") ON DELETE SET NULL,
+    "CatalogueName" VARCHAR(120) NOT NULL,
+    "StarsAmount" INTEGER NOT NULL,
+    "TargetUsername" VARCHAR(64) NOT NULL,
+    "PlayerName" VARCHAR(255) NOT NULL DEFAULT '',
+    "CostUsd" NUMERIC(18,6) NOT NULL,
+    "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+    "UsdTomanRate" INTEGER,
+    "G2OrderId" VARCHAR(50),
+    "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+    "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+);

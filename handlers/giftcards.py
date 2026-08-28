@@ -150,7 +150,7 @@ async def giftcard_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     product_id = int(query.data.rsplit('_', 1)[-1])
-    item = await asyncio.to_thread(get_priced_gift_card, product_id, True)
+    item = await asyncio.to_thread(get_priced_gift_card, product_id)
     if not item.get('ok') or not item.get('can_buy'):
         await query.edit_message_text(
             f'❌ {item.get("error") or "این گیفت‌کارت دیگر موجود نیست."}'

@@ -44,6 +44,7 @@ from db import (
     get_credential_support_contact, count_open_tickets, list_credential_admins,
     set_credential_support_from_admin, get_user_profile, get_gift_support_contact,
     priced_gift_cards, giftcard_profit_percent,
+    list_star_packages, stars_profit_percent, sync_gift_and_star_catalogs,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from handlers.site_panel import site_ops_counts
@@ -1275,8 +1276,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'آخرین سینک خودکار: `{_md_safe(str(last_sync)[:19], 40)}`\n\n'
             f'💎 جم با آیدی — سود: *{gem_profit}٪*\n'
             f'(بهای دلاری از کاتالوگ G2B هر ۲۴ ساعت)\n\n'
+            f'⭐ استارز تلگرام — سود: *{stars_profit_percent()}٪*\n'
+            f'(کاتالوگ و قیمت هر ۲۴ ساعت در دیتابیس ذخیره می‌شود)\n\n'
             f'🎁 گیفت‌کارت — سود: *{giftcard_profit_percent()}٪*\n'
-            f'(قیمت تومنی زنده از موجودی و نرخ دلار)\n\n'
+            f'(موجودی و قیمت هر ۲۴ ساعت در دیتابیس ذخیره می‌شود)\n\n'
             f'📅 *هفتگی با اطلاعات*\n'
             f'بهای دلاری: *${cfg["weekly_cost"]}*\n'
             f'سود شما: *{cfg["weekly_profit"]}٪*\n'
@@ -1308,6 +1311,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
             f'شماره کارت: {number}\n\n'
             f'سود جم با آیدی: {gem_profit}٪\n'
+            f'سود استارز: {stars_profit_percent()}٪\n'
+            f'سود گیفت‌کارت: {giftcard_profit_percent()}٪\n'
             f'هفتگی با اطلاعات: ${cfg["weekly_cost"]} · سود {cfg["weekly_profit"]}٪\n'
             f'ماهانه با اطلاعات: ${cfg["monthly_cost"]} · سود {cfg["monthly_profit"]}٪\n'
             '✏️ تغییر قیمت/سود از «قیمت‌گذاری و سود»',
@@ -1528,6 +1533,35 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton('✏️ تغییر سود گیفت‌کارت', callback_data='admi_giftprofit')],
             [InlineKeyboardButton('🔄 بروزرسانی موجودی', callback_data='admx_giftcards')],
+            [InlineKeyboardButton('💱 قیمت‌گذاری', callback_data='admx_pricing')],
+            _back('admx_shop'),
+        ]
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+    elif data == 'admx_stars':
+        await asyncio.to_thread(sync_gift_and_star_catalogs, True)
+        packages = await asyncio.to_thread(list_star_packages)
+        profit = stars_profit_percent()
+        live = sum(1 for item in packages if item.get('available'))
+        lines = [
+            '⭐ *استارز تلگرام G2Bulk*',
+            f'سود فروش: *{profit}٪*',
+            f'بسته‌های فعال: *{live}/{len(packages)}*',
+            'تحویل مستقیم روی @آیدی تلگرام. کاتالوگ هر ۲۴ ساعت در دیتابیس ذخیره می‌شود.',
+            '━━━━━━━━━━━━━━━',
+        ]
+        if not packages:
+            lines.append('❌ هنوز بسته‌ای در دیتابیس نیست. یک‌بار بروزرسانی را بزن.')
+        for item in packages[:16]:
+            mark = '✅' if item.get('available') else '❌'
+            lines.append(
+                f'{mark} {_md_safe(item.get("title"), 40)}'
+                f' · *{int(item["price"]):,}* ت'
+            )
+        if len(packages) > 16:
+            lines.append('…')
+        buttons = [
+            [InlineKeyboardButton('✏️ تغییر سود استارز', callback_data='admi_starprofit')],
+            [InlineKeyboardButton('🔄 بروزرسانی موجودی', callback_data='admx_stars')],
             [InlineKeyboardButton('💱 قیمت‌گذاری', callback_data='admx_pricing')],
             _back('admx_shop'),
         ]
@@ -2299,7 +2333,11 @@ INPUT_ACTIONS = {
     ),
     'admi_giftprofit': (
         'setting:giftcard_profit_percent',
-        'درصد سود گیفت‌کارت را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 15',
+        'درصد سود گیفت‌کارت را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
+    ),
+    'admi_starprofit': (
+        'setting:stars_profit_percent',
+        'درصد سود استارز تلگرام را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
     ),
     'admi_credprofit_weekly': (
         'setting:credential_weekly_profit_percent',
@@ -2491,6 +2529,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if key in (
                 'gem_profit_percent',
                 'giftcard_profit_percent',
+                'stars_profit_percent',
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',
@@ -2538,6 +2577,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pricing_keys = {
                 'gem_profit_percent',
                 'giftcard_profit_percent',
+                'stars_profit_percent',
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',

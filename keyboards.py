@@ -74,7 +74,8 @@ def main_menu():
              _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
             [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
              _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
-            [_kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
+            [_kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
+             _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
             [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
         ],
         resize_keyboard=True,
@@ -100,7 +101,11 @@ def giftcard_menu_keyboard(catalog=None):
         items = brands.get(brand) or []
         live = sum(1 for item in items if item.get('can_buy'))
         suffix = f' · {live} موجود' if items else ''
-        rows.append([_inline_btn(f'{title}{suffix}', f'gc_b_{brand}')])
+        rows.append([_inline_btn(
+            f'{title}{suffix}',
+            f'gc_b_{brand}',
+            appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
+        )])
     rows.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
     return InlineKeyboardMarkup(rows)
 
@@ -114,6 +119,7 @@ def giftcard_list_keyboard(brand, items):
             rows.append([_inline_btn(
                 f'{face}  •  {_fmt(price)} تومان',
                 f'gc_p_{item["id"]}',
+                appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
             )])
         else:
             rows.append([_inline_btn(
@@ -126,8 +132,83 @@ def giftcard_list_keyboard(brand, items):
 
 def giftcard_buy_keyboard(product_id, brand):
     return InlineKeyboardMarkup([
-        [_inline_btn('✅ خرید این گیفت‌کارت', f'gc_buy_{int(product_id)}')],
+        [_inline_btn(
+            '✅ خرید این گیفت‌کارت', f'gc_buy_{int(product_id)}',
+            appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
+        )],
         [InlineKeyboardButton('🔙 بازگشت به لیست', callback_data=f'gc_b_{brand}')],
+    ])
+
+
+def stars_list_keyboard(packages, page=1, per_page=8):
+    packages = list(packages or [])
+    total_pages = max(1, (len(packages) + per_page - 1) // per_page)
+    page = max(1, min(int(page), total_pages))
+    start = (page - 1) * per_page
+    buttons = []
+    for pkg in packages[start:start + per_page]:
+        key = f'st.{pkg["id"]}'
+        title = appearance.user_label(key, pkg['title'])
+        icon = appearance.icon_for(key, 'b.menu.stars')
+        price = int(pkg.get('price') or 0)
+        if pkg.get('available') and price > 0:
+            buttons.append([_inline_btn(
+                f'{title}  •  {_fmt(price)} تومان',
+                f'st_{pkg["id"]}',
+                icon,
+            )])
+        else:
+            buttons.append([_inline_btn(
+                f'❌ ناموجود — {title}',
+                'noop',
+                icon,
+            )])
+    if total_pages > 1:
+        nav = [
+            InlineKeyboardButton(
+                f'• {number} •' if number == page else str(number),
+                callback_data='noop' if number == page else f'st_page_{number}',
+            )
+            for number in range(1, total_pages + 1)
+        ]
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    return InlineKeyboardMarkup(buttons)
+
+
+def stars_detail_keyboard(package_id, page=1):
+    return InlineKeyboardMarkup([
+        [_ibtn('b.stars.buy', '✅ خرید این استارز', f'st_buy_{int(package_id)}')],
+        [InlineKeyboardButton(
+            '🔙 بازگشت به لیست', callback_data=f'st_page_{max(1, int(page))}'
+        )],
+    ])
+
+
+def stars_uid_keyboard(own_username=''):
+    rows = []
+    if own_username:
+        rows.append([_inline_btn(
+            f'آیدی خودم (@{own_username})',
+            'st_self',
+            appearance.icon_for('b.menu.stars'),
+        )])
+    rows.append([_ibtn('b.stars.no', '✖️ انصراف', 'st_cancel')])
+    return InlineKeyboardMarkup(rows)
+
+
+def stars_cancel_keyboard():
+    return InlineKeyboardMarkup([
+        [_ibtn('b.stars.no', '✖️ انصراف', 'st_cancel')],
+        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+    ])
+
+
+def stars_confirm_keyboard():
+    return InlineKeyboardMarkup([
+        [_ibtn('b.stars.ok', '✅ تایید و ادامه پرداخت', 'st_confirm')],
+        [InlineKeyboardButton('✏️ اصلاح آیدی', callback_data='st_reedit')],
+        [_ibtn('b.stars.no', '✖️ انصراف', 'st_cancel')],
     ])
 
 
@@ -153,17 +234,18 @@ def credential_products_keyboard(products):
         rows.append([_inline_btn(
             f'{title} • {_fmt(p[4])} تومان',
             f'cred_product_{p[0]}',
-            appearance.user_emoji(key),
+            appearance.icon_for(key, 'b.gems.cr', 'b.menu.ff'),
         )])
     rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
     return InlineKeyboardMarkup(rows)
 
 
 def credential_method_keyboard():
+    icon = appearance.icon_for('b.gems.cr', 'b.menu.ff')
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('📧 Gmail / Google', callback_data='cred_method_google')],
-        [InlineKeyboardButton('📘 Facebook', callback_data='cred_method_facebook')],
-        [InlineKeyboardButton('🟣 VK', callback_data='cred_method_vk')],
+        [_inline_btn('📧 Gmail / Google', 'cred_method_google', icon)],
+        [_inline_btn('📘 Facebook', 'cred_method_facebook', icon)],
+        [_inline_btn('🟣 VK', 'cred_method_vk', icon)],
         [InlineKeyboardButton('❌ انصراف', callback_data='cred_cancel')],
     ])
 
@@ -251,7 +333,10 @@ def credential_cancel_keyboard():
 
 def credential_confirm_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✅ تأیید و ساخت سفارش', callback_data='cred_confirm')],
+        [_inline_btn(
+            '✅ تأیید و ساخت سفارش', 'cred_confirm',
+            appearance.icon_for('b.gem.ok', 'b.gems.cr'),
+        )],
         [InlineKeyboardButton('❌ انصراف و حذف اطلاعات', callback_data='cred_cancel')],
     ])
 
@@ -276,7 +361,7 @@ def sens_pc_packs_keyboard(packs):
             _inline_btn(
                 f"{appearance.user_label(f's.{key}', title)} — {price:,} ت",
                 f"sens_buy_{key}",
-                appearance.user_emoji(f's.{key}'),
+                appearance.icon_for(f's.{key}', 'b.menu.se'),
             )
         ])
     rows.append([InlineKeyboardButton('بازگشت', callback_data='sens')])
@@ -304,7 +389,7 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
         title = appearance.user_label(f'g.{g[0]}', g[1])
-        icon = appearance.user_emoji(f'g.{g[0]}') or None
+        icon = appearance.icon_for(f'g.{g[0]}', 'b.menu.ff') or None
         label = f"{auto} {title}  •  {_fmt(g[4])} تومان"
         if sold_out and not g[8]:
             label = f"❌ ناموجود — {title}"
@@ -365,7 +450,7 @@ def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=N
         rows.append([_inline_btn(
             label,
             f'pay_wallet_{order_id}',
-            appearance.user_emoji('b.pay.wal'),
+            appearance.icon_for('b.pay.wal', 'b.menu.wal'),
         )])
     rows.append([InlineKeyboardButton('انصراف', callback_data=f'cancel_order_{order_id}')])
     return InlineKeyboardMarkup(rows)
@@ -654,6 +739,7 @@ def admin_shop_keyboard():
             InlineKeyboardButton('🏷 کد تخفیف', callback_data='admx_discount'),
         ],
         [InlineKeyboardButton('🎁 گیفت‌کارت G2B', callback_data='admx_giftcards')],
+        [InlineKeyboardButton('⭐ استارز تلگرام', callback_data='admx_stars')],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 
@@ -692,6 +778,7 @@ def admin_pricing_keyboard():
     """هاب قیمت‌گذاری: بهای دلاری + درصد سود جدا برای آیدی / هفتگی / ماهانه."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('💎 سود جم با آیدی', callback_data='admi_gemprofit')],
+        [InlineKeyboardButton('⭐ سود استارز', callback_data='admi_starprofit')],
         [InlineKeyboardButton('🎁 سود گیفت‌کارت', callback_data='admi_giftprofit')],
         [
             InlineKeyboardButton('📅 سود هفتگی', callback_data='admi_credprofit_weekly'),

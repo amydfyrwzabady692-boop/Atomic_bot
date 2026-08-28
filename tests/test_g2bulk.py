@@ -293,5 +293,29 @@ class G2BulkInventoryTests(unittest.TestCase):
         self.assertEqual(result['status'], 'COMPLETED')
 
 
+class TelegramStarsApiTests(unittest.TestCase):
+    def test_parse_stars_amount(self):
+        self.assertEqual(g2bulk.parse_stars_amount('50 Stars'), 50)
+        self.assertEqual(g2bulk.parse_stars_amount('1K Stars'), 1000)
+        self.assertEqual(g2bulk.parse_stars_amount('1.5K Stars'), 1500)
+        self.assertEqual(g2bulk.parse_stars_amount('1M Stars'), 1_000_000)
+        self.assertIsNone(g2bulk.parse_stars_amount('3 months premium'))
+        self.assertIsNone(g2bulk.parse_stars_amount('Weekly Membership'))
+
+    @patch.object(g2bulk, '_api_key', return_value='test-key')
+    @patch.object(g2bulk, '_request')
+    def test_stars_order_uses_telegram_game_code(self, request, _api_key):
+        request.return_value = {
+            'success': True,
+            'order': {'order_id': 9, 'status': 'COMPLETED', 'price': '0.77'},
+        }
+        result = g2bulk.place_game_order(
+            '50 Stars', 'omid_1797', game_code='Telegram',
+        )
+        self.assertTrue(result['ok'])
+        path = request.call_args[0][1]
+        self.assertIn('/games/Telegram/order', path)
+
+
 if __name__ == '__main__':
     unittest.main()

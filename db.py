@@ -5,6 +5,7 @@
 import os
 import json
 import logging
+import re
 import threading
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -514,11 +515,20 @@ def create_sense_order_atomic(user_db_id, package_id, expected_price, *,
 
 
 def giftcard_profit_percent():
-    raw = str(get_setting('giftcard_profit_percent', '15') or '15')
+    raw = str(get_setting('giftcard_profit_percent', '10') or '10')
     try:
         value = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
     except (TypeError, ValueError):
-        value = 15
+        value = 10
+    return max(1, min(200, value))
+
+
+def stars_profit_percent():
+    raw = str(get_setting('stars_profit_percent', '10') or '10')
+    try:
+        value = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
+    except (TypeError, ValueError):
+        value = 10
     return max(1, min(200, value))
 
 
@@ -541,61 +551,101 @@ def _gift_codes_from_row(raw):
     return [text] if text else []
 
 
-def priced_gift_cards(*, brand=None, force=False):
-    """لیست گیفت‌کارت با قیمت تومنی و وضعیت موجودی زنده."""
-    fx = profitability.get_usd_toman_rate(force=force)
-    if not fx.get('ok'):
-        return {
-            'ok': False,
-            'error': fx.get('error') or 'نرخ دلار در دسترس نیست.',
-            'items': [],
-            'brands': {},
-            'profit_percent': giftcard_profit_percent(),
-        }
-    catalog = g2bulk.list_gift_card_products(force=force)
-    if not catalog.get('ok'):
-        return {
-            'ok': False,
-            'error': catalog.get('error') or 'کاتالوگ گیفت‌کارت در دسترس نیست.',
-            'items': [],
-            'brands': {},
-            'profit_percent': giftcard_profit_percent(),
-        }
-    profit = giftcard_profit_percent()
-    rate = int(fx['rate'])
-    snapshot = g2bulk.get_inventory_snapshot(force=False)
-    balance = snapshot.get('balance') if snapshot.get('ok') else None
+def _gift_catalog_from_rows(rows, *, brand=None, profit=None, rate=None):
+    profit = giftcard_profit_percent() if profit is None else profit
     wanted = str(brand or '').strip()
     items = []
     brands = {key: [] for key in g2bulk.GIFT_CARD_BRAND_ORDER}
-    for row in catalog.get('items') or []:
-        if wanted and row['brand'] != wanted:
+    usd_rate = int(rate or 0)
+    for row in rows:
+        (
+            product_id, item_brand, title, face_label, face_amount, face_currency,
+            cost_usd, sale_toman, stock, in_stock, is_active,
+        ) = row
+        if wanted and item_brand != wanted:
             continue
-        sale = _gift_card_sale_toman(row['unit_price'], rate, profit)
-        can_buy = bool(
-            row.get('in_stock')
-            and g2bulk.is_configured()
-            and balance is not None
-            and Decimal(str(balance)) >= Decimal(str(row['unit_price']))
-        )
+        if not is_active:
+            continue
+        can_buy = bool(in_stock and is_active and int(sale_toman or 0) > 0)
         priced = {
-            **row,
-            'sale_toman': sale,
+            'id': int(product_id),
+            'brand': item_brand,
+            'brand_title': g2bulk.gift_card_brand_title(item_brand),
+            'title': title,
+            'unit_price': Decimal(str(cost_usd)),
+            'stock': int(stock or 0),
+            'in_stock': bool(in_stock),
+            'face_amount': face_amount,
+            'face_currency': face_currency or '',
+            'face_label': face_label,
+            'sale_toman': int(sale_toman),
             'can_buy': can_buy,
-            'usd_toman_rate': rate,
+            'usd_toman_rate': usd_rate,
             'profit_percent': profit,
         }
         items.append(priced)
-        brands.setdefault(row['brand'], []).append(priced)
+        brands.setdefault(item_brand, []).append(priced)
+    for key in brands:
+        brands[key].sort(key=lambda item: (
+            item.get('face_amount') or 10_000,
+            item['unit_price'],
+        ))
+    items.sort(key=lambda item: (
+        g2bulk.GIFT_CARD_BRAND_ORDER.index(item['brand'])
+        if item['brand'] in g2bulk.GIFT_CARD_BRAND_ORDER else 99,
+        item.get('face_amount') or 10_000,
+        item['unit_price'],
+    ))
     return {
         'ok': True,
         'items': items,
         'brands': brands,
         'profit_percent': profit,
-        'usd_toman_rate': rate,
-        'balance': balance,
-        'fx_fallback': bool(fx.get('fallback')),
+        'usd_toman_rate': usd_rate,
+        'balance': None,
+        'fx_fallback': False,
     }
+
+
+def _load_gift_catalog_rows():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "G2ProductId","Brand","ProductTitle","FaceLabel","FaceAmount",'
+            '"FaceCurrency","CostUsd","SaleToman","Stock","InStock","IsActive" '
+            'FROM "GiftCardCatalog" ORDER BY "Brand","FaceAmount","G2ProductId"'
+        )
+        return cur.fetchall()
+
+
+def priced_gift_cards(*, brand=None, force=False):
+    """لیست گیفت‌کارت از کاتالوگ ذخیره‌شده — بدون انتظار G2B روی دکمه."""
+    profit = giftcard_profit_percent()
+    if force:
+        sync_gift_card_catalog(force=True)
+    try:
+        rows = _load_gift_catalog_rows()
+    except Exception:
+        rows = []
+    if not rows:
+        sync_gift_card_catalog(force=True)
+        try:
+            rows = _load_gift_catalog_rows()
+        except Exception:
+            rows = []
+    if not rows:
+        return {
+            'ok': False,
+            'error': 'کاتالوگ گیفت‌کارت هنوز آماده نیست.',
+            'items': [],
+            'brands': {},
+            'profit_percent': profit,
+        }
+    rate = 0
+    try:
+        rate = int(get_setting('giftcard_usd_toman_rate', '0') or 0)
+    except (TypeError, ValueError):
+        rate = 0
+    return _gift_catalog_from_rows(rows, brand=brand, profit=profit, rate=rate)
 
 
 def get_priced_gift_card(product_id, force=False):
@@ -617,11 +667,16 @@ def create_gift_card_order_atomic(
 ):
     """ثبت سفارش گیفت با قفل قیمت/موجودی زنده؛ بدون ساخت سفارش اگر موجود نباشد."""
     expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
-    live = get_priced_gift_card(product_id, force=True)
+    live = get_priced_gift_card(product_id, force=False)
     if not live.get('ok'):
         raise ValueError(live.get('error') or 'گیفت‌کارت در دسترس نیست.')
     if not live.get('can_buy'):
         raise ValueError('موجودی این گیفت‌کارت تمام شده یا سرویس تأمین کافی نیست.')
+    available, _cost, _balance, error = g2bulk.can_fulfill_gift_card(
+        product_id, force=True
+    )
+    if not available:
+        raise ValueError(error or 'موجودی این گیفت‌کارت تمام شده یا سرویس تأمین کافی نیست.')
     price = checked_amount(live['sale_toman'], label='قیمت گیفت‌کارت')
     if price != expected_price:
         raise ValueError('قیمت گیفت‌کارت تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
@@ -815,6 +870,562 @@ def _fulfill_gift_card(order_id, gift):
     if ok_refund:
         return False, f'refunded:{int(refunded)}'
     return False, result.get('error') or 'خرید گیفت‌کارت ناموفق بود.'
+
+
+def _stars_title(stars_amount, catalogue_name=''):
+    try:
+        amount = int(stars_amount)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount > 0:
+        return f'⭐ {amount:,} استارز'
+    return str(catalogue_name or 'استارز تلگرام').strip()
+
+
+def list_star_packages():
+    """بسته‌های استارز از دیتابیس — سریع برای دکمه‌ها."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
+            '"IsAvailable","IsActive","SortOrder" '
+            'FROM "StarPackages" WHERE "IsActive"=true '
+            'ORDER BY "SortOrder","StarsAmount","Id"'
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            'id': row[0],
+            'catalogue': row[1],
+            'title': row[2],
+            'stars': int(row[3] or 0),
+            'cost_usd': Decimal(str(row[4])),
+            'price': int(row[5]),
+            'available': bool(row[6]),
+            'active': bool(row[7]),
+            'sort': int(row[8] or 0),
+        }
+        for row in rows
+    ]
+
+
+def get_star_package(package_id):
+    try:
+        package_id = int(package_id)
+    except (TypeError, ValueError):
+        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
+            '"IsAvailable","IsActive" FROM "StarPackages" WHERE "Id"=%s',
+            (package_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'id': row[0],
+        'catalogue': row[1],
+        'title': row[2],
+        'stars': int(row[3] or 0),
+        'cost_usd': Decimal(str(row[4])),
+        'price': int(row[5]),
+        'available': bool(row[6]) and bool(row[7]),
+        'active': bool(row[7]),
+    }
+
+
+def create_star_order_atomic(
+    user_db_id, package_id, expected_price, *, telegram_id='', full_name='',
+    target_username='', player_name='',
+):
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    username = normalize_telegram_username(target_username)
+    if not username:
+        raise ValueError('آیدی تلگرام نامعتبر است.')
+    pkg = get_star_package(package_id)
+    if not pkg or not pkg.get('available'):
+        raise ValueError('این بسته استارز دیگر موجود نیست.')
+    price = checked_amount(pkg['price'], label='قیمت استارز')
+    if price != expected_price:
+        raise ValueError('قیمت استارز تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
+    available, _cost, _balance, error = g2bulk.can_fulfill_stars(
+        pkg['catalogue'], force=True
+    )
+    if not available:
+        raise ValueError(error or 'موجودی استارز کافی نیست.')
+    title = pkg['title'] or _stars_title(pkg['stars'], pkg['catalogue'])
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            order_id = _insert_pending_order(
+                cur, user_db_id, price, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+            cur.execute(
+                'INSERT INTO "OrderItems" '
+                '("OrderId", "ProductId", "ProductName", "Price", "Quantity") '
+                'VALUES (%s, NULL, %s, %s, 1) RETURNING "Id"',
+                (order_id, title, price),
+            )
+            item_id = cur.fetchone()[0]
+            cur.execute(
+                'INSERT INTO "StarOrders" '
+                '("OrderId","OrderItemId","PackageId","CatalogueName","StarsAmount",'
+                '"TargetUsername","PlayerName","CostUsd","SaleToman","UsdTomanRate",'
+                '"G2Status") '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,\'\')',
+                (
+                    order_id, item_id, int(pkg['id']), pkg['catalogue'],
+                    int(pkg['stars']), username, str(player_name or '')[:120],
+                    str(pkg['cost_usd']), price,
+                    int(get_setting('stars_usd_toman_rate', '0') or 0) or None,
+                ),
+            )
+            conn.commit()
+            return order_id, title, price
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def get_star_order(order_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","OrderId","PackageId","CatalogueName","StarsAmount",'
+            '"TargetUsername","PlayerName","CostUsd","SaleToman","UsdTomanRate",'
+            '"G2OrderId","G2Status" FROM "StarOrders" WHERE "OrderId"=%s',
+            (int(order_id),),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'id': row[0],
+        'order_id': row[1],
+        'package_id': row[2],
+        'catalogue': row[3],
+        'stars': int(row[4] or 0),
+        'target_username': row[5],
+        'player_name': row[6] or '',
+        'cost_usd': row[7],
+        'sale_toman': row[8],
+        'usd_toman_rate': row[9],
+        'g2_order_id': row[10],
+        'g2_status': str(row[11] or '').upper(),
+        'title': _stars_title(row[4], row[3]),
+    }
+
+
+def star_user_delivery_text(order_id):
+    info = get_star_order(order_id)
+    if not info:
+        return None
+    handle = f"@{info['target_username']}"
+    if str(info.get('g2_status') or '').upper() == 'COMPLETED':
+        return (
+            f"✅ سفارش #{order_id} تحویل شد\n"
+            f"⭐ {info['title']}\n"
+            f"اکانت: {handle}\n"
+            f"مبلغ پرداختی: {int(info['sale_toman']):,} تومان\n\n"
+            "استارز روی همان اکانت نشسته است. از تنظیمات تلگرام → Stars چک کن."
+        )
+    return (
+        f"✅ سفارش #{order_id} پرداخت شد و استارز در حال واریز است.\n"
+        f"⭐ {info['title']}\n"
+        f"اکانت: {handle}\n"
+        "نتیجه نهایی به‌صورت خودکار برایت ارسال می‌شود."
+    )
+
+
+def auto_delivery_user_text(order_id):
+    return gift_card_user_delivery_text(order_id) or star_user_delivery_text(order_id)
+
+
+def update_star_g2(star_id, *, order_id_g2=None, status=None, player_name=None):
+    with get_conn() as conn, conn.cursor() as cur:
+        fields = ['"UpdatedAt"=now()']
+        values = []
+        if order_id_g2 is not None:
+            fields.append('"G2OrderId"=%s')
+            values.append(str(order_id_g2))
+        if status is not None:
+            fields.append('"G2Status"=%s')
+            values.append(str(status))
+        if player_name is not None:
+            fields.append('"PlayerName"=%s')
+            values.append(str(player_name or '')[:120])
+        values.append(int(star_id))
+        cur.execute(
+            f'UPDATE "StarOrders" SET {", ".join(fields)} WHERE "Id"=%s',
+            values,
+        )
+        conn.commit()
+
+
+def claim_star_submission(star_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "StarOrders" SET '
+            '"G2Status"=\'SUBMITTING\',"UpdatedAt"=now() '
+            'WHERE "Id"=%s AND "G2OrderId" IS NULL '
+            'AND COALESCE("G2Status",\'\')=\'\' '
+            'RETURNING "Id"',
+            (int(star_id),),
+        )
+        claimed = bool(cur.fetchone())
+        conn.commit()
+        return claimed
+
+
+def _fulfill_star_order(order_id, star):
+    status = str(star.get('g2_status') or '').upper()
+    username = str(star.get('target_username') or '').strip()
+    if status == 'COMPLETED' and star.get('g2_order_id'):
+        update_order_status(order_id, 'delivered')
+        return True, 'delivered'
+    if star.get('g2_order_id') and status in {'PENDING', 'PROCESSING', 'SUBMITTING'}:
+        live = g2bulk.get_game_order_status(star['g2_order_id'])
+        if live.get('ok'):
+            live_status = str(live.get('status') or '').upper()
+            update_star_g2(
+                star['id'],
+                status=live_status,
+                player_name=live.get('player_name') or star.get('player_name'),
+            )
+            if live_status == 'COMPLETED':
+                update_order_status(order_id, 'delivered')
+                return True, 'delivered'
+            if _is_terminal_g2_failure(live_status):
+                update_star_g2(star['id'], status='FAILED')
+                ok_refund, refunded = _refund_failed_order(order_id)
+                if ok_refund:
+                    return False, f'refunded:{int(refunded)}'
+                return False, 'واریز استارز ناموفق بود.'
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+
+    if status in {'SUBMITTING', 'SUBMIT_UNKNOWN', 'FAILED'}:
+        recovered = g2bulk.find_game_order_by_remark(
+            f'Atomic Bot stars #{order_id}'
+        )
+        if recovered.get('found'):
+            recovered_status = str(recovered.get('status') or 'PENDING').upper()
+            update_star_g2(
+                star['id'],
+                order_id_g2=recovered['order_id'],
+                status=recovered_status,
+                player_name=recovered.get('player_name') or star.get('player_name'),
+            )
+            if recovered_status == 'COMPLETED':
+                update_order_status(order_id, 'delivered')
+                return True, 'delivered'
+            if _is_terminal_g2_failure(recovered_status):
+                ok_refund, refunded = _refund_failed_order(order_id)
+                if ok_refund:
+                    return False, f'refunded:{int(refunded)}'
+                return False, 'واریز استارز ناموفق بود.'
+            update_order_status(order_id, 'processing')
+            return True, 'processing'
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+
+    if status in {'REJECTED', 'FAILED'} and not star.get('g2_order_id'):
+        ok_refund, refunded = _refund_failed_order(order_id)
+        if ok_refund:
+            return False, f'refunded:{int(refunded)}'
+        return False, 'واریز استارز ناموفق بود.'
+
+    available, cost, _balance, error = g2bulk.can_fulfill_stars(
+        star['catalogue'], force=True
+    )
+    if not available:
+        update_star_g2(star['id'], status='REJECTED')
+        ok_refund, refunded = _refund_failed_order(order_id)
+        if ok_refund:
+            return False, f'refunded:{int(refunded)}'
+        return False, error or 'موجودی استارز کافی نیست.'
+    if not username:
+        update_star_g2(star['id'], status='REJECTED')
+        ok_refund, refunded = _refund_failed_order(order_id)
+        if ok_refund:
+            return False, f'refunded:{int(refunded)}'
+        return False, 'آیدی تلگرام سفارش خالی است.'
+    if not claim_star_submission(star['id']):
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+    result = g2bulk.place_game_order(
+        catalogue_name=star['catalogue'],
+        player_id=username,
+        remark=f'Atomic Bot stars #{order_id}',
+        idempotency_key=g2bulk.stars_idempotency_key(order_id, star['id']),
+        game_code=g2bulk.TELEGRAM_GAME_CODE,
+    )
+    if result.get('ok') and result.get('order_id'):
+        api_status = str(result.get('status') or 'PENDING').upper()
+        update_star_g2(
+            star['id'],
+            order_id_g2=result['order_id'],
+            status=api_status,
+            player_name=result.get('player_name') or star.get('player_name'),
+        )
+        if api_status == 'COMPLETED':
+            update_order_status(order_id, 'delivered')
+            return True, 'delivered'
+        if _is_terminal_g2_failure(api_status):
+            ok_refund, refunded = _refund_failed_order(order_id)
+            if ok_refund:
+                return False, f'refunded:{int(refunded)}'
+            return False, 'واریز استارز ناموفق بود.'
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+    if result.get('uncertain'):
+        update_star_g2(star['id'], status='SUBMIT_UNKNOWN')
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
+    update_star_g2(star['id'], status='REJECTED')
+    ok_refund, refunded = _refund_failed_order(order_id)
+    if ok_refund:
+        return False, f'refunded:{int(refunded)}'
+    return False, result.get('error') or 'ثبت سفارش استارز ناموفق بود.'
+
+
+def normalize_telegram_username(raw):
+    text = str(raw or '').strip()
+    text = text.translate(str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'))
+    text = re.sub(r'^https?://', '', text, flags=re.I)
+    text = re.sub(r'^(?:t\.me|telegram\.me|telegram\.dog)/', '', text, flags=re.I)
+    text = text.lstrip('@').split('?')[0].split('/')[0].strip()
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', text or ''):
+        return ''
+    return text
+
+
+def sync_gift_card_catalog(force=False):
+    """موجودی و قیمت گیفت‌کارت را از G2B در دیتابیس ذخیره کن."""
+    from datetime import datetime, timezone
+    if not force:
+        raw = get_setting('giftcard_catalog_last_sync', '')
+        if raw:
+            try:
+                last = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+                if (datetime.now(timezone.utc) - last).total_seconds() < 24 * 3600:
+                    return 0
+            except (TypeError, ValueError):
+                pass
+    fx = profitability.get_usd_toman_rate(force=True)
+    if not fx.get('ok'):
+        return _reprice_gift_catalog_from_stored()
+    rate = int(fx['rate'])
+    catalog = g2bulk.list_gift_card_products(force=True)
+    if not catalog.get('ok'):
+        _LOG.warning('gift catalog sync failed: %s', catalog.get('error'))
+        return _reprice_gift_catalog_from_stored(rate)
+    profit = giftcard_profit_percent()
+    live_ids = []
+    updated = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for row in catalog.get('items') or []:
+            product_id = int(row['id'])
+            live_ids.append(product_id)
+            sale = _gift_card_sale_toman(row['unit_price'], rate, profit)
+            cur.execute(
+                '''INSERT INTO "GiftCardCatalog"
+                   ("G2ProductId","Brand","ProductTitle","FaceLabel","FaceAmount",
+                    "FaceCurrency","CostUsd","SaleToman","Stock","InStock",
+                    "IsActive","UpdatedAt")
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,now())
+                   ON CONFLICT ("G2ProductId") DO UPDATE SET
+                     "Brand"=EXCLUDED."Brand",
+                     "ProductTitle"=EXCLUDED."ProductTitle",
+                     "FaceLabel"=EXCLUDED."FaceLabel",
+                     "FaceAmount"=EXCLUDED."FaceAmount",
+                     "FaceCurrency"=EXCLUDED."FaceCurrency",
+                     "CostUsd"=EXCLUDED."CostUsd",
+                     "SaleToman"=EXCLUDED."SaleToman",
+                     "Stock"=EXCLUDED."Stock",
+                     "InStock"=EXCLUDED."InStock",
+                     "IsActive"=true,
+                     "UpdatedAt"=now()''',
+                (
+                    product_id, row['brand'], row['title'], row['face_label'],
+                    row.get('face_amount'), row.get('face_currency') or '',
+                    str(row['unit_price']), sale, int(row.get('stock') or 0),
+                    bool(row.get('in_stock')),
+                ),
+            )
+            updated += 1
+        if live_ids:
+            cur.execute(
+                'UPDATE "GiftCardCatalog" SET "IsActive"=false,"InStock"=false,'
+                '"UpdatedAt"=now() WHERE "G2ProductId" <> ALL(%s)',
+                (live_ids,),
+            )
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('giftcard_catalog_last_sync', datetime.now(timezone.utc).isoformat()),
+        )
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('giftcard_usd_toman_rate', str(rate)),
+        )
+        conn.commit()
+    return updated
+
+
+def _reprice_gift_catalog_from_stored(rate=None):
+    if rate is None:
+        fx = profitability.get_usd_toman_rate(force=False)
+        if not fx.get('ok'):
+            return 0
+        rate = int(fx['rate'])
+    profit = giftcard_profit_percent()
+    updated = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "G2ProductId","CostUsd","SaleToman" FROM "GiftCardCatalog" '
+            'WHERE "IsActive"=true'
+        )
+        rows = cur.fetchall()
+        for product_id, cost_usd, sale in rows:
+            new_price = _gift_card_sale_toman(cost_usd, rate, profit)
+            if int(new_price) != int(sale or 0):
+                cur.execute(
+                    'UPDATE "GiftCardCatalog" SET "SaleToman"=%s,"UpdatedAt"=now() '
+                    'WHERE "G2ProductId"=%s',
+                    (new_price, product_id),
+                )
+                updated += 1
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('giftcard_usd_toman_rate', str(rate)),
+        )
+        conn.commit()
+    return updated
+
+
+def sync_star_packages(force=False):
+    """کاتالوگ استارز G2B را در دیتابیس ذخیره کن."""
+    from datetime import datetime, timezone
+    if not force:
+        raw = get_setting('stars_catalog_last_sync', '')
+        if raw:
+            try:
+                last = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+                if (datetime.now(timezone.utc) - last).total_seconds() < 24 * 3600:
+                    return 0
+            except (TypeError, ValueError):
+                pass
+    fx = profitability.get_usd_toman_rate(force=True)
+    if not fx.get('ok'):
+        return _reprice_star_packages_from_stored()
+    rate = int(fx['rate'])
+    snapshot = g2bulk.get_stars_snapshot(force=True)
+    if not snapshot.get('ok'):
+        _LOG.warning('stars catalog sync failed: %s', snapshot.get('error'))
+        return _reprice_star_packages_from_stored(rate)
+    profit = stars_profit_percent()
+    live_names = []
+    updated = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        for index, item in enumerate(snapshot.get('items') or []):
+            name = item['name']
+            live_names.append(name)
+            sale = compute_gem_sale_price(item['cost_usd'], rate, profit)
+            title = _stars_title(item['stars'], name)
+            cur.execute(
+                '''INSERT INTO "StarPackages"
+                   ("CatalogueName","Title","StarsAmount","CostUsd","Price",
+                    "IsAvailable","IsActive","SortOrder","UpdatedAt")
+                   VALUES (%s,%s,%s,%s,%s,true,true,%s,now())
+                   ON CONFLICT ("CatalogueName") DO UPDATE SET
+                     "Title"=EXCLUDED."Title",
+                     "StarsAmount"=EXCLUDED."StarsAmount",
+                     "CostUsd"=EXCLUDED."CostUsd",
+                     "Price"=EXCLUDED."Price",
+                     "IsAvailable"=true,
+                     "IsActive"=true,
+                     "SortOrder"=EXCLUDED."SortOrder",
+                     "UpdatedAt"=now()''',
+                (name, title, int(item['stars']), str(item['cost_usd']), sale, index),
+            )
+            updated += 1
+        if live_names:
+            cur.execute(
+                'UPDATE "StarPackages" SET "IsActive"=false,"IsAvailable"=false,'
+                '"UpdatedAt"=now() WHERE "CatalogueName" <> ALL(%s)',
+                (live_names,),
+            )
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('stars_catalog_last_sync', datetime.now(timezone.utc).isoformat()),
+        )
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('stars_usd_toman_rate', str(rate)),
+        )
+        conn.commit()
+    try:
+        _copy_premium_emoji_to_star_keys()
+    except Exception:
+        _LOG.exception('star package premium emoji copy failed')
+    return updated
+
+
+def _reprice_star_packages_from_stored(rate=None):
+    if rate is None:
+        fx = profitability.get_usd_toman_rate(force=False)
+        if not fx.get('ok'):
+            return 0
+        rate = int(fx['rate'])
+    profit = stars_profit_percent()
+    updated = 0
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","CostUsd","Price" FROM "StarPackages" WHERE "IsActive"=true'
+        )
+        for pkg_id, cost_usd, price in cur.fetchall():
+            new_price = compute_gem_sale_price(cost_usd, rate, profit)
+            if int(new_price) != int(price or 0):
+                cur.execute(
+                    'UPDATE "StarPackages" SET "Price"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+                    (new_price, pkg_id),
+                )
+                updated += 1
+        cur.execute(
+            '''INSERT INTO "BotSettings"("Key","Value","UpdatedAt") VALUES(%s,%s,now())
+               ON CONFLICT ("Key") DO UPDATE SET "Value"=EXCLUDED."Value",
+               "UpdatedAt"=now()''',
+            ('stars_usd_toman_rate', str(rate)),
+        )
+        conn.commit()
+    return updated
+
+
+def sync_gift_and_star_catalogs(force=False):
+    gift = 0
+    stars = 0
+    try:
+        gift = sync_gift_card_catalog(force=force)
+    except Exception:
+        _LOG.exception('gift card catalog sync crashed')
+    try:
+        stars = sync_star_packages(force=force)
+    except Exception:
+        _LOG.exception('stars catalog sync crashed')
+    try:
+        _copy_premium_emoji_to_product_keys()
+    except Exception:
+        _LOG.exception('product premium emoji copy after catalog sync failed')
+    return gift + stars
 
 
 def set_order_authority(order_id, authority, payment_method='zarinpal',
@@ -2070,7 +2681,10 @@ def fulfill_order(order_id):
             update_order_status(order_id, 'processing')
 
             infos = get_gem_infos_for_order(order_id)
+            star = get_star_order(order_id)
             gift = get_gift_card_order(order_id)
+            if star and not infos:
+                return _fulfill_star_order(order_id, star)
             if gift and not infos:
                 return _fulfill_gift_card(order_id, gift)
             if not infos and is_sense_order(order_id):
@@ -2865,7 +3479,7 @@ def ensure_admin_schema():
            VALUES ('gem_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('giftcard_profit_percent','15',now())
+           VALUES ('giftcard_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('credential_weekly_cost_usd','1.328',now())
@@ -3024,7 +3638,7 @@ def ensure_admin_schema():
         '''CREATE INDEX IF NOT EXISTS idx_giftcard_orders_status
            ON "GiftCardOrders" ("G2Status")''',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
-           VALUES ('giftcard_profit_percent','15',now())
+           VALUES ('giftcard_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',
         '''CREATE TABLE IF NOT EXISTS "PromoCodes" (
             "Id" SERIAL PRIMARY KEY,
@@ -3128,6 +3742,59 @@ def ensure_admin_schema():
            ON "AdminAuditLogs" ("CreatedAt" DESC)''',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "Role" VARCHAR(20) NOT NULL DEFAULT \'admin\'',
         'ALTER TABLE "BotAdmins" ADD COLUMN IF NOT EXISTS "AddedBy" VARCHAR(64)',
+        '''CREATE TABLE IF NOT EXISTS "GiftCardCatalog" (
+            "G2ProductId" INTEGER PRIMARY KEY,
+            "Brand" VARCHAR(32) NOT NULL,
+            "ProductTitle" VARCHAR(255) NOT NULL,
+            "FaceLabel" VARCHAR(80) NOT NULL DEFAULT '',
+            "FaceAmount" INTEGER,
+            "FaceCurrency" VARCHAR(8) NOT NULL DEFAULT '',
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+            "Stock" INTEGER NOT NULL DEFAULT 0,
+            "InStock" BOOLEAN NOT NULL DEFAULT false,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_giftcard_catalog_brand
+           ON "GiftCardCatalog" ("Brand","IsActive")''',
+        '''CREATE TABLE IF NOT EXISTS "StarPackages" (
+            "Id" SERIAL PRIMARY KEY,
+            "CatalogueName" VARCHAR(120) NOT NULL UNIQUE,
+            "Title" VARCHAR(120) NOT NULL,
+            "StarsAmount" INTEGER NOT NULL,
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "Price" INTEGER NOT NULL CHECK ("Price" > 0),
+            "IsAvailable" BOOLEAN NOT NULL DEFAULT true,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "StarOrders" (
+            "Id" SERIAL PRIMARY KEY,
+            "OrderId" INTEGER NOT NULL UNIQUE REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "OrderItemId" INTEGER REFERENCES "OrderItems"("Id") ON DELETE SET NULL,
+            "PackageId" INTEGER REFERENCES "StarPackages"("Id") ON DELETE SET NULL,
+            "CatalogueName" VARCHAR(120) NOT NULL,
+            "StarsAmount" INTEGER NOT NULL,
+            "TargetUsername" VARCHAR(64) NOT NULL,
+            "PlayerName" VARCHAR(255) NOT NULL DEFAULT '',
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+            "UsdTomanRate" INTEGER,
+            "G2OrderId" VARCHAR(50),
+            "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_star_orders_status
+           ON "StarOrders" ("G2Status")''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('stars_profit_percent','10',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('giftcard_profit_percent','10',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''CREATE TABLE IF NOT EXISTS "Appearance" (
             "Key" VARCHAR(80) PRIMARY KEY,
             "TextValue" TEXT,
@@ -3154,6 +3821,214 @@ def ensure_admin_schema():
                 f'{len(failures)} database migration step(s) failed: {failures}'
             )
         conn.commit()
+    _apply_giftcard_profit_ten_once()
+    _seed_catalog_premium_emoji()
+
+
+def _apply_giftcard_profit_ten_once():
+    if str(get_setting('giftcard_profit_to_10_v1', '') or '') == '1':
+        return
+    current = str(get_setting('giftcard_profit_percent', '10') or '10').replace('%', '').strip()
+    if current in ('', '15'):
+        set_setting('giftcard_profit_percent', '10')
+    set_setting('giftcard_profit_to_10_v1', '1')
+
+
+# دکمه‌ها و عنوان بخش‌های کاربری که باید ایموجی پریمیوم داشته باشند.
+# انصراف/حذف (b.gem.no و b.stars.no) عمداً این‌جا نیستند.
+_PREMIUM_EMOJI_STATIC_KEYS = (
+    'b.menu.ff', 'b.menu.wal', 'b.menu.ord', 'b.menu.acc',
+    'b.menu.st', 'b.menu.se', 'b.menu.stars', 'b.menu.gc', 'b.menu.su',
+    't.welcome', 't.help', 't.home',
+    't.ff.hdr', 't.gems.hdr', 't.creds.hdr',
+    't.wallet.hdr', 't.account.hdr', 't.orders.hdr', 't.orders.empty',
+    't.store.pick', 't.sense.hdr', 't.sense.pc', 't.sense.mob',
+    't.support', 't.gc.hdr', 't.stars.hdr',
+    'b.gems.id', 'b.gems.cr', 'b.nav.home',
+    'b.gem.buy', 'b.gem.ok',
+    'b.wal.50', 'b.wal.100', 'b.wal.200', 'b.wal.500', 'b.wal.custom',
+    'b.pay.zp', 'b.pay.card', 'b.pay.wal',
+    'b.se.pc', 'b.se.mob',
+    'b.gc.gplay_us', 'b.gc.itunes_us', 'b.gc.itunes_tr', 'b.gc.gplay_tr',
+    'b.stars.buy', 'b.stars.ok',
+)
+
+
+def _telegram_json(method, payload):
+    token = (os.getenv('BOT_TOKEN') or '').strip()
+    if not token:
+        return None
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(
+        f'https://api.telegram.org/bot{token}/{method}',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            data = json.loads(response.read().decode('utf-8'))
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        _LOG.warning('telegram method %s failed', method)
+        return None
+    if not data.get('ok'):
+        return None
+    return data.get('result')
+
+
+def _load_premium_emoji_pack(source_id):
+    """کل پکیج ایموجی پریمیوم ثبت‌شده را با انواع یونیکد برمی‌گرداند."""
+    import appearance as appearance_mod
+    source_id = str(source_id or '').strip()
+    if not source_id:
+        return {}
+    try:
+        raw = get_setting('premium_emoji_pack_v1', '') or ''
+        cached = json.loads(raw) if raw else {}
+        items = cached.get('items') or {}
+        if cached.get('source_id') == source_id and items:
+            pack = {}
+            for char, pair in items.items():
+                if not isinstance(pair, (list, tuple)) or len(pair) < 1:
+                    continue
+                emoji_id = str(pair[0] or '').strip()
+                emoji_char = str(pair[1] if len(pair) > 1 else char) or char
+                if emoji_id:
+                    pack[appearance_mod.normalize_emoji_char(char)] = (
+                        emoji_id, emoji_char,
+                    )
+            if pack:
+                return pack
+    except Exception:
+        _LOG.exception('premium emoji pack cache read failed')
+    stickers = _telegram_json(
+        'getCustomEmojiStickers', {'custom_emoji_ids': [source_id]}
+    ) or []
+    pack = appearance_mod.index_custom_emoji_stickers(stickers)
+    set_name = ''
+    if stickers:
+        set_name = str((stickers[0] or {}).get('set_name') or '')
+    if set_name:
+        full = _telegram_json('getStickerSet', {'name': set_name}) or {}
+        appearance_mod.index_custom_emoji_stickers(full.get('stickers') or [], pack)
+    if pack:
+        try:
+            set_setting('premium_emoji_pack_v1', json.dumps({
+                'source_id': source_id,
+                'set_name': set_name,
+                'items': {char: [eid, ch] for char, (eid, ch) in pack.items()},
+            }, ensure_ascii=False))
+        except Exception:
+            _LOG.exception('premium emoji pack cache write failed')
+    return pack
+
+
+def _registered_premium_emoji(rows=None):
+    rows = rows if rows is not None else list_appearance_rows()
+    for row in (rows or {}).values():
+        emoji_id = str(row.get('emoji_id') or '').strip()
+        if emoji_id:
+            return emoji_id, str(row.get('emoji_char') or '⭐') or '⭐'
+    return '', ''
+
+
+def _apply_typed_premium_emoji(keys, *, rows, pack, source_id, source_char):
+    import appearance as appearance_mod
+    pack_ids = {emoji_id for emoji_id, _char in (pack or {}).values()}
+    replaceable = pack_ids | {str(source_id or '')}
+    changed = False
+    for key in keys:
+        wanted = appearance_mod.wanted_emoji_chars(key)
+        emoji_id, emoji_char = appearance_mod.pick_pack_emoji(
+            pack, wanted, source_id, source_char,
+        )
+        if not emoji_id:
+            continue
+        current = rows.get(key) or {}
+        current_id = str(current.get('emoji_id') or '').strip()
+        if current_id == emoji_id:
+            continue
+        if current_id and current_id not in replaceable:
+            continue
+        try:
+            upsert_appearance(key, emoji_id=emoji_id, emoji_char=emoji_char)
+            rows[key] = {
+                'text': current.get('text'),
+                'emoji_id': emoji_id,
+                'emoji_char': emoji_char,
+            }
+            changed = True
+        except Exception:
+            _LOG.exception('premium emoji seed failed key=%s', key)
+    if changed:
+        try:
+            appearance_mod.invalidate_cache()
+        except Exception:
+            pass
+    return changed
+
+
+def _seed_catalog_premium_emoji():
+    """از پکیج ایموجی پریمیوم، نوع مرتبط هر بخش را روی دکمه‌ها بگذار."""
+    import appearance as appearance_mod
+    rows = list_appearance_rows()
+    source_id, source_char = _registered_premium_emoji(rows)
+    if not source_id:
+        return
+    pack = appearance_mod.pack_from_appearance_rows(rows)
+    try:
+        pack.update(_load_premium_emoji_pack(source_id) or {})
+    except Exception:
+        _LOG.exception('premium emoji pack load failed')
+    keys = list(_PREMIUM_EMOJI_STATIC_KEYS) + _iter_product_appearance_keys()
+    _apply_typed_premium_emoji(
+        keys,
+        rows=rows,
+        pack=pack,
+        source_id=source_id,
+        source_char=source_char,
+    )
+
+
+def _copy_premium_emoji_to_product_keys():
+    _seed_catalog_premium_emoji()
+
+
+def _iter_product_appearance_keys():
+    keys = []
+    try:
+        for pkg in list_star_packages() or []:
+            keys.append(f'st.{pkg["id"]}')
+    except Exception:
+        _LOG.exception('star package keys for premium emoji failed')
+    try:
+        for gem in get_gems_by_id() or []:
+            keys.append(f'g.{gem[0]}')
+    except Exception:
+        _LOG.exception('gem package keys for premium emoji failed')
+    try:
+        for gem in get_gems_by_credentials() or []:
+            keys.append(f'c.{gem[0]}')
+    except Exception:
+        _LOG.exception('credential package keys for premium emoji failed')
+    try:
+        for pack in list_sense_packages(active_only=False) or []:
+            keys.append(f's.{pack[0]}')
+    except Exception:
+        _LOG.exception('sense package keys for premium emoji failed')
+    try:
+        for row in simple_list('ProductCategories', ['Id']) or []:
+            keys.append(f'sc.{row[0]}')
+        for row in simple_list('StoreProducts', ['Id']) or []:
+            keys.append(f'sp.{row[0]}')
+    except Exception:
+        _LOG.exception('store keys for premium emoji failed')
+    return keys
+
+
+def _copy_premium_emoji_to_star_keys():
+    _copy_premium_emoji_to_product_keys()
 
 
 # ─── تنظیمات و پنل مدیریت توسعه‌یافته ─────────────────────────────────────────
@@ -4820,6 +5695,10 @@ def sync_gem_prices():
                 (mobile_seed_marker,),
             )
         conn.commit()
+    try:
+        _copy_premium_emoji_to_product_keys()
+    except Exception:
+        _LOG.exception('product premium emoji copy after gem catalogue seed failed')
 
 
 def compute_gem_sale_price(cost_usd, usd_toman_rate_value, profit_percent=10):
@@ -5036,6 +5915,11 @@ def sync_gem_prices_daily(_force=False):
         cred_cfg['monthly_cost'],
         rate_result.get("source", "unknown"),
     )
+    try:
+        extra = sync_gift_and_star_catalogs(force=True)
+        updated += int(extra or 0)
+    except Exception:
+        _LOG.warning("gift/star catalog sync after gem prices failed", exc_info=True)
     return updated
 
 
@@ -5300,7 +6184,23 @@ def list_failed_deliveries(limit=20):
             'WHERE o."Status" IN (\'paid\',\'processing\') '
             'AND COALESCE(g."G2BulkStatus",\'\') '
             'IN (\'FAILED\',\'REJECTED\',\'SUBMIT_UNKNOWN\') '
-            'ORDER BY o."Id" DESC LIMIT %s',
+            'UNION '
+            'SELECT DISTINCT o."Id", o."TelegramId", o."TotalAmount", o."Status", '
+            'o."PaymentMethod", s."TargetUsername", s."G2Status" '
+            'FROM "Orders" o '
+            'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'paid\',\'processing\') '
+            'AND COALESCE(s."G2Status",\'\') '
+            'IN (\'FAILED\',\'REJECTED\',\'SUBMIT_UNKNOWN\') '
+            'UNION '
+            'SELECT DISTINCT o."Id", o."TelegramId", o."TotalAmount", o."Status", '
+            'o."PaymentMethod", g."Brand", g."G2Status" '
+            'FROM "Orders" o '
+            'JOIN "GiftCardOrders" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'paid\',\'processing\') '
+            'AND COALESCE(g."G2Status",\'\') '
+            'IN (\'FAILED\',\'REJECTED\',\'SUBMIT_UNKNOWN\') '
+            'ORDER BY 1 DESC LIMIT %s',
             (limit,),
         )
         return cur.fetchall()
@@ -5319,6 +6219,10 @@ def list_processing_auto_orders(limit=50):
             'UNION '
             'SELECT DISTINCT o."Id" FROM "Orders" o '
             'JOIN "GiftCardOrders" g ON g."OrderId"=o."Id" '
+            'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
+            'UNION '
+            'SELECT DISTINCT o."Id" FROM "Orders" o '
+            'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
             'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
             'ORDER BY 1 LIMIT %s',
             (max(1, min(int(limit), 100)),),
@@ -5386,6 +6290,17 @@ def list_unnotified_auto_deliveries(limit=50):
             'AND o."PaymentVerifiedAt" IS NOT NULL '
             'AND g."G2Status"=\'COMPLETED\' '
             'AND COALESCE(g."DeliveryCodes",\'\') <> \'\' '
+            'AND (o."DeliveryUserNotifiedAt" IS NULL '
+            'OR o."DeliveryAdminNotifiedAt" IS NULL) '
+            'UNION '
+            'SELECT DISTINCT o."Id",o."TelegramId",'
+            '(o."DeliveryUserNotifiedAt" IS NOT NULL),'
+            '(o."DeliveryAdminNotifiedAt" IS NOT NULL) '
+            'FROM "Orders" o '
+            'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'delivered\',\'completed\') '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND s."G2Status"=\'COMPLETED\' '
             'AND (o."DeliveryUserNotifiedAt" IS NULL '
             'OR o."DeliveryAdminNotifiedAt" IS NULL) '
             'ORDER BY 1 LIMIT %s',

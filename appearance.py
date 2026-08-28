@@ -78,6 +78,12 @@ HUBS = {
                     ('t.gc.hdr', 'متن صفحه خرید گیفت کارت', True),
                 ),
             },
+            'stars': {
+                'title': '⭐ استارز تلگرام',
+                'items': (
+                    ('t.stars.hdr', 'عنوان لیست استارز', True),
+                ),
+            },
         },
     },
     'b': {
@@ -93,6 +99,7 @@ HUBS = {
                     ('b.menu.acc', 'حساب من', False),
                     ('b.menu.st', 'فروشگاه اکانت', False),
                     ('b.menu.se', 'پک سنس', False),
+                    ('b.menu.stars', 'خرید استارز', False),
                     ('b.menu.gc', 'خرید گیفت کارت', False),
                     ('b.menu.su', 'پشتیبانی', False),
                 ),
@@ -158,6 +165,15 @@ HUBS = {
                     ('b.gc.gplay_tr', 'گوگل‌پلی ترکیه', False),
                 ),
             },
+            'stars': {
+                'title': '⭐ دکمه‌های استارز',
+                'dynamic': 'stars',
+                'items': (
+                    ('b.stars.buy', 'خرید این بسته استارز', False),
+                    ('b.stars.ok', 'تایید استارز و پرداخت', False),
+                    ('b.stars.no', 'انصراف استارز', False),
+                ),
+            },
             'store': {
                 'title': '🛍 دکمه‌های فروشگاه اکانت',
                 'dynamic': 'store',
@@ -185,6 +201,7 @@ DEFAULTS = {
         "📋 *راهنمای Atomic Bot*\n"
         "━━━━━━━━━━━━━━━\n"
         "🎮 *محصولات فری‌فایر* — خرید با آیدی (فعال)\n"
+        "⭐ *استارز تلگرام* — شارژ مستقیم با آیدی\n"
         "🎁 *گیفت کارت* — گوگل‌پلی و آیتونز آمریکا/ترکیه\n"
         "💰 *کیف پول* — شارژ و موجودی (فعال)\n"
         "📦 *سفارش‌های من* — وضعیت سفارش‌ها\n"
@@ -243,7 +260,12 @@ DEFAULTS = {
         "🎁 *خرید گیفت کارت*\n"
         "━━━━━━━━━━━━━━━\n"
         "کد بعد از پرداخت به‌صورت آنی در همین چت ارسال می‌شود.\n"
-        "قیمت‌ها به تومان است. اگر موجودی تأمین‌کننده کافی نباشد خرید باز نمی‌شود."
+        "قیمت‌ها به تومان است و از کاتالوگ ذخیره‌شده خوانده می‌شود."
+    ),
+    't.stars.hdr': (
+        "⭐ *خرید استارز تلگرام*\n"
+        "بسته را انتخاب کن — صفحه {page} از {total} 👇\n"
+        "بعد از انتخاب، آیدی اکانتی که می‌خوای استارز بزنی روش را می‌فرستی."
     ),
     'b.menu.ff': '🎮 محصولات فری‌فایر',
     'b.menu.wal': '💰 کیف پول',
@@ -251,6 +273,7 @@ DEFAULTS = {
     'b.menu.acc': '👤 حساب من',
     'b.menu.st': '🛍 فروشگاه اکانت',
     'b.menu.se': '🎯 پک سنس',
+    'b.menu.stars': '⭐ خرید استارز',
     'b.menu.gc': '🎁 خرید گیفت کارت',
     'b.menu.su': '🎧 پشتیبانی',
     'b.gc.gplay_us': '🇺🇸 گوگل‌پلی آمریکا',
@@ -263,6 +286,9 @@ DEFAULTS = {
     'b.gem.buy': '✅ خرید این بسته',
     'b.gem.ok': '✅ تایید و ادامه پرداخت',
     'b.gem.no': '✖️ انصراف',
+    'b.stars.buy': '✅ خرید این استارز',
+    'b.stars.ok': '✅ تایید و ادامه پرداخت',
+    'b.stars.no': '✖️ انصراف',
     'b.wal.50': '۵۰٬۰۰۰ ت',
     'b.wal.100': '۱۰۰٬۰۰۰ ت',
     'b.wal.200': '۲۰۰٬۰۰۰ ت',
@@ -282,6 +308,7 @@ MENU_KEYS = {
     'b.menu.acc': 'account',
     'b.menu.st': 'store',
     'b.menu.se': 'sense',
+    'b.menu.stars': 'stars',
     'b.menu.gc': 'giftcards',
     'b.menu.su': 'support',
 }
@@ -361,6 +388,122 @@ def user_emoji(key):
 def user_emoji_char(key):
     row = get(key) or {}
     return str(row.get('emoji_char') or '')
+
+
+def icon_for(*keys):
+    """اولین ایموجی پریمیوم ثبت‌شده بین کلیدها؛ برای دکمه محصول و بخش والد."""
+    for key in keys:
+        emoji_id = user_emoji(key)
+        if emoji_id:
+            return emoji_id
+    return ''
+
+
+def normalize_emoji_char(text):
+    return (text or '').replace('\ufe0f', '').strip()
+
+
+# نوع یونیکد مرتبط با هر بخش؛ از پکیج پریمیوم همان نوع برداشته می‌شود.
+_EMOJI_TYPES = {
+    'b.menu.ff': ('🎮', '💎', '🔥'),
+    'b.menu.wal': ('💰', '💵', '💳'),
+    'b.menu.ord': ('📦', '📋'),
+    'b.menu.acc': ('👤', '🪪'),
+    'b.menu.st': ('🛍', '🛒', '🏪'),
+    'b.menu.se': ('🎯', '🎮'),
+    'b.menu.stars': ('⭐', '🌟'),
+    'b.menu.gc': ('🎁', '🎀'),
+    'b.menu.su': ('🎧', '💬', '🆘'),
+    't.welcome': ('✨', '👋', '⭐'),
+    't.help': ('📋', 'ℹ️', '❓'),
+    't.home': ('🏠', '👇', '⭐'),
+    't.ff.hdr': ('🎮', '💎', '🔥'),
+    't.gems.hdr': ('💎', '🎮'),
+    't.creds.hdr': ('🔐', '💎'),
+    't.wallet.hdr': ('💰', '💳'),
+    't.account.hdr': ('👤', '🪪'),
+    't.orders.hdr': ('📦', '📋'),
+    't.orders.empty': ('📦', '📋'),
+    't.store.pick': ('🛍', '🛒'),
+    't.sense.hdr': ('🎯', '🎮'),
+    't.sense.pc': ('🖥', '🎯'),
+    't.sense.mob': ('📱', '🎯'),
+    't.support': ('🎧', '💬'),
+    't.gc.hdr': ('🎁', '🎀'),
+    't.stars.hdr': ('⭐', '🌟'),
+    'b.gems.id': ('🆔', '💎', '🎮'),
+    'b.gems.cr': ('🔐', '💎'),
+    'b.nav.home': ('🔙', '🏠'),
+    'b.gem.buy': ('✅', '💎'),
+    'b.gem.ok': ('✅', '💎'),
+    'b.wal.50': ('💰', '💵'),
+    'b.wal.100': ('💰', '💵'),
+    'b.wal.200': ('💰', '💵'),
+    'b.wal.500': ('💰', '💵'),
+    'b.wal.custom': ('✏️', '💰'),
+    'b.pay.zp': ('💳', '💰'),
+    'b.pay.card': ('🏧', '💳', '💰'),
+    'b.pay.wal': ('💰', '💳'),
+    'b.se.pc': ('🖥', '🎯'),
+    'b.se.mob': ('📱', '🎯'),
+    'b.gc.gplay_us': ('🇺🇸', '🎁'),
+    'b.gc.itunes_us': ('🇺🇸', '🎁'),
+    'b.gc.itunes_tr': ('🇹🇷', '🎁'),
+    'b.gc.gplay_tr': ('🇹🇷', '🎁'),
+    'b.stars.buy': ('✅', '⭐'),
+    'b.stars.ok': ('✅', '⭐'),
+}
+
+_EMOJI_PREFIX_TYPES = (
+    ('st.', ('⭐', '🌟')),
+    ('g.', ('💎', '🎮')),
+    ('c.', ('🔐', '💎')),
+    ('s.', ('🎯', '🎮')),
+    ('sc.', ('🛍', '📁', '📦')),
+    ('sp.', ('📦', '🛍')),
+)
+
+
+def wanted_emoji_chars(key):
+    key = str(key or '')
+    chars = _EMOJI_TYPES.get(key)
+    if chars:
+        return chars
+    for prefix, prefix_chars in _EMOJI_PREFIX_TYPES:
+        if key.startswith(prefix) and key[len(prefix):].isdigit():
+            return prefix_chars
+    return ()
+
+
+def pack_from_appearance_rows(rows):
+    pack = {}
+    for row in (rows or {}).values():
+        emoji_id = str((row or {}).get('emoji_id') or '').strip()
+        char = str((row or {}).get('emoji_char') or '')
+        if emoji_id and char:
+            pack[normalize_emoji_char(char)] = (emoji_id, char)
+    return pack
+
+
+def index_custom_emoji_stickers(stickers, pack=None):
+    pack = {} if pack is None else pack
+    for sticker in stickers or []:
+        emoji_id = str((sticker or {}).get('custom_emoji_id') or '').strip()
+        char = str((sticker or {}).get('emoji') or '')
+        if emoji_id and char:
+            pack[normalize_emoji_char(char)] = (emoji_id, char)
+    return pack
+
+
+def pick_pack_emoji(pack, wanted_chars, fallback_id='', fallback_char='⭐'):
+    pack = pack or {}
+    for char in wanted_chars or ():
+        hit = pack.get(normalize_emoji_char(char))
+        if hit:
+            return hit
+    if fallback_id:
+        return str(fallback_id), str(fallback_char or '⭐') or '⭐'
+    return '', ''
 
 
 def is_long_item(key):
@@ -461,6 +604,8 @@ def parse_dynamic_key(key):
         return {'category': 'gems', 'kind': 'gem', 'pk': int(key[2:]), 'title': f'بسته جم #{key[2:]}'}
     if key.startswith('c.') and key[2:].isdigit():
         return {'category': 'creds', 'kind': 'cred', 'pk': int(key[2:]), 'title': f'جم با اطلاعات #{key[2:]}'}
+    if key.startswith('st.') and key[3:].isdigit():
+        return {'category': 'stars', 'kind': 'star', 'pk': int(key[3:]), 'title': f'استارز #{key[3:]}'}
     if key.startswith('s.') and key[2:].isdigit():
         return {'category': 'sense', 'kind': 'sense', 'pk': int(key[2:]), 'title': f'پک سنس #{key[2:]}'}
     if key.startswith('sc.') and key[3:].isdigit():
@@ -486,6 +631,10 @@ def dynamic_items(category_id):
             from db import get_gems_by_credentials
             for g in get_gems_by_credentials() or []:
                 items.append((f'c.{g[0]}', str(g[1] or f'بسته #{g[0]}'), False))
+        elif category_id == 'stars':
+            from db import list_star_packages
+            for p in list_star_packages() or []:
+                items.append((f'st.{p["id"]}', str(p.get('title') or f'استارز #{p["id"]}'), False))
         elif category_id == 'sense':
             from db import list_sense_packages
             for p in list_sense_packages(active_only=False) or []:

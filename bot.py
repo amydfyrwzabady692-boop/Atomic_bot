@@ -26,6 +26,9 @@ from handlers.gem_credentials import (
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
 from handlers.giftcards import giftcard_menu, giftcard_brand, giftcard_show, giftcard_buy
+from handlers.stars import (
+    stars_menu, show_star, stars_conversation_handler,
+)
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
     start_card, pay_wallet, cancel_order, change_payment_method,
@@ -73,7 +76,7 @@ from db import (
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
     admin_operations_snapshot, get_bool_setting, get_setting,
-    open_db_pool, close_db_pool, gift_card_user_delivery_text,
+    open_db_pool, close_db_pool, auto_delivery_user_text,
 )
 from payments import verify_payment_detailed
 from webapp import start_web_server
@@ -96,6 +99,7 @@ MENU_ACTIONS = {
     'account': my_account,
     'store': store_menu,
     'sense': sens_menu,
+    'stars': stars_menu,
     'giftcards': giftcard_menu,
     'cart': show_cart,
 }
@@ -216,11 +220,15 @@ async def post_init(app):
     # failure, so these exceptions must stop startup.
     await asyncio.to_thread(open_db_pool)
     await asyncio.to_thread(ensure_admin_schema)
-    from db import sync_gem_prices
+    from db import sync_gem_prices, sync_gift_and_star_catalogs
     try:
         await asyncio.to_thread(sync_gem_prices)
     except Exception as e:
         logging.getLogger(__name__).warning('Gem price synchronization failed: %s', e)
+    try:
+        await asyncio.to_thread(sync_gift_and_star_catalogs, True)
+    except Exception as e:
+        logging.getLogger(__name__).warning('Gift/star catalog sync failed: %s', e)
     await start_web_server(app)
     app.bot_data['_g2_reconcile_task'] = asyncio.create_task(
         _g2_reconcile_loop(app), name='g2bulk-reconcile'
@@ -285,7 +293,7 @@ async def _g2_reconcile_loop(app):
                     if telegram_id:
                         try:
                             gift_text = await asyncio.to_thread(
-                                gift_card_user_delivery_text, order_id
+                                auto_delivery_user_text, order_id
                             )
                             await app.bot.send_message(
                                 chat_id=int(telegram_id),
@@ -481,11 +489,7 @@ async def _payment_expiry_loop(app):
 
 
 async def _price_sync_loop(app):
-    """به‌روزرسانی خودکار قیمت بسته‌های جم هر ۲۴ ساعت.
-
-    هر ۲۴ ساعت نرخ زنده دلار و کاتالوگ G2Bulk را می‌گیرد. جم با آیدی با سود
-    تنظیم‌شده خودش و محصولات اطلاعاتی با سود مستقل (پیش‌فرض ۴۰٪) محاسبه می‌شوند.
-    """
+    """به‌روزرسانی خودکار قیمت جم، گیفت‌کارت و استارز هر ۲۴ ساعت."""
     log = logging.getLogger(__name__)
     # اولین اجرا بلافاصله (نرخ لحظه‌ای) + سپس هر ۲۴ ساعت
     try:
@@ -591,6 +595,7 @@ def main():
     ))
 
     app.add_handler(gem_conversation_handler())
+    app.add_handler(stars_conversation_handler())
     app.add_handler(credential_conversation_handler())
     app.add_handler(payment_conversation_handler())
     app.add_handler(wallet_conversation_handler())
@@ -614,6 +619,8 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
+    app.add_handler(CallbackQueryHandler(stars_menu, pattern=r'^(?:st_home|st_page_\d+)$'))
+    app.add_handler(CallbackQueryHandler(show_star, pattern=r'^st_\d+$'))
     app.add_handler(CallbackQueryHandler(giftcard_menu, pattern=r'^gc_home$'))
     app.add_handler(CallbackQueryHandler(giftcard_brand, pattern=r'^gc_b_(?:gplay_us|itunes_us|itunes_tr|gplay_tr)$'))
     app.add_handler(CallbackQueryHandler(giftcard_show, pattern=r'^gc_p_\d+$'))

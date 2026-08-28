@@ -19,12 +19,12 @@ def _categories_keyboard(rows):
         buttons.append([_inline_btn(
             appearance.user_label(key, r[1]),
             f'storecat_{r[0]}',
-            appearance.user_emoji(key),
+            appearance.icon_for(key, 'b.menu.st'),
         )])
     buttons.append([_inline_btn(
         appearance.user_label('b.nav.home', '🔙 منوی اصلی'),
         'home',
-        appearance.user_emoji('b.nav.home'),
+        appearance.icon_for('b.nav.home', 'b.menu.st'),
     )])
     return InlineKeyboardMarkup(buttons)
 
@@ -76,7 +76,7 @@ async def show_category(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.append([_inline_btn(
             f'{title} · {p[3]:,} ت',
             f'storeprod_{p[0]}',
-            appearance.user_emoji(key),
+            appearance.icon_for(key, 'b.menu.st'),
         )])
     buttons.append([InlineKeyboardButton('🔙 دسته‌بندی‌ها', callback_data='store')])
     text = '📦 محصولات\n━━━━━━━━━━━━━━━\n'

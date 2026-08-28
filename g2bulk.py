@@ -36,6 +36,10 @@ _INVENTORY_CACHE_SECONDS = 5 * 60
 _FORCED_REFRESH_COALESCE_SECONDS = 30
 _products_cache = {'at': 0.0, 'value': None}
 _PRODUCTS_CACHE_SECONDS = 6 * 60 * 60
+TELEGRAM_GAME_CODE = 'Telegram'
+_stars_cache = {'at': 0.0, 'value': None}
+_stars_refresh_lock = threading.Lock()
+_STARS_CACHE_SECONDS = 5 * 60
 
 
 def _api_key():
@@ -114,19 +118,47 @@ def _request(method, path, body=None, idempotency_key=None):
         }
 
 
-def check_player_id(user_id):
-    """تایید آیدی فری‌فایر. خروجی: {ok, name, error}"""
+def check_player_id(user_id, game=None):
+    """تایید آیدی بازیکن. خروجی: {ok, name, error}"""
     if not is_configured():
         return {'ok': False, 'error': 'سرویس تایید آیدی پیکربندی نشده است.'}
 
-    body = {'game': _game_code(), 'user_id': str(user_id).strip()}
+    code = str(game or _game_code()).strip() or _game_code()
+    player = str(user_id or '').strip()
+    body = {'game': code, 'user_id': player, 'userid': player}
     data = _request('POST', '/games/checkPlayerId', body)
     if data.get('valid') == 'valid' and data.get('name'):
         return {'ok': True, 'name': data['name']}
+    if data.get('valid') == 'valid':
+        return {'ok': True, 'name': player}
     return {
         'ok': False,
-        'error': data.get('message') or 'آیدی بازی معتبر نیست. لطفاً دوباره بررسی کنید.',
+        'error': data.get('message') or 'آیدی معتبر نیست. لطفاً دوباره بررسی کنید.',
     }
+
+
+def parse_stars_amount(name):
+    """«50 Stars» / «1.5K Stars» / «1M Stars» → عدد استارز. پرمیوم None."""
+    text = str(name or '').strip()
+    if not text or 'premium' in text.casefold():
+        return None
+    match = re.search(
+        r'([\d]+(?:\.\d+)?)\s*([kKmM])?\s*stars?\b',
+        text, re.I,
+    )
+    if not match:
+        return None
+    try:
+        value = Decimal(match.group(1))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    suffix = (match.group(2) or '').upper()
+    if suffix == 'K':
+        value *= Decimal(1000)
+    elif suffix == 'M':
+        value *= Decimal(1_000_000)
+    amount = int(value)
+    return amount if amount > 0 else None
 
 
 def get_inventory_snapshot(force=False):
@@ -585,7 +617,7 @@ def verify_callback_token(order_pk, gem_info_pk, token):
 
 def place_game_order(
     catalogue_name, player_id, remark='', idempotency_key=None,
-    callback_url='',
+    callback_url='', game_code=None,
 ):
     """ثبت سفارش شارژ. خروجی: {ok, order_id, status, player_name, error}"""
     if not is_configured():
@@ -603,9 +635,10 @@ def place_game_order(
             return {'ok': False, 'error': 'G2Bulk callback URL is invalid.'}
         body['callback_url'] = str(callback_url)
 
+    code = str(game_code or _game_code()).strip() or _game_code()
     data = _request(
         'POST',
-        f'/games/{_game_code()}/order',
+        f'/games/{code}/order',
         body,
         idempotency_key=idempotency_key,
     )
@@ -810,3 +843,100 @@ def idempotency_key(order_pk, gem_info_pk):
         uuid.NAMESPACE_DNS,
         f'atomicbot-order-{order_pk}-gem-{gem_info_pk}',
     ))
+
+
+def stars_idempotency_key(order_pk, star_pk):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_DNS,
+        f'atomicbot-stars-{order_pk}-{star_pk}',
+    ))
+
+
+def get_stars_snapshot(force=False):
+    """کاتالوگ و موجودی دلاری استارز تلگرام — جدا از کش فری‌فایر."""
+    if not is_configured():
+        return {'ok': False, 'error': 'API key not configured'}
+    now = time.monotonic()
+    cached = _stars_cache.get('value')
+    if cached and not cached.get('ok') and now - _stars_cache.get('at', 0) < 60:
+        return cached
+    if (
+        not force and cached
+        and now - _stars_cache.get('at', 0) < _STARS_CACHE_SECONDS
+    ):
+        return cached
+    with _stars_refresh_lock:
+        now = time.monotonic()
+        cached = _stars_cache.get('value')
+        age = now - _stars_cache.get('at', 0)
+        if cached and (
+            (not force and age < _STARS_CACHE_SECONDS)
+            or (force and cached.get('ok') and age < _FORCED_REFRESH_COALESCE_SECONDS)
+            or (not cached.get('ok') and age < 60)
+        ):
+            return cached
+        me = _request('GET', '/getMe')
+        if not me.get('success') or me.get('balance') is None:
+            result = {
+                'ok': False,
+                'error': me.get('message') or 'دریافت موجودی G2Bulk ناموفق بود.',
+            }
+            _stars_cache.update(at=now, value=result)
+            return result
+        catalogue = _request('GET', f'/games/{TELEGRAM_GAME_CODE}/catalogue')
+        if not catalogue.get('success'):
+            result = {
+                'ok': False,
+                'error': catalogue.get('message') or 'دریافت کاتالوگ استارز ناموفق بود.',
+            }
+            _stars_cache.update(at=now, value=result)
+            return result
+        try:
+            balance = Decimal(str(me['balance']))
+        except (InvalidOperation, TypeError, ValueError):
+            result = {'ok': False, 'error': 'موجودی برگشتی G2Bulk معتبر نیست.'}
+            _stars_cache.update(at=now, value=result)
+            return result
+        items = []
+        prices_by_name = {}
+        for item in catalogue.get('catalogues') or []:
+            name = str(item.get('name') or '').strip()
+            stars = parse_stars_amount(name)
+            if not name or stars is None:
+                continue
+            try:
+                cost = Decimal(str(item.get('amount')))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if cost <= 0:
+                continue
+            prices_by_name[_normalise_catalogue_name(name)] = cost
+            items.append({
+                'name': name,
+                'stars': stars,
+                'cost_usd': cost,
+            })
+        items.sort(key=lambda row: (row['stars'], row['cost_usd']))
+        result = {
+            'ok': True,
+            'balance': balance,
+            'items': items,
+            'prices_by_name': prices_by_name,
+        }
+        _stars_cache.update(at=now, value=result)
+        return result
+
+
+def can_fulfill_stars(catalogue_name, force=False):
+    snapshot = get_stars_snapshot(force=force)
+    if not snapshot.get('ok'):
+        return False, None, None, snapshot.get('error')
+    cost = snapshot.get('prices_by_name', {}).get(
+        _normalise_catalogue_name(catalogue_name)
+    )
+    if cost is None:
+        return False, None, snapshot.get('balance'), 'این مقدار استارز در کاتالوگ زنده نیست.'
+    available = Decimal(str(snapshot['balance'])) >= Decimal(str(cost))
+    return available, cost, snapshot['balance'], (
+        None if available else 'موجودی سرویس تأمین برای این استارز کافی نیست.'
+    )
