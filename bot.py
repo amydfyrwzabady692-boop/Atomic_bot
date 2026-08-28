@@ -76,6 +76,7 @@ from db import (
     expire_order_and_refund, record_order_payment_verified,
     log_payment_attempt,
     admin_operations_snapshot, get_bool_setting, get_setting,
+    ops_action_total, count_unseen_wallet_refunds,
     open_db_pool, close_db_pool, auto_delivery_user_text,
 )
 from payments import verify_payment_detailed
@@ -366,12 +367,19 @@ async def _admin_alert_loop(app):
                 except (TypeError, ValueError):
                     threshold = 5
                 ops = await asyncio.to_thread(admin_operations_snapshot, threshold)
+                try:
+                    ops['wallet_refunds_unseen'] = await asyncio.to_thread(
+                        count_unseen_wallet_refunds
+                    )
+                except Exception:
+                    ops['wallet_refunds_unseen'] = 0
                 signature = (
                     ops['pending_receipts'], ops['stuck_processing'],
-                    ops['failed_payments_24h'], ops['open_tickets'],
+                    ops['open_tickets'],
                     ops['low_gem_stock'], ops['low_store_stock'],
+                    ops.get('wallet_refunds_unseen', 0),
                 )
-                alert_total = sum(signature)
+                alert_total = ops_action_total(ops)
                 if alert_total and signature != last_signature:
                     await notify_admin(
                         app.bot,
@@ -380,9 +388,9 @@ async def _admin_alert_loop(app):
                             '━━━━━━━━━━━━━━━\n'
                             f'رسید منتظر: *{ops["pending_receipts"]:,}*\n'
                             f'سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
-                            f'خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
                             f'تیکت باز: *{ops["open_tickets"]:,}*\n'
-                            f'موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*'
+                            f'موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
+                            f'برگشت دیده‌نشده: *{ops.get("wallet_refunds_unseen", 0):,}*'
                         ),
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton(

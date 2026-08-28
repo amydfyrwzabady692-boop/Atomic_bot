@@ -5051,7 +5051,18 @@ def financial_health_snapshot():
             'AND "PaymentVerifiedAt" IS NOT NULL'
         ),
         'pending_receipts': (
-            'SELECT COUNT(*) FROM "PaymentReceipts" WHERE "Status"=\'pending\''
+            'SELECT ('
+            ' SELECT COUNT(*) FROM "Orders" o '
+            ' JOIN "PaymentReceipts" r ON r."OrderId"=o."Id" '
+            ' WHERE o."PaymentMethod"=\'card_transfer\' AND o."Status"=\'pending\' '
+            ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\''
+            ')+('
+            ' SELECT COUNT(*) FROM "WalletTransactions" t '
+            ' JOIN "PaymentReceipts" r ON r."WalletTransactionId"=t."Id" '
+            ' WHERE t."Kind"=\'charge\' AND COALESCE(t."IsPaid",false)=false '
+            ' AND t."Authority" LIKE \'wcard_%\' '
+            ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\''
+            ')'
         ),
         'unpaid_wallet_charges': (
             'SELECT COUNT(*) FROM "WalletTransactions" '
@@ -5157,7 +5168,15 @@ def admin_operations_snapshot(low_stock_threshold=5):
             f' AND "Status" IN {successful}),'
             f'(SELECT COALESCE(SUM("TotalAmount"-"DiscountAmount"),0) FROM "Orders" '
             f' WHERE "CreatedAt">=CURRENT_DATE AND "Status" IN {successful}),'
-            '(SELECT COUNT(*) FROM "PaymentReceipts" WHERE "Status"=\'pending\'),'
+            '(SELECT COUNT(*) FROM "Orders" o '
+            ' JOIN "PaymentReceipts" r ON r."OrderId"=o."Id" '
+            ' WHERE o."PaymentMethod"=\'card_transfer\' AND o."Status"=\'pending\' '
+            ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\')'
+            '+(SELECT COUNT(*) FROM "WalletTransactions" t '
+            ' JOIN "PaymentReceipts" r ON r."WalletTransactionId"=t."Id" '
+            ' WHERE t."Kind"=\'charge\' AND COALESCE(t."IsPaid",false)=false '
+            ' AND t."Authority" LIKE \'wcard_%\' '
+            ' AND r."Status"=\'pending\' AND COALESCE(r."FileId",\'\')<>\'\'),'
             '(SELECT COUNT(*) FROM "Orders" o WHERE o."Status"=\'processing\' '
             ' AND o."PaymentVerifiedAt" IS NOT NULL '
             ' AND o."PaymentVerifiedAt"<now()-interval \'15 minutes\' '
@@ -5199,7 +5218,22 @@ def admin_operations_snapshot(low_stock_threshold=5):
     for key in keys:
         result[key] = int(result[key] or 0)
     result['low_stock_threshold'] = threshold
+    result.setdefault('wallet_refunds_unseen', 0)
     return result
+
+
+def ops_action_total(ops, extra=0):
+    """فقط چیزهایی که مدیر باید الان رسیدگی کند؛ لاگ خطای درگاه داخلش نیست."""
+    ops = ops or {}
+    return (
+        int(ops.get('pending_receipts') or 0)
+        + int(ops.get('stuck_processing') or 0)
+        + int(ops.get('open_tickets') or 0)
+        + int(ops.get('low_gem_stock') or 0)
+        + int(ops.get('low_store_stock') or 0)
+        + int(ops.get('wallet_refunds_unseen') or 0)
+        + int(extra or 0)
+    )
 
 
 def list_wallet_refunded_orders(limit=20):
@@ -5255,6 +5289,38 @@ def count_wallet_refunded_orders(days=7):
             (days,),
         )
         return int(cur.fetchone()[0] or 0)
+
+
+def count_unseen_wallet_refunds(days=7):
+    """برگشت‌هایی که بعد از آخرین بازدید مدیر آمده‌اند."""
+    days = max(1, min(int(days), 90))
+    last_seen = str(get_setting('wallet_refunds_last_seen', '') or '').strip()
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                '''SELECT COUNT(DISTINCT o."Id")
+                   FROM "Orders" o
+                   JOIN "Wallets" wa ON wa."UserId"=o."UserId"
+                   JOIN "WalletTransactions" wt ON wt."WalletId"=wa."Id"
+                     AND wt."Kind"='charge'
+                     AND (wt."Description"=('برگشت تحویل ناموفق سفارش #' || o."Id")
+                          OR wt."Description"=('لغو توسط ادمین سفارش #' || o."Id"))
+                     AND wt."CreatedAt">=now()-(%s * interval '1 day')
+                     AND (%s OR wt."CreatedAt" > %s::timestamptz)''',
+                (days, not last_seen, last_seen or '1970-01-01T00:00:00+00:00'),
+            )
+            return int(cur.fetchone()[0] or 0)
+    except Exception:
+        _LOG.exception('unseen wallet refund count failed')
+        return 0
+
+
+def mark_wallet_refunds_seen():
+    from datetime import datetime, timezone
+    set_setting(
+        'wallet_refunds_last_seen',
+        datetime.now(timezone.utc).isoformat(),
+    )
 
 
 def list_stuck_processing_orders(limit=30, older_minutes=15):

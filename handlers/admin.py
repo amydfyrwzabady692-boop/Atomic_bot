@@ -22,7 +22,7 @@ from db import (
     close_ticket, add_ticket_message, admin_operations_snapshot, get_setting,
     log_admin_action, admin_mark_order_delivered, admin_cancel_stuck_order,
     mark_delivery_notified, order_refund_amount, count_ready_credential_orders,
-    count_open_tickets,
+    count_open_tickets, count_unseen_wallet_refunds, ops_action_total,
 )
 from handlers.payment import fulfill_order_async
 
@@ -146,12 +146,11 @@ async def _show_home(update, ctx, via_message=False):
         threshold = 5
     ops = admin_operations_snapshot(threshold)
     ready_creds = count_ready_credential_orders()
-    alerts = (
-        ops['pending_receipts'] + ops['stuck_processing']
-        + ops['failed_payments_24h'] + ops['open_tickets']
-        + ops['low_gem_stock'] + ops['low_store_stock']
-        + ready_creds
-    )
+    try:
+        ops['wallet_refunds_unseen'] = count_unseen_wallet_refunds()
+    except Exception:
+        ops['wallet_refunds_unseen'] = 0
+    alerts = ops_action_total(ops, ready_creds)
     orders_action = (
         ops['pending_receipts'] + ops['stuck_processing']
         + ready_creds + int(s.get('failed_g2') or 0)
@@ -163,7 +162,7 @@ async def _show_home(update, ctx, via_message=False):
         f"📦 سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
         f"❌ تحویل ناموفق: *{s['failed_g2']:,}*\n"
         f"🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n"
-        f"💰 برگشت کیف‌پول (۷روز): *{ops.get('wallet_refunds_7d', 0):,}*\n"
+        f"💰 برگشت کیف‌پول دیده‌نشده: *{ops.get('wallet_refunds_unseen', 0):,}*\n"
         f"🎫 تیکت باز: *{s['open_tickets']:,}*\n"
         f"🏦 مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
         f"━━━━━━━━━━━━━━━\n"

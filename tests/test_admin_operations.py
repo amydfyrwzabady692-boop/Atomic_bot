@@ -59,6 +59,35 @@ class AdminOperationsTests(unittest.TestCase):
         self.assertEqual(result['low_gem_stock'], 1)
         self.assertEqual(result['low_store_stock'], 2)
         self.assertEqual(conn.cur.executed[0][1], (5, 5))
+        sql = conn.cur.executed[0][0]
+        self.assertIn('card_transfer', sql)
+        self.assertIn('wcard_%', sql)
+
+    def test_action_total_ignores_failed_gateway_logs(self):
+        total = db.ops_action_total({
+            'pending_receipts': 1,
+            'stuck_processing': 0,
+            'open_tickets': 5,
+            'low_gem_stock': 0,
+            'low_store_stock': 0,
+            'wallet_refunds_unseen': 2,
+            'failed_payments_24h': 84638,
+        })
+        self.assertEqual(total, 8)
+
+    def test_ops_center_and_alerts_omit_failed_payment_logs(self):
+        import inspect
+        from handlers import admin as admin_home
+        ops_src = inspect.getsource(admin_extended.admin_ext_router)
+        home_src = inspect.getsource(admin_home._show_home)
+        loop_src = inspect.getsource(bot._admin_alert_loop)
+        self.assertIn('ops_action_total(ops, extra)', ops_src)
+        self.assertIn('mark_wallet_refunds_seen()', ops_src)
+        self.assertIn('count_unseen_wallet_refunds', ops_src)
+        self.assertIn('ops_action_total(ops, ready_creds)', home_src)
+        self.assertNotIn('failed_payments_24h', home_src)
+        self.assertNotIn('failed_payments_24h', loop_src)
+        self.assertIn('ops_action_total(ops)', loop_src)
 
     def test_low_stock_excludes_auto_delivery_in_query_and_combines_products(self):
         conn = _Connection(many=[

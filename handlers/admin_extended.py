@@ -36,6 +36,7 @@ from db import (
     financial_health_snapshot, list_admin_actions, log_admin_action,
     admin_operations_snapshot, list_stuck_processing_orders,
     list_low_stock_items, list_wallet_refunded_orders,
+    count_unseen_wallet_refunds, mark_wallet_refunds_seen, ops_action_total,
     list_credential_orders, get_credential_order, mark_credential_viewed,
     admin_complete_credential_order, admin_reject_credential_info,
     count_ready_credential_orders, get_admin_stats,
@@ -1069,15 +1070,18 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ops = admin_operations_snapshot(threshold)
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         site = await asyncio.to_thread(site_ops_counts)
+        try:
+            ops['wallet_refunds_unseen'] = await asyncio.to_thread(
+                count_unseen_wallet_refunds
+            )
+        except Exception:
+            ops['wallet_refunds_unseen'] = 0
         sales = get_setting('sales_enabled', '1') != '0'
         payments = get_setting('payments_enabled', '1') != '0'
         alerts_enabled = get_setting('admin_alerts_enabled', '1') != '0'
-        alert_total = (
-            ops['pending_receipts'] + ops['stuck_processing']
-            + ops['failed_payments_24h'] + ops['open_tickets']
-            + ops['low_gem_stock'] + ops['low_store_stock']
-            + ready_creds + site['site_ready_creds'] + site['site_receipts']
-        )
+        extra = ready_creds + site['site_ready_creds'] + site['site_receipts']
+        alert_total = ops_action_total(ops, extra)
+        unseen_refunds = ops.get('wallet_refunds_unseen', 0)
         text = (
             '🚨 *مرکز عملیات مدیر*\n'
             '━━━━━━━━━━━━━━━\n'
@@ -1090,10 +1094,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'⏳ سفارش گیرکرده: *{ops["stuck_processing"]:,}*\n'
             f'🔐 جم با اطلاعات ربات: *{ready_creds:,}*\n'
             f'🌐 جم با اطلاعات سایت: *{site["site_ready_creds"]:,}*\n'
-            f'❌ خطای پرداخت ۲۴ ساعت: *{ops["failed_payments_24h"]:,}*\n'
             f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
             f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
-            f'💰 برگشت به کیف پول (۷ روز): *{ops.get("wallet_refunds_7d", 0):,}*\n\n'
+            f'💰 برگشت کیف پول دیده‌نشده: *{unseen_refunds:,}*\n\n'
             f'فروش امروز: *{ops["sales_today_amount"]:,} تومان* '
             f'از {ops["sales_today_count"]:,} سفارش'
         )
@@ -1112,7 +1115,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'🌐 جم سایت ({site["site_ready_creds"]})', callback_data='admx_sitecreds'
             )],
             [InlineKeyboardButton(
-                f'💰 برگشت کیف پول ({ops.get("wallet_refunds_7d", 0)})',
+                f'💰 برگشت کیف پول ({unseen_refunds})',
                 callback_data='admx_refunds',
             )],
             [InlineKeyboardButton(
@@ -1188,6 +1191,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_refunds':
+        mark_wallet_refunds_seen()
         rows = list_wallet_refunded_orders(15)
         lines = [
             '💰 *برگشت به کیف پول*',
