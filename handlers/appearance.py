@@ -1,4 +1,7 @@
 """پنل ادمین «ظاهر» — متن و ایموجی پریمیوم بخش‌های کاربری."""
+import asyncio
+import logging
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
@@ -7,7 +10,7 @@ from telegram.ext import (
 
 import appearance
 from admin_notify import is_admin
-from db import reset_appearance, upsert_appearance
+from db import reset_appearance, seed_premium_from_emoji, upsert_appearance
 from keyboards import admin_home_keyboard
 
 WAIT_TEXT, WAIT_EMOJI = range(90, 92)
@@ -270,9 +273,17 @@ async def appear_emoji_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         emoji_char=found['emoji_char'],
     )
     appearance.invalidate_cache()
+    try:
+        await asyncio.to_thread(
+            seed_premium_from_emoji, found['emoji_id'], found['emoji_char'],
+        )
+    except Exception:
+        logging.getLogger(__name__).exception('premium emoji pack apply failed')
+    appearance.invalidate_cache()
     ctx.user_data.pop('appear_edit', None)
     await update.message.reply_text(
-        '✅ ایموجی پریمیوم ذخیره شد.\n\n' + _item_text(key),
+        '✅ ایموجی پریمیوم ذخیره شد و انواع همین بسته روی بخش‌های مرتبط اعمال شد.\n\n'
+        + _item_text(key),
         reply_markup=_item_kb(key),
     )
     return ConversationHandler.END
@@ -295,7 +306,10 @@ def appearance_conversation_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, appear_text_receive)
             ],
             WAIT_EMOJI: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, appear_emoji_receive)
+                MessageHandler(
+                    (filters.TEXT | filters.Entity('custom_emoji')) & ~filters.COMMAND,
+                    appear_emoji_receive,
+                )
             ],
         },
         fallbacks=[CommandHandler('cancel', appear_cancel)],

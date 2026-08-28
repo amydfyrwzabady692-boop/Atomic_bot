@@ -3942,19 +3942,45 @@ def _load_premium_emoji_pack(source_id, allow_network=True):
     return pack
 
 
-def _registered_premium_emoji(rows=None):
+def _registered_premium_emoji(rows=None, prefer_id='', prefer_char=''):
+    """منبع پکیج: ایموجی تازه‌ثبت‌شده، بعد تاج، بعد بسته محصول، بعد اولین مورد."""
+    import appearance as appearance_mod
     rows = rows if rows is not None else list_appearance_rows()
-    for row in (rows or {}).values():
-        emoji_id = str(row.get('emoji_id') or '').strip()
-        if emoji_id:
-            return emoji_id, str(row.get('emoji_char') or '⭐') or '⭐'
-    return '', ''
+    prefer_id = str(prefer_id or '').strip()
+    if prefer_id:
+        char = str(prefer_char or '')
+        for row in (rows or {}).values():
+            if str(row.get('emoji_id') or '').strip() == prefer_id:
+                char = str(row.get('emoji_char') or char or '👑') or '👑'
+                break
+        return prefer_id, char or '👑'
+    candidates = []
+    for key, row in (rows or {}).items():
+        emoji_id = str((row or {}).get('emoji_id') or '').strip()
+        if not emoji_id:
+            continue
+        char = str((row or {}).get('emoji_char') or '') or '⭐'
+        key = str(key or '')
+        is_crown = appearance_mod.normalize_emoji_char(char) == '👑'
+        is_product = key.startswith(('st.', 'g.', 'c.', 's.', 'sc.', 'sp.'))
+        updated = str((row or {}).get('updated_at') or '')
+        candidates.append((is_crown, is_product, updated, emoji_id, char))
+    if not candidates:
+        return '', ''
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _crown, _product, _updated, emoji_id, char = candidates[0]
+    return emoji_id, char
 
 
 def _apply_typed_premium_emoji(keys, *, rows, pack, source_id, source_char):
     import appearance as appearance_mod
     pack_ids = {emoji_id for emoji_id, _char in (pack or {}).values()}
-    replaceable = pack_ids | {str(source_id or '')}
+    existing_ids = {
+        str((row or {}).get('emoji_id') or '').strip()
+        for row in (rows or {}).values()
+    }
+    existing_ids.discard('')
+    replaceable = pack_ids | existing_ids | {str(source_id or '')}
     changed = False
     for key in keys:
         wanted = appearance_mod.wanted_emoji_chars(key)
@@ -3987,18 +4013,31 @@ def _apply_typed_premium_emoji(keys, *, rows, pack, source_id, source_char):
     return changed
 
 
-def _seed_catalog_premium_emoji():
-    """از پکیج ایموجی پریمیوم، نوع مرتبط هر بخش را روی دکمه‌ها بگذار."""
+def _pack_for_premium_source(source_id, source_char, *, allow_network):
+    """فقط پکیج تلگرام همان ایموجی؛ ردیف‌های Appearance قاطی نمی‌شوند."""
     import appearance as appearance_mod
-    rows = list_appearance_rows()
-    source_id, source_char = _registered_premium_emoji(rows)
-    if not source_id:
-        return
-    pack = appearance_mod.pack_from_appearance_rows(rows)
+    pack = {}
     try:
-        pack.update(_load_premium_emoji_pack(source_id) or {})
+        pack.update(
+            _load_premium_emoji_pack(source_id, allow_network=allow_network) or {}
+        )
     except Exception:
         _LOG.exception('premium emoji pack load failed')
+    if not pack:
+        char = str(source_char or '👑') or '👑'
+        pack = {appearance_mod.normalize_emoji_char(char): (source_id, char)}
+    return pack
+
+
+def _seed_catalog_premium_emoji(prefer_id='', prefer_char=''):
+    """از پکیج ایموجی پریمیوم، نوع مرتبط هر بخش را روی دکمه‌ها بگذار."""
+    rows = list_appearance_rows()
+    source_id, source_char = _registered_premium_emoji(
+        rows, prefer_id=prefer_id, prefer_char=prefer_char,
+    )
+    if not source_id:
+        return
+    pack = _pack_for_premium_source(source_id, source_char, allow_network=True)
     keys = list(_PREMIUM_EMOJI_STATIC_KEYS) + _iter_product_appearance_keys()
     _apply_typed_premium_emoji(
         keys,
@@ -4009,22 +4048,21 @@ def _seed_catalog_premium_emoji():
     )
 
 
+def seed_premium_from_emoji(source_id, source_char=''):
+    """بعد از ثبت ایموجی ادمین، کل پکیج همان ایموجی را روی بخش‌های مرتبط بگذار."""
+    source_id = str(source_id or '').strip()
+    if not source_id:
+        return
+    _seed_catalog_premium_emoji(prefer_id=source_id, prefer_char=source_char)
+
+
 def _copy_premium_emoji_to_product_keys():
     """فقط کلید کالاها را از کش پکیج پر کن؛ به API تلگرام نزن."""
-    import appearance as appearance_mod
     rows = list_appearance_rows()
     source_id, source_char = _registered_premium_emoji(rows)
     if not source_id:
         return
-    pack = appearance_mod.pack_from_appearance_rows(rows)
-    try:
-        pack.update(_load_premium_emoji_pack(source_id, allow_network=False) or {})
-    except Exception:
-        _LOG.exception('premium emoji cache load for product keys failed')
-    if not pack:
-        pack = {
-            appearance_mod.normalize_emoji_char(source_char): (source_id, source_char),
-        }
+    pack = _pack_for_premium_source(source_id, source_char, allow_network=False)
     _apply_typed_premium_emoji(
         _iter_product_appearance_keys(),
         rows=rows,
@@ -4196,13 +4234,14 @@ def list_appearance_rows():
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
-                'SELECT "Key","TextValue","EmojiId","EmojiChar" FROM "Appearance"'
+                'SELECT "Key","TextValue","EmojiId","EmojiChar","UpdatedAt" FROM "Appearance"'
             )
             return {
                 str(row[0]): {
                     'text': row[1],
                     'emoji_id': str(row[2] or ''),
                     'emoji_char': str(row[3] or ''),
+                    'updated_at': str(row[4] or ''),
                 }
                 for row in cur.fetchall()
             }

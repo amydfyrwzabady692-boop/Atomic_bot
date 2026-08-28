@@ -143,7 +143,8 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(appearance.wanted_emoji_chars('b.menu.stars')[0], '⭐')
         self.assertEqual(appearance.wanted_emoji_chars('b.menu.gc')[0], '🎁')
         self.assertEqual(appearance.wanted_emoji_chars('b.menu.ff')[0], '🎮')
-        self.assertEqual(appearance.wanted_emoji_chars('g.4')[0], '💎')
+        self.assertEqual(appearance.wanted_emoji_chars('g.4')[0], '👑')
+        self.assertIn('💎', appearance.wanted_emoji_chars('g.4'))
         self.assertEqual(
             appearance.pick_pack_emoji(pack, appearance.wanted_emoji_chars('b.menu.gc'), 'id_star', '⭐'),
             ('id_gift', '🎁'),
@@ -237,6 +238,68 @@ class PremiumEmojiSeedTests(unittest.TestCase):
                 {},
             )
             telegram.assert_not_called()
+
+    def test_registered_prefers_crown_on_packages(self):
+        import db
+        source_id, source_char = db._registered_premium_emoji({
+            'b.menu.stars': {
+                'text': None,
+                'emoji_id': 'old_star',
+                'emoji_char': '⭐',
+                'updated_at': '2024-01-01',
+            },
+            'g.7': {
+                'text': None,
+                'emoji_id': 'id_crown',
+                'emoji_char': '👑',
+                'updated_at': '2026-08-28',
+            },
+        })
+        self.assertEqual(source_id, 'id_crown')
+        self.assertEqual(appearance.normalize_emoji_char(source_char), '👑')
+
+    @patch('db.simple_list', return_value=[])
+    @patch('db.list_sense_packages', return_value=[])
+    @patch('db.get_gems_by_credentials', return_value=[])
+    @patch('db.get_gems_by_id', return_value=[(4,)])
+    @patch('db.list_star_packages', return_value=[{'id': 9}])
+    @patch('db.upsert_appearance')
+    @patch('db.list_appearance_rows')
+    @patch('db._load_premium_emoji_pack')
+    def test_seed_uses_crown_pack_types_not_old_star(
+        self, load_pack, rows, upsert, _stars, _gems, _creds, _sense, _store,
+    ):
+        import db
+        load_pack.return_value = {
+            appearance.normalize_emoji_char('👑'): ('id_crown', '👑'),
+            appearance.normalize_emoji_char('🎁'): ('id_gift', '🎁'),
+            appearance.normalize_emoji_char('🎮'): ('id_game', '🎮'),
+            appearance.normalize_emoji_char('💰'): ('id_money', '💰'),
+        }
+        rows.return_value = {
+            'b.menu.stars': {
+                'text': None, 'emoji_id': 'old_star', 'emoji_char': '⭐',
+                'updated_at': '2024-01-01',
+            },
+            'g.7': {
+                'text': None, 'emoji_id': 'id_crown', 'emoji_char': '👑',
+                'updated_at': '2026-08-28',
+            },
+        }
+        db._seed_catalog_premium_emoji()
+        by_key = {call.args[0]: call.kwargs.get('emoji_id') for call in upsert.call_args_list}
+        self.assertEqual(by_key.get('st.9'), 'id_crown')
+        self.assertEqual(by_key.get('g.4'), 'id_crown')
+        self.assertEqual(by_key.get('b.menu.gc'), 'id_gift')
+        self.assertEqual(by_key.get('b.menu.ff'), 'id_game')
+        self.assertEqual(by_key.get('b.menu.acc'), 'id_crown')
+        self.assertNotIn('old_star', by_key.values())
+
+    def test_saving_emoji_applies_its_pack(self):
+        import inspect
+        from handlers import appearance as appear_handlers
+        source = inspect.getsource(appear_handlers.appear_emoji_receive)
+        self.assertIn('seed_premium_from_emoji', source)
 
 
 if __name__ == '__main__':
