@@ -8,13 +8,23 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).parent / '.env')
 
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'atomic_bot.settings')
+import django
+django.setup()
+
+__path__ = [str(Path(__file__).parent / 'bot')]
+
 import button_style  # noqa: F401 — قبل از ساخت دکمه‌ها
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     BaseUpdateProcessor, CallbackQueryHandler, InlineQueryHandler, TypeHandler, filters,
+    ExtBot,
 )
+from game import emoji, button_emoji
+from game.emoji import premiumize_html
+from handlers.theme_admin import theme_cmd, theme_router, handle_theme_input
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
 from handlers.store import store_menu, show_category, show_product
@@ -162,6 +172,8 @@ async def text_router(update, ctx):
         )
         return
     if admin and await admin_order_text_lookup(update, ctx):
+        return
+    if admin and await handle_theme_input(update, ctx):
         return
 
     # اگر ادمین در حالت پاسخ/جستجو نیست، منوی عادی
@@ -580,10 +592,55 @@ def _log_startup_checks():
         log.warning('Startup checks found problems — see errors above')
 
 
+def _install_premium_glyph_hook(application=None) -> None:
+    if getattr(ExtBot, "_premium_glyph_hooked", False):
+        return
+
+    orig_send = ExtBot.send_message
+    orig_edit = ExtBot.edit_message_text
+
+    async def wrapped_send(self, *args, **kwargs):
+        try:
+            parse_mode = kwargs.get("parse_mode")
+            if parse_mode and "html" in str(parse_mode).lower():
+                if "text" in kwargs and isinstance(kwargs["text"], str):
+                    kwargs["text"] = premiumize_html(kwargs["text"])
+                elif len(args) > 1 and isinstance(args[1], str):
+                    args_list = list(args)
+                    args_list[1] = premiumize_html(args_list[1])
+                    args = tuple(args_list)
+        except Exception:
+            pass
+        return await orig_send(self, *args, **kwargs)
+
+    async def wrapped_edit(self, *args, **kwargs):
+        try:
+            parse_mode = kwargs.get("parse_mode")
+            if parse_mode and "html" in str(parse_mode).lower():
+                if "text" in kwargs and isinstance(kwargs["text"], str):
+                    kwargs["text"] = premiumize_html(kwargs["text"])
+                elif len(args) > 0 and isinstance(args[0], str):
+                    args_list = list(args)
+                    args_list[0] = premiumize_html(args_list[0])
+                    args = tuple(args_list)
+        except Exception:
+            pass
+        return await orig_edit(self, *args, **kwargs)
+
+    ExtBot.send_message = wrapped_send
+    ExtBot.edit_message_text = wrapped_edit
+    ExtBot._premium_glyph_hooked = True
+
+
 def main():
     token = os.getenv('BOT_TOKEN')
     if not token or token in ('YOUR_TOKEN_HERE', 'YOUR_TELEGRAM_BOT_TOKEN'):
         raise RuntimeError("توکن ربات را در .env تنظیم کن: BOT_TOKEN=...")
+
+    # warm caches BEFORE building the app (sync context) — never lazily in async handlers
+    emoji.refresh_cache()
+    button_emoji.refresh_cache()
+    _install_premium_glyph_hook()
 
     app = (
         ApplicationBuilder()
@@ -609,6 +666,7 @@ def main():
     app.add_handler(CommandHandler('order', admin_order_cmd))
     app.add_handler(CommandHandler('credadmin', credadmin_cmd))
     app.add_handler(CommandHandler('studio', studio_cmd))
+    app.add_handler(CommandHandler(['theme', 'emojis'], theme_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^/u_\d+$'), admin_user_cmd))
     app.add_handler(MessageHandler(filters.Regex(r'^/o_\d+$'), admin_order_cmd))
     app.add_handler(CallbackQueryHandler(
@@ -728,6 +786,9 @@ def main():
     )
     app.add_handler(CallbackQueryHandler(
         appear_router, pattern=r'^ap_(?:home$|h:|c:|i:|cle:|rst:)'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        theme_router, pattern=r'^th_'
     ))
 
     # دعوت دوستان و مسابقه (رفرال)

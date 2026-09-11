@@ -3,3 +3,4 @@ psycopg[binary,pool]==3.3.4
 python-dotenv==1.0.1
 aiohttp==3.11.12
 cryptography==45.0.7
+Django>=5.0

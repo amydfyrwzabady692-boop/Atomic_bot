@@ -625,7 +625,10 @@ def admin_home_keyboard(counts=None):
         ), InlineKeyboardButton(
             '📋 همه سفارش‌ها', callback_data='admx_allorders'
         )],
-        [InlineKeyboardButton('✨ ظاهر', callback_data='ap_home')],
+        [
+            InlineKeyboardButton('✨ ظاهر و متون', callback_data='ap_home'),
+            InlineKeyboardButton('🎨 تم ایموجی پریمیوم', callback_data='th_home:text'),
+        ],
         [
             InlineKeyboardButton(orders_label, callback_data='admx_hub_orders'),
             InlineKeyboardButton('👥 کاربران', callback_data='admx_hub_users'),
