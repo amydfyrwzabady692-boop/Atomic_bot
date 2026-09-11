@@ -102,6 +102,7 @@ HUBS = {
                     ('b.menu.stars', 'خرید استارز', False),
                     ('b.menu.gc', 'خرید گیفت کارت', False),
                     ('b.menu.su', 'پشتیبانی', False),
+                    ('b.menu.ref', 'دعوت دوستان و جایزه', False),
                 ),
             },
             'ff': {
@@ -276,6 +277,7 @@ DEFAULTS = {
     'b.menu.stars': '⭐ خرید استارز',
     'b.menu.gc': '🎁 خرید گیفت کارت',
     'b.menu.su': '🎧 پشتیبانی',
+    'b.menu.ref': '🎁 دعوت دوستان و جایزه',
     'b.gc.gplay_us': '🇺🇸 گوگل‌پلی آمریکا',
     'b.gc.itunes_us': '🇺🇸 آیتونز آمریکا',
     'b.gc.itunes_tr': '🇹🇷 آیتونز ترکیه',
@@ -311,6 +313,7 @@ MENU_KEYS = {
     'b.menu.stars': 'stars',
     'b.menu.gc': 'giftcards',
     'b.menu.su': 'support',
+    'b.menu.ref': 'referral',
 }
 
 _LEGACY_MENU = {
@@ -414,6 +417,7 @@ _EMOJI_TYPES = {
     'b.menu.stars': ('⭐', '🌟', '👑'),
     'b.menu.gc': ('🎁', '🎀'),
     'b.menu.su': ('🎧', '💬', '🆘'),
+    'b.menu.ref': ('🎁', '🏆', '👥'),
     't.welcome': ('✨', '👑', '👋', '⭐'),
     't.help': ('📋', 'ℹ️', '❓'),
     't.home': ('🏠', '👇', '⭐'),

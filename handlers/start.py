@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -51,6 +52,18 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         # متن سفارشی مدیر ممکن است Markdown نامعتبر داشته باشد؛ ربات نباید از کار بیفتد.
         await update.message.reply_text(text, reply_markup=main_menu())
+    await _referral_after_start(update, ctx, db_id, is_new)
+
+
+async def _referral_after_start(update, ctx, db_id, is_new):
+    """لینک دعوت (ref_...)؛ هر خطایی در بخش رفرال نباید /start را خراب کند."""
+    try:
+        from handlers.referral import handle_start_payload, pop_start_payload
+        payload = ctx.args[0] if ctx.args else pop_start_payload(ctx)
+        if payload:
+            await handle_start_payload(update, ctx, db_id, is_new, payload)
+    except Exception:
+        logging.getLogger(__name__).exception('Referral start hook failed')
 
 
 async def help_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

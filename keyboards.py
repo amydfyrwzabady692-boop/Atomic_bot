@@ -65,19 +65,31 @@ def _fmt(n):
     return f"{n:,}"
 
 
+def _referral_menu_visible():
+    """دکمه «دعوت دوستان» فقط وقتی مدیر بخش را روشن کرده باشد."""
+    try:
+        import referral_db
+        return referral_db.menu_visible()
+    except Exception:
+        return False
+
+
 def main_menu():
+    rows = [
+        [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary'),
+         _kbtn('b.menu.wal', '💰 کیف پول', 'success')],
+        [_kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
+         _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
+        [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
+         _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
+        [_kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
+         _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
+        [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
+    ]
+    if _referral_menu_visible():
+        rows.insert(4, [_kbtn('b.menu.ref', appearance.DEFAULTS['b.menu.ref'], 'success')])
     return ReplyKeyboardMarkup(
-        [
-            [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary'),
-             _kbtn('b.menu.wal', '💰 کیف پول', 'success')],
-            [_kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
-             _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
-            [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
-             _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
-            [_kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
-             _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
-            [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
-        ],
+        rows,
         resize_keyboard=True,
         input_field_placeholder='از منوی پایین انتخاب کن…',
     )
@@ -627,6 +639,7 @@ def admin_home_keyboard(counts=None):
             InlineKeyboardButton('📊 گزارش‌ها', callback_data='admx_hub_reports'),
             InlineKeyboardButton(support_label, callback_data='admx_hub_support'),
         ],
+        [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
         [InlineKeyboardButton('⚙️ تنظیمات سیستم', callback_data='admx_hub_system')],
         [InlineKeyboardButton('🔄 بروزرسانی پنل', callback_data='adm_home')],
     ])
@@ -676,6 +689,7 @@ def admin_hub_users_keyboard():
             InlineKeyboardButton('💰 دارای موجودی', callback_data='adm_users_balance'),
         ],
         [InlineKeyboardButton('📨 پیام همگانی', callback_data='admx_actions')],
+        [InlineKeyboardButton('🎁 رفرال و برترین دعوت‌کننده‌ها', callback_data='radm_home')],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 

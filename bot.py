@@ -13,7 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    BaseUpdateProcessor, CallbackQueryHandler, TypeHandler, filters,
+    BaseUpdateProcessor, CallbackQueryHandler, InlineQueryHandler, TypeHandler, filters,
 )
 
 from handlers.start import start_handler, help_handler, home_callback, myid_handler
@@ -66,6 +66,11 @@ from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
 )
 from handlers.site_panel import site_panel_router
+from handlers.referral import (
+    ADMIN_ROUTER_PATTERN as REFERRAL_ADMIN_PATTERN,
+    referral_admin_conversation_handler, referral_admin_router,
+    referral_inline_query, referral_menu, referral_user_router,
+)
 from admin_notify import is_admin, notify_admin
 from refund_notify import notify_g2_refund
 from db import (
@@ -103,6 +108,7 @@ MENU_ACTIONS = {
     'stars': stars_menu,
     'giftcards': giftcard_menu,
     'cart': show_cart,
+    'referral': referral_menu,
 }
 
 
@@ -221,6 +227,12 @@ async def post_init(app):
     # failure, so these exceptions must stop startup.
     await asyncio.to_thread(open_db_pool)
     await asyncio.to_thread(ensure_admin_schema)
+    try:
+        from referral_db import ensure_referral_schema
+        await asyncio.to_thread(ensure_referral_schema)
+    except Exception as e:
+        # بخش دعوت اختیاری است؛ خطای آن نباید فروش را متوقف کند.
+        logging.getLogger(__name__).warning('Referral schema setup failed: %s', e)
     from db import sync_gem_prices, sync_gift_and_star_catalogs
     try:
         await asyncio.to_thread(sync_gem_prices)
@@ -592,6 +604,7 @@ def main():
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
+    app.add_handler(CommandHandler('invite', referral_menu))
     app.add_handler(CommandHandler('admin', admin_cmd))
     app.add_handler(CommandHandler('order', admin_order_cmd))
     app.add_handler(CommandHandler('credadmin', credadmin_cmd))
@@ -613,6 +626,7 @@ def main():
     app.add_handler(admin_extended_conversation_handler())
     app.add_handler(premium_admin_conversation_handler())
     app.add_handler(appearance_conversation_handler())
+    app.add_handler(referral_admin_conversation_handler())
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
     app.add_handler(CallbackQueryHandler(freefire_products_menu, pattern=r'^gems$'))
@@ -715,6 +729,13 @@ def main():
     app.add_handler(CallbackQueryHandler(
         appear_router, pattern=r'^ap_(?:home$|h:|c:|i:|cle:|rst:)'
     ))
+
+    # دعوت دوستان و مسابقه (رفرال)
+    app.add_handler(CallbackQueryHandler(referral_user_router, pattern=r'^refu_'))
+    app.add_handler(CallbackQueryHandler(
+        referral_admin_router, pattern=REFERRAL_ADMIN_PATTERN
+    ))
+    app.add_handler(InlineQueryHandler(referral_inline_query))
 
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))

@@ -1,5 +1,6 @@
 """اجبار عضویت در کانال‌های تنظیم‌شده پیش از استفاده از ربات."""
 import asyncio
+import logging
 import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -153,7 +154,7 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'at': time.monotonic(),
         }
         if checking_button:
-            db_id, _is_new = await asyncio.to_thread(
+            db_id, is_new = await asyncio.to_thread(
                 get_or_create_user,
                 telegram_id=user.id,
                 first_name=user.first_name or '',
@@ -171,8 +172,27 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 'از منوی پایین انتخاب کن 👇',
                 reply_markup=main_menu(),
             )
+            await _resume_referral_start(update, ctx, db_id, is_new)
             raise ApplicationHandlerStop
         return
 
+    _remember_referral_start(update, ctx)
     await _show_join_prompt(update, channels, missing, unavailable)
     raise ApplicationHandlerStop
+
+
+def _remember_referral_start(update, ctx):
+    """لینک دعوت کاربری که هنوز عضو کانال نیست تا بعد از عضویت ثبت شود."""
+    try:
+        from handlers.referral import remember_start_payload
+        remember_start_payload(update, ctx)
+    except Exception:
+        logging.getLogger(__name__).exception('Could not keep referral start payload')
+
+
+async def _resume_referral_start(update, ctx, db_id, is_new):
+    try:
+        from handlers.referral import resume_start_payload
+        await resume_start_payload(update, ctx, db_id, is_new)
+    except Exception:
+        logging.getLogger(__name__).exception('Referral resume after forced join failed')
