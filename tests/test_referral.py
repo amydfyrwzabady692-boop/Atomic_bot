@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import unquote
 
 import appearance
 import db
@@ -14,6 +15,8 @@ from handlers import referral
 from keyboards import admin_home_keyboard, admin_hub_users_keyboard, main_menu
 
 UTC = timezone.utc
+FRESH = (True, False, False, False, False)
+SAMPLE_GEMS = [(7, '110 جم', 110, 0, 194000, None, 'once', 'by_id', True, '110', 9999, True)]
 
 
 class _Cursor:
@@ -63,8 +66,14 @@ class _Connection:
 class _Bot:
     username = 'AtomicBot'
 
-    def __init__(self):
+    def __init__(self, inline=False):
         self.sent = []
+        self.inline = inline
+        self.get_me_calls = 0
+
+    async def get_me(self):
+        self.get_me_calls += 1
+        return SimpleNamespace(supports_inline_queries=self.inline)
 
     async def send_message(self, chat_id=None, text=None, **kwargs):
         self.sent.append((chat_id, text, kwargs))
@@ -143,32 +152,54 @@ class RecordReferralTests(unittest.TestCase):
             self.assertIsNone(rdb.record_referral(111222, 5, 111222))
 
     def test_new_referral_is_inserted_once_and_syncs_referred_by(self):
-        conn = _Connection(ones=[(7, False, 'Ali', 'ali'), (datetime.now(UTC),)])
+        conn = _Connection(ones=[FRESH, (7, False, 'Ali', 'ali'), (datetime.now(UTC),)])
         with patch.object(db, 'get_conn', return_value=conn), \
                 patch.object(rdb, 'ensure_referral_schema'):
             result = rdb.record_referral(222333, 9, 111222)
         self.assertEqual(result['referrer_user_id'], 7)
         self.assertEqual(result['referrer_first_name'], 'Ali')
         sqls = [sql for sql, _params in conn.cur.executed]
+        guard_sql, guard_params = conn.cur.executed[0]
+        self.assertIn('"DateJoined"', guard_sql)
+        self.assertIn('"Orders"', guard_sql)
+        self.assertIn('"WalletTransactions"', guard_sql)
+        self.assertIn('"BotReferrals"', guard_sql)
+        self.assertEqual(guard_params, (9, '222333'))
         self.assertTrue(any('INSERT INTO "BotReferrals"' in s and 'ON CONFLICT' in s for s in sqls))
         self.assertTrue(any('"ReferredById" IS NULL' in s for s in sqls))
         self.assertEqual(conn.commits, 1)
 
+    def test_existing_bot_users_are_never_counted(self):
+        for existing in (
+            None,                                  # user row / telegram id mismatch
+            (False, False, False, False, False),   # joined more than an hour ago
+            (True, True, False, False, False),     # already referred before
+            (True, False, True, False, False),     # has orders
+            (True, False, False, True, False),     # has wallet transactions
+            (True, False, False, False, True),     # already invited others
+        ):
+            conn = _Connection(ones=[existing])
+            with patch.object(db, 'get_conn', return_value=conn), \
+                    patch.object(rdb, 'ensure_referral_schema'):
+                self.assertIsNone(rdb.record_referral(222333, 9, 111222), existing)
+            self.assertEqual(len(conn.cur.executed), 1, existing)
+            self.assertEqual(conn.commits, 0)
+
     def test_duplicate_invitee_is_ignored(self):
-        conn = _Connection(ones=[(7, False, 'Ali', ''), None])
+        conn = _Connection(ones=[FRESH, (7, False, 'Ali', ''), None])
         with patch.object(db, 'get_conn', return_value=conn), \
                 patch.object(rdb, 'ensure_referral_schema'):
             self.assertIsNone(rdb.record_referral(222333, 9, 111222))
         self.assertEqual(conn.rollbacks, 1)
-        self.assertFalse(any('ReferredById' in sql for sql, _ in conn.cur.executed))
+        self.assertFalse(any('UPDATE "Users"' in sql for sql, _ in conn.cur.executed))
 
     def test_blocked_or_same_account_referrer_is_ignored(self):
         for row in ((7, True, 'Ali', ''), (9, False, 'Me', '')):
-            conn = _Connection(ones=[row])
+            conn = _Connection(ones=[FRESH, row])
             with patch.object(db, 'get_conn', return_value=conn), \
                     patch.object(rdb, 'ensure_referral_schema'):
                 self.assertIsNone(rdb.record_referral(222333, 9, 111222))
-            self.assertEqual(len(conn.cur.executed), 1)
+            self.assertEqual(len(conn.cur.executed), 2)
 
 
 class LeaderboardQueryTests(unittest.TestCase):
@@ -233,6 +264,11 @@ class SettingsAndMenuTests(unittest.TestCase):
         self.assertEqual(rdb.top_n(values), 5)
         self.assertEqual(values['referral_count_mode'], 'join')
 
+    def test_public_leaderboard_settings_are_gone(self):
+        self.assertNotIn('referral_public_top', rdb.DEFAULT_SETTINGS)
+        self.assertNotIn('referral_inline_share', rdb.DEFAULT_SETTINGS)
+        self.assertFalse(hasattr(referral, '_public_top_text'))
+
     def test_menu_hidden_without_database_or_when_disabled(self):
         with patch.object(appearance, '_CACHE', {}):
             rows = main_menu().keyboard
@@ -275,20 +311,43 @@ class KeyboardTests(unittest.TestCase):
             [row[0].to_dict().get('style') for row in rows], ['success', 'primary', 'danger'],
         )
 
-    def test_page_keyboard_share_options_and_colors(self):
-        values = _enabled_settings(referral_inline_share='1')
-        flat = [btn for row in referral.page_keyboard('AtomicBot', 123456, values).inline_keyboard
-                for btn in row]
-        self.assertEqual(flat[0].callback_data, 'refu_banner')
-        self.assertTrue(any(btn.copy_text and 'ref_123456' in btn.copy_text.text for btn in flat))
-        self.assertTrue(any(btn.switch_inline_query_chosen_chat is not None for btn in flat))
-        self.assertTrue(any((btn.url or '').startswith('https://t.me/share/url') for btn in flat))
-        for btn in flat:
-            self.assertIn(btn.to_dict().get('style'), ('primary', 'success', 'danger'), btn.text)
-        no_inline = referral.page_keyboard('AtomicBot', 123456, _enabled_settings(referral_public_top='0'))
-        flat = [btn for row in no_inline.inline_keyboard for btn in row]
-        self.assertFalse(any(btn.switch_inline_query_chosen_chat for btn in flat))
-        self.assertNotIn('refu_top', [btn.callback_data for btn in flat])
+    def test_page_keyboard_share_button_first_and_no_leaderboard(self):
+        for inline_ok in (True, False):
+            keyboard = referral.page_keyboard('AtomicBot', 123456, inline_ok)
+            flat = [btn for row in keyboard.inline_keyboard for btn in row]
+            share = keyboard.inline_keyboard[0][0]
+            self.assertEqual(share.to_dict().get('style'), 'success')
+            if inline_ok:
+                self.assertIsNotNone(share.switch_inline_query_chosen_chat)
+            else:
+                self.assertTrue(share.url.startswith('https://t.me/share/url'))
+                self.assertIn('start=ref_123456', unquote(share.url))
+            callbacks = [btn.callback_data for btn in flat]
+            self.assertIn('refu_banner', callbacks)
+            self.assertIn('refu_mine', callbacks)
+            self.assertNotIn('refu_top', callbacks)
+            self.assertTrue(any(btn.copy_text and 'ref_123456' in btn.copy_text.text for btn in flat))
+            for btn in flat:
+                self.assertIn(btn.to_dict().get('style'), ('primary', 'success', 'danger'), btn.text)
+
+    def test_banner_is_followed_by_share_button(self):
+        bot = _Bot()
+        user = SimpleNamespace(id=123456, first_name='Ali', username='ali')
+        asyncio.run(referral.send_banner(bot, 123456, user, _enabled_settings(), None, inline_ok=False))
+        self.assertEqual(len(bot.sent), 2)
+        banner_markup = bot.sent[0][2]['reply_markup'].inline_keyboard
+        self.assertEqual(banner_markup[1][0].url, 'https://t.me/AtomicBot?start=refgem_123456')
+        hint_markup = bot.sent[1][2]['reply_markup'].inline_keyboard
+        self.assertTrue(hint_markup[0][0].url.startswith('https://t.me/share/url'))
+
+    def test_inline_mode_is_detected_and_cached(self):
+        bot = _Bot(inline=True)
+        ctx = SimpleNamespace(bot=bot, bot_data={})
+        self.assertTrue(asyncio.run(referral.inline_enabled(ctx)))
+        self.assertTrue(asyncio.run(referral.inline_enabled(ctx)))
+        self.assertEqual(bot.get_me_calls, 1)
+        broken = SimpleNamespace(bot=SimpleNamespace(), bot_data={})
+        self.assertFalse(asyncio.run(referral.inline_enabled(broken)))
 
     def test_admin_callbacks_fit_patterns_and_telegram_limit(self):
         router = re.compile(referral.ADMIN_ROUTER_PATTERN)
@@ -298,10 +357,12 @@ class KeyboardTests(unittest.TestCase):
             referral.admin_settings_rows(_enabled_settings()),
             referral.admin_texts_rows(),
         )
+        seen = set()
         for rows in boards:
             for row in rows:
                 for btn in row:
                     data = btn.callback_data
+                    seen.add(data)
                     self.assertLessEqual(len(data.encode()), 64)
                     if data.startswith('radm_in_'):
                         self.assertTrue(inputs.match(data), data)
@@ -312,6 +373,9 @@ class KeyboardTests(unittest.TestCase):
                         )
                     elif data.startswith('radm_'):
                         self.assertTrue(router.match(data), data)
+        self.assertIn('radm_tg_welcome', seen)
+        self.assertNotIn('radm_tg_public', seen)
+        self.assertNotIn('radm_tg_inline', seen)
         self.assertTrue(inputs.match('radm_in_msg_123456789'))
         self.assertTrue(inputs.match('radm_in_msgwin_12'))
 
@@ -333,6 +397,12 @@ class WiringTests(unittest.TestCase):
         self.assertIn('_remember_referral_start(update, ctx)', inspect.getsource(forced_join.force_join_guard))
         self.assertIn('_resume_referral_start', inspect.getsource(forced_join.force_join_guard))
 
+    def test_start_welcome_text_is_unchanged(self):
+        from handlers import start
+        source = inspect.getsource(start.start_handler)
+        self.assertIn("'t.welcome'", source)
+        self.assertIn("stored or appearance.DEFAULTS['t.welcome']", source)
+
     def test_remember_start_payload_only_for_referral_links(self):
         for text, expected in (
             ('/start ref_123456', 'ref_123456'),
@@ -351,7 +421,7 @@ class StartPayloadFlowTests(unittest.TestCase):
         bot = _Bot()
         user = SimpleNamespace(id=222333, first_name='Sara', username='sara')
         update = SimpleNamespace(effective_user=user)
-        ctx = SimpleNamespace(user_data={referral.START_PAYLOAD_KEY: payload}, bot=bot)
+        ctx = SimpleNamespace(user_data={referral.START_PAYLOAD_KEY: payload}, bot=bot, bot_data={})
         stats = {'count': 4, 'rank': 2, 'total': 9, 'bought': 1, 'user_id': 7, 'last_at': None}
         recorded = {
             'referrer_user_id': 7, 'referrer_telegram_id': '111222',
@@ -361,12 +431,13 @@ class StartPayloadFlowTests(unittest.TestCase):
                 patch.object(rdb, 'record_referral', return_value=recorded) as record, \
                 patch.object(rdb, 'active_campaign', return_value=None), \
                 patch.object(rdb, 'user_stats', return_value=stats), \
+                patch.object(referral, 'get_gems_by_id', return_value=SAMPLE_GEMS), \
                 patch.object(appearance, '_CACHE', {}):
             asyncio.run(referral.handle_start_payload(update, ctx, 9, is_new, payload))
         self.assertNotIn(referral.START_PAYLOAD_KEY, ctx.user_data)
         return bot, record
 
-    def test_new_user_is_recorded_referrer_notified_and_gem_menu_sent(self):
+    def test_new_user_is_recorded_referrer_notified_and_gem_list_sent(self):
         bot, record = self._run(is_new=True, payload='refgem_111222', values=_enabled_settings())
         record.assert_called_once_with(222333, 9, 111222)
         chats = [chat for chat, _text, _kw in bot.sent]
@@ -374,11 +445,30 @@ class StartPayloadFlowTests(unittest.TestCase):
         self.assertEqual(chats.count(222333), 2)
         welcome = next(text for chat, text, _ in bot.sent if chat == 222333)
         self.assertIn('Ali', welcome)
+        gem_chat, gem_text, gem_kwargs = bot.sent[-1]
+        self.assertEqual(gem_chat, 222333)
+        self.assertIn('جم فری‌فایر با آیدی', gem_text)
+        self.assertNotIn('روش خرید', gem_text)
+        self.assertEqual(gem_kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'gem_7')
 
-    def test_existing_user_is_never_counted(self):
+    def test_existing_user_is_never_counted_but_gem_button_still_opens_list(self):
+        bot, record = self._run(is_new=False, payload='refgem_111222', values=_enabled_settings())
+        record.assert_not_called()
+        self.assertEqual([chat for chat, _t, _k in bot.sent], [222333])
+        self.assertIn('جم فری‌فایر با آیدی', bot.sent[0][1])
+
+    def test_existing_user_plain_link_sends_nothing_extra(self):
         bot, record = self._run(is_new=False, payload='ref_111222', values=_enabled_settings())
         record.assert_not_called()
         self.assertEqual(bot.sent, [])
+
+    def test_invitee_welcome_can_be_turned_off(self):
+        bot, record = self._run(
+            is_new=True, payload='ref_111222',
+            values=_enabled_settings(referral_invitee_welcome='0'),
+        )
+        record.assert_called_once()
+        self.assertEqual([chat for chat, _t, _k in bot.sent], [111222])
 
     def test_disabled_section_records_nothing_but_gem_button_still_works(self):
         bot, record = self._run(is_new=True, payload='refgem_111222', values=dict(rdb.DEFAULT_SETTINGS))

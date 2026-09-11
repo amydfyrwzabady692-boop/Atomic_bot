@@ -1,8 +1,8 @@
 """بخش «دعوت دوستان و جایزه» (رفرال) — سمت کاربر و پنل مدیریت.
 
 - لینک اختصاصی هر کاربر: t.me/<bot>?start=ref_<telegram_id>
-- بنر قابل فوروارد با دکمه‌های رنگی: ورود / خرید جم / مسابقه
-- مسابقه دوره‌ای با جدول برترین‌ها، ثبت برندگان و پیام به برندگان
+- بنر با دکمه‌های رنگی: ورود / خرید جم / مسابقه + دکمه ارسال برای دوستان
+- مسابقه دوره‌ای؛ برترین‌ها فقط در پنل مدیر، ثبت برندگان و پیام به برندگان
 - همه متن‌ها، جوایز، عکس بنر و تنظیمات از /admin ← «🎁 دعوت دوستان و مسابقه»
 
 هیچ منطق خرید، پرداخت یا کیف پول در این فایل نیست.
@@ -10,6 +10,7 @@
 import asyncio
 import logging
 import re
+import time
 from urllib.parse import quote
 
 from telegram import (
@@ -28,10 +29,12 @@ import appearance
 import referral_db as rdb
 from admin_notify import is_admin
 from db import (
-    get_or_create_user, get_support_contact, is_user_blocked,
+    get_gems_by_id, get_or_create_user, get_support_contact, is_user_blocked,
     list_all_telegram_ids, log_admin_action, upsert_appearance,
 )
-from keyboards import freefire_products_keyboard, main_menu
+from keyboards import (
+    GEM_PRODUCTS_PER_PAGE, gem_cancel_keyboard, gems_list_keyboard, main_menu,
+)
 from text_safety import markdown_safe
 
 _LOG = logging.getLogger(__name__)
@@ -45,12 +48,14 @@ ADMIN_INPUT_PATTERN = r'^radm_in_[a-z]+(?:_\d+)?$'
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _MEDALS = ('🥇', '🥈', '🥉')
 _ESCAPED_VALUES = frozenset({'name', 'inviter', 'friend'})
+_INLINE_CHECK_SECONDS = 600
 _DISABLED_TEXT = '🎁 بخش دعوت دوستان به‌زودی فعال می‌شود. منتظر خبرهای خوب باش! 🔥'
 _BLOCKED_TEXT = '🚫 حساب شما بلاک شده است.'
+_SHARE_TEXT = '💎 Atomic Shop — خرید جم فری‌فایر با تحویل لحظه‌ای + مسابقه جایزه‌دار 🎁'
 _BANNER_HINT = (
     "☝️ *بنر اختصاصی تو آماده‌ست!*\n\n"
-    "همین پیام بالا رو برای دوستات، گروه‌ها و کانال‌ها *فوروارد* کن.\n"
-    "دکمه‌های رنگی همراهش میره و هر کی از طریق اون وارد ربات بشه، به اسم تو ثبت میشه ✅"
+    "دکمه‌ی «📨 ارسال بنر برای دوستان» رو بزن، یا همین پیام بالا رو برای دوستات و گروه‌ها *فوروارد* کن.\n"
+    "هر کی از دکمه‌های بنر وارد ربات بشه، به اسم تو ثبت میشه ✅"
 )
 _DEFAULT_WORDS = ('پیش‌فرض', 'پیش فرض', 'پیشفرض', 'default')
 _DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
@@ -216,39 +221,60 @@ def parse_duration_hours(raw):
     return hours
 
 
+async def inline_enabled(ctx):
+    """حالت inline ربات در BotFather روشن است؟ (هر ۱۰ دقیقه از تلگرام تازه می‌شود)"""
+    store = getattr(ctx, 'bot_data', None)
+    if store is None:
+        store = {}
+    cache = store.get('_ref_inline_check') or {}
+    now = time.monotonic()
+    if cache and now - cache['at'] < _INLINE_CHECK_SECONDS:
+        return cache['value']
+    try:
+        me = await ctx.bot.get_me()
+        value = bool(getattr(me, 'supports_inline_queries', False))
+    except Exception:
+        value = bool(cache.get('value', False))
+    store['_ref_inline_check'] = {'at': now, 'value': value}
+    return value
+
+
 # ─── Keyboards ──────────────────────────────────────────────────────────────────
-def _inline_share_button():
-    return _btn(
-        '📨 ارسال مستقیم بنر در چت دوستان',
-        style='primary',
-        switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
-            query='دعوت', allow_user_chats=True, allow_group_chats=True,
-            allow_channel_chats=True,
-        ),
-    )
-
-
-def page_keyboard(bot_username, telegram_id, values, is_admin_viewer=False):
-    link = rdb.referral_link(bot_username, telegram_id)
-    share_text = '💎 Atomic Shop — خرید جم فری‌فایر با تحویل لحظه‌ای + مسابقه جایزه‌دار 🎁'
-    share_url = (
+def share_url(link):
+    return (
         f'https://t.me/share/url?url={quote(link, safe="")}'
-        f'&text={quote(share_text, safe="")}'
+        f'&text={quote(_SHARE_TEXT, safe="")}'
     )
-    rows = [[_btn('📤 ساخت بنر دعوت با دکمه‌های رنگی', 'refu_banner', 'success')]]
-    if rdb.is_on(values, 'referral_inline_share'):
-        rows.append([_inline_share_button()])
-    rows.append([
-        _btn('📋 کپی لینک دعوت', style='primary', copy_text=CopyTextButton(link[:256])),
-        _btn('🔗 اشتراک لینک', style='primary', url=share_url),
+
+
+def share_button(bot_username, telegram_id, inline_ok=False):
+    """با inline روشن: خودِ بنر رنگی در چت انتخابی؛ وگرنه لینک دعوت."""
+    if inline_ok:
+        return _btn(
+            '📨 ارسال بنر برای دوستان',
+            style='success',
+            switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                query='دعوت', allow_user_chats=True, allow_group_chats=True,
+                allow_channel_chats=True,
+            ),
+        )
+    return _btn(
+        '📨 ارسال لینک دعوت برای دوستان', style='success',
+        url=share_url(rdb.referral_link(bot_username, telegram_id)),
+    )
+
+
+def page_keyboard(bot_username, telegram_id, inline_ok=False):
+    link = rdb.referral_link(bot_username, telegram_id)
+    return InlineKeyboardMarkup([
+        [share_button(bot_username, telegram_id, inline_ok)],
+        [_btn('📤 ساخت بنر دعوت با دکمه‌های رنگی', 'refu_banner', 'primary')],
+        [
+            _btn('📋 کپی لینک دعوت', style='primary', copy_text=CopyTextButton(link[:256])),
+            _btn('👥 دعوت‌شده‌های من', 'refu_mine'),
+        ],
+        [_btn('🔙 منوی اصلی', 'home')],
     ])
-    second = []
-    if rdb.is_on(values, 'referral_public_top') or is_admin_viewer:
-        second.append(_btn('🏆 جدول برترین‌ها', 'refu_top'))
-    second.append(_btn('👥 دعوت‌شده‌های من', 'refu_mine'))
-    rows.append(second)
-    rows.append([_btn('🔙 منوی اصلی', 'home')])
-    return InlineKeyboardMarkup(rows)
 
 
 def banner_keyboard(bot_username, telegram_id, values):
@@ -264,7 +290,7 @@ def banner_keyboard(bot_username, telegram_id, values):
 
 def invitee_keyboard():
     return InlineKeyboardMarkup([
-        [_btn('💎 خرید جم فری‌فایر', 'gems', 'success')],
+        [_btn('💎 خرید جم فری‌فایر', 'gems_by_id', 'success')],
         [_btn('🎁 لینک دعوت من و شرکت در مسابقه', 'refu_home', 'primary')],
     ])
 
@@ -324,14 +350,14 @@ async def referral_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not enabled:
         template += '\n\n🛠 پیش‌نمایش مدیر — این بخش برای کاربران خاموش است.'
     data = page_values(user, ctx.bot.username, values, campaign, stats)
-    markup = page_keyboard(ctx.bot.username, user.id, values, is_admin_viewer=admin)
+    markup = page_keyboard(ctx.bot.username, user.id, await inline_enabled(ctx))
     if query:
         await edit_or_deliver(query, ctx.bot, template, data, markup)
     else:
         await deliver(ctx.bot, user.id, template, data, markup)
 
 
-async def send_banner(bot, chat_id, user, values, campaign):
+async def send_banner(bot, chat_id, user, values, campaign, inline_ok=False):
     data = common_values(values, campaign)
     data.update(inviter=user.first_name or 'دوستت', name=user.first_name or 'دوستت')
     await deliver(
@@ -339,34 +365,10 @@ async def send_banner(bot, chat_id, user, values, campaign):
         banner_keyboard(bot.username, user.id, values),
         photo=values.get('referral_banner_photo') or '',
     )
-    rows = []
-    if rdb.is_on(values, 'referral_inline_share'):
-        rows.append([_inline_share_button()])
-    rows.append([_btn('🔙 صفحه دعوت من', 'refu_home')])
-    await deliver(bot, chat_id, _BANNER_HINT, None, InlineKeyboardMarkup(rows))
-
-
-def _public_top_text(telegram_id):
-    values = rdb.settings()
-    campaign = rdb.active_campaign()
-    mode = values['referral_count_mode']
-    rows = rdb.leaderboard(campaign, mode, rdb.top_n(values))
-    stats = rdb.user_stats(telegram_id, campaign, mode)
-    title = (campaign or {}).get('title') or values['referral_campaign_title']
-    lines = ['🏆 *جدول برترین دعوت‌کننده‌ها*', title, '━━━━━━━━━━━━━━━']
-    if rows:
-        for entry in rows:
-            mine = ' 👈 تو' if entry['telegram_id'] == str(telegram_id) else ''
-            name = markdown_safe(rdb.mask_name(entry['first_name'], entry['username']))
-            lines.append(f'{medal(entry["rank"])} {name} — *{entry["count"]:,}* امتیاز{mine}')
-    else:
-        lines.append('هنوز امتیازی ثبت نشده؛ نفر اول جدول تو باش! 🚀')
-    lines.extend([
-        '',
-        f'📍 رتبه‌ی تو: *{stats["rank"] or "—"}* · امتیاز تو: *{stats["count"]:,}*',
-        deadline_text(campaign),
-    ])
-    return '\n'.join(lines)
+    await deliver(bot, chat_id, _BANNER_HINT, None, InlineKeyboardMarkup([
+        [share_button(bot.username, user.id, inline_ok)],
+        [_btn('🔙 صفحه دعوت من', 'refu_home')],
+    ]))
 
 
 def _my_invitees_text(telegram_id):
@@ -400,7 +402,8 @@ async def referral_user_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query is None or user is None:
         return
     data = query.data or ''
-    if data == 'refu_home':
+    # refu_top: دکمه قدیمی جدول برترین‌ها (حذف شده) → صفحه دعوت
+    if data in ('refu_home', 'refu_top'):
         await referral_menu(update, ctx)
         return
     blocked, admin, values = await _access(user)
@@ -413,15 +416,7 @@ async def referral_user_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'refu_banner':
         await query.answer('بنر اختصاصی تو ساخته شد ✅')
         campaign = await asyncio.to_thread(rdb.active_campaign)
-        await send_banner(ctx.bot, user.id, user, values, campaign)
-        return
-    if data == 'refu_top':
-        if not rdb.is_on(values, 'referral_public_top') and not admin:
-            await query.answer('جدول برترین‌ها فعلاً مخفی است.', show_alert=True)
-            return
-        await query.answer()
-        text = await asyncio.to_thread(_public_top_text, user.id)
-        await edit_or_deliver(query, ctx.bot, text, None, _page_back_keyboard())
+        await send_banner(ctx.bot, user.id, user, values, campaign, await inline_enabled(ctx))
         return
     if data == 'refu_mine':
         await query.answer()
@@ -432,7 +427,7 @@ async def referral_user_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """ارسال مستقیم بنر با @bot — فقط اگر مدیر روشن کرده و /setinline فعال باشد."""
+    """ارسال خودِ بنر رنگی در چت انتخابی (نیاز به /setinline در BotFather)."""
     inline = update.inline_query
     if inline is None:
         return
@@ -441,7 +436,6 @@ async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         values = await asyncio.to_thread(rdb.settings)
         allowed = (
             rdb.is_on(values, 'referral_enabled')
-            and rdb.is_on(values, 'referral_inline_share')
             and not await asyncio.to_thread(is_user_blocked, user.id)
         )
         if not allowed:
@@ -506,14 +500,22 @@ async def resume_start_payload(update, ctx, db_id, is_new):
         await handle_start_payload(update, ctx, db_id, is_new, payload)
 
 
-async def _send_gem_menu(bot, chat_id):
-    payload = appearance.message_kwargs('t.ff.hdr', appearance.DEFAULTS['t.ff.hdr'])
+async def _send_gem_list(bot, chat_id):
+    """همان لیست «جم با آیدی» (صفحه ۱) که دکمه gems_by_id نشان می‌دهد."""
+    gems = await asyncio.to_thread(get_gems_by_id)
+    total_pages = max(1, (len(gems) + GEM_PRODUCTS_PER_PAGE - 1) // GEM_PRODUCTS_PER_PAGE)
+    payload = appearance.message_kwargs(
+        't.gems.hdr', appearance.DEFAULTS['t.gems.hdr'], page=1, total=total_pages,
+    )
+    if gems:
+        keyboard = gems_list_keyboard(gems, page=1)
+    else:
+        payload['text'] += "\n❌ فعلاً بسته‌ای فعال نیست. کمی بعد دوباره سر بزن."
+        keyboard = gem_cancel_keyboard()
     try:
-        await bot.send_message(chat_id=chat_id, **payload,
-                               reply_markup=freefire_products_keyboard())
+        await bot.send_message(chat_id=chat_id, **payload, reply_markup=keyboard)
     except BadRequest:
-        await bot.send_message(chat_id=chat_id, text=payload['text'],
-                               reply_markup=freefire_products_keyboard())
+        await bot.send_message(chat_id=chat_id, text=payload['text'], reply_markup=keyboard)
 
 
 async def _notify_referrer(bot, recorded, invitee, values, campaign):
@@ -550,6 +552,7 @@ async def handle_start_payload(update, ctx, db_id, is_new, payload):
     values = await asyncio.to_thread(rdb.settings)
     enabled = rdb.is_on(values, 'referral_enabled')
     recorded = None
+    # کاربری که از قبل در ربات بوده هرگز امتیاز نمی‌دهد (دیتابیس هم دوباره چک می‌کند).
     if enabled and is_new and db_id and int(referrer_tg) != int(user.id):
         try:
             recorded = await asyncio.to_thread(rdb.record_referral, user.id, db_id, referrer_tg)
@@ -560,14 +563,16 @@ async def handle_start_payload(update, ctx, db_id, is_new, payload):
         campaign = await asyncio.to_thread(rdb.active_campaign)
     if recorded:
         await _notify_referrer(ctx.bot, recorded, user, values, campaign)
-        data = common_values(values, campaign)
-        data.update(
-            name=user.first_name or 'رفیق',
-            inviter=recorded.get('referrer_first_name') or 'یک دوست',
-        )
-        await deliver(ctx.bot, user.id, values['referral_invitee_text'], data, invitee_keyboard())
+        if rdb.is_on(values, 'referral_invitee_welcome'):
+            data = common_values(values, campaign)
+            data.update(
+                name=user.first_name or 'رفیق',
+                inviter=recorded.get('referrer_first_name') or 'یک دوست',
+            )
+            await deliver(ctx.bot, user.id, values['referral_invitee_text'], data, invitee_keyboard())
     if kind == 'gem':
-        await _send_gem_menu(ctx.bot, user.id)
+        ctx.user_data['gems_page'] = 1
+        await _send_gem_list(ctx.bot, user.id)
     elif kind == 'gift' and enabled and not recorded:
         stats = await asyncio.to_thread(
             rdb.user_stats, user.id, campaign, values['referral_count_mode'],
@@ -575,7 +580,7 @@ async def handle_start_payload(update, ctx, db_id, is_new, payload):
         await deliver(
             ctx.bot, user.id, values['referral_page_text'],
             page_values(user, ctx.bot.username, values, campaign, stats),
-            page_keyboard(ctx.bot.username, user.id, values),
+            page_keyboard(ctx.bot.username, user.id, await inline_enabled(ctx)),
         )
 
 
@@ -686,7 +691,7 @@ def admin_home_text(values, campaign, stats, top):
         f'• کل معرف‌ها: *{stats["referrers"]:,}*',
         f'• امتیازهای این دوره: *{stats["period_points"]:,}* از *{stats["period_referrers"]:,}* نفر',
         '',
-        '🥇 *برترین‌های فعلی*',
+        '🥇 *برترین‌های فعلی (فقط برای مدیر)*',
     ])
     lines.extend([_entry_line(entry) for entry in top] or ['هنوز امتیازی ثبت نشده.'])
     return '\n'.join(lines)
@@ -703,32 +708,37 @@ async def show_admin_home(query, ctx, notice=''):
 def admin_settings_rows(values):
     purchase = values['referral_count_mode'] == 'purchase'
 
-    def state(key, on_text, off_text):
-        return on_text if rdb.is_on(values, key) else off_text
+    def state(key):
+        return 'روشن ✅' if rdb.is_on(values, key) else 'خاموش'
 
     return [
         [_btn(f'🎯 ملاک امتیاز: {"🛒 اولین خرید" if purchase else "👤 عضویت"} (تغییر)', 'radm_tg_mode')],
-        [_btn(f'🔔 پیام تبریک به معرف: {state("referral_notify_referrer", "روشن ✅", "خاموش")}',
-              'radm_tg_notify')],
-        [_btn(f'👁 جدول برای کاربران: {state("referral_public_top", "نمایش ✅", "مخفی")}',
-              'radm_tg_public')],
-        [_btn(f'📨 ارسال مستقیم بنر (Inline): {state("referral_inline_share", "روشن ✅", "خاموش")}',
-              'radm_tg_inline')],
+        [_btn(f'🔔 پیام تبریک به معرف: {state("referral_notify_referrer")}', 'radm_tg_notify')],
+        [_btn(f'🤝 پیام خوش‌آمد به دعوت‌شده: {state("referral_invitee_welcome")}', 'radm_tg_welcome')],
         [_btn(f'🔢 تعداد نفرات جدول و برندگان: {rdb.top_n(values)}', 'radm_in_topn')],
         [_btn('🔙 پنل دعوت', 'radm_home')],
     ]
 
 
-_SETTINGS_TEXT = (
-    '⚙️ *تنظیمات دعوت دوستان*\n'
-    '━━━━━━━━━━━━━━━\n'
-    '🎯 *ملاک امتیاز*\n'
-    '• 👤 عضویت: هر عضو جدید با لینک = ۱ امتیاز (رشد سریع‌تر)\n'
-    '• 🛒 اولین خرید: فقط دعوت‌شده‌ای که خرید موفق داشته حساب می‌شود (ضد اکانت فیک)\n\n'
-    '📨 *ارسال مستقیم (Inline)*: کاربر بنر را مستقیم داخل چت دوستانش می‌فرستد.\n'
-    '⚠️ برای کار کردن، در @BotFather دستور /setinline را برای ربات فعال کن.\n\n'
-    '🚫 کاربران بلاک‌شده (معرف یا دعوت‌شده) در امتیازها حساب نمی‌شوند.'
-)
+def settings_text(inline_ok):
+    if inline_ok:
+        inline = ('✅ فعال است — دکمه «📨 ارسال بنر برای دوستان» خودِ بنر رنگی را '
+                  'مستقیم در چت انتخابی کاربر می‌فرستد.')
+    else:
+        inline = ('⚠️ غیرفعال — الان دکمه اشتراک فقط لینک دعوت را می‌فرستد.\n'
+                  'برای ارسال خودِ بنر با دکمه‌های رنگی: در @BotFather دستور /setinline را بزن، '
+                  'ربات را انتخاب کن و یک کلمه مثل «دعوت» بفرست. حداکثر ۱۰ دقیقه بعد خودکار فعال می‌شود.')
+    return (
+        '⚙️ *تنظیمات دعوت دوستان*\n'
+        '━━━━━━━━━━━━━━━\n'
+        '🎯 *ملاک امتیاز*\n'
+        '• 👤 عضویت: هر عضو جدید با لینک = ۱ امتیاز (رشد سریع‌تر)\n'
+        '• 🛒 اولین خرید: فقط دعوت‌شده‌ای که خرید موفق داشته حساب می‌شود (ضد اکانت فیک)\n\n'
+        '🔒 فقط کسی که *اولین بار* با لینک وارد ربات می‌شود حساب می‌شود؛ کاربران فعلی ربات، '
+        'کسی که سفارش یا تراکنش دارد، و کاربر بلاک امتیاز نمی‌دهند.\n'
+        '👁 جدول برترین‌ها فقط در همین پنل دیده می‌شود، نه برای کاربران.\n\n'
+        f'📨 *ارسال مستقیم بنر:* {inline}'
+    )
 
 
 def admin_texts_rows():
@@ -963,14 +973,15 @@ async def _send_preview(query, ctx):
     user = query.from_user
     values, campaign, stats = await asyncio.to_thread(_collect_page, user.id)
     bot = ctx.bot
+    inline_ok = await inline_enabled(ctx)
     await deliver(bot, user.id, '👀 *پیش‌نمایش ۱ — صفحه دعوت کاربر:*')
     await deliver(
         bot, user.id, values['referral_page_text'],
         page_values(user, bot.username, values, campaign, stats),
-        page_keyboard(bot.username, user.id, values, is_admin_viewer=True),
+        page_keyboard(bot.username, user.id, inline_ok),
     )
-    await deliver(bot, user.id, '👀 *پیش‌نمایش ۲ — بنر قابل فوروارد:*')
-    await send_banner(bot, user.id, user, values, campaign)
+    await deliver(bot, user.id, '👀 *پیش‌نمایش ۲ — بنر و دکمه ارسال برای دوستان:*')
+    await send_banner(bot, user.id, user, values, campaign, inline_ok)
     sample = common_values(values, campaign)
     sample.update(name='علی', inviter=user.first_name or 'رضا', friend='سا•••',
                   count='12', total='30', rank='2')
@@ -996,7 +1007,7 @@ async def referral_admin_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         name = data[len('radm_tg_'):]
         keys = {
             'enabled': 'referral_enabled', 'notify': 'referral_notify_referrer',
-            'public': 'referral_public_top', 'inline': 'referral_inline_share',
+            'welcome': 'referral_invitee_welcome',
         }
         values = await asyncio.to_thread(rdb.settings, True)
         if name == 'mode':
@@ -1006,6 +1017,7 @@ async def referral_admin_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             key = keys[name]
             new = '0' if rdb.is_on(values, key) else '1'
         else:
+            await show_admin_home(query, ctx)
             return
         await asyncio.to_thread(rdb.put, key, new)
         await asyncio.to_thread(log_admin_action, uid, 'referral_setting', 'setting', key, f'value={new}')
@@ -1013,10 +1025,12 @@ async def referral_admin_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await show_admin_home(query, ctx)
         else:
             values = await asyncio.to_thread(rdb.settings, True)
-            await _admin_edit(query, ctx.bot, _SETTINGS_TEXT, admin_settings_rows(values))
+            await _admin_edit(query, ctx.bot, settings_text(await inline_enabled(ctx)),
+                              admin_settings_rows(values))
     elif data == 'radm_settings':
         values = await asyncio.to_thread(rdb.settings, True)
-        await _admin_edit(query, ctx.bot, _SETTINGS_TEXT, admin_settings_rows(values))
+        await _admin_edit(query, ctx.bot, settings_text(await inline_enabled(ctx)),
+                          admin_settings_rows(values))
     elif data == 'radm_texts':
         values = await asyncio.to_thread(rdb.settings, True)
         await _admin_edit(query, ctx.bot, admin_texts_text(values), admin_texts_rows())

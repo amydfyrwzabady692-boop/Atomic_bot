@@ -27,8 +27,7 @@ DEFAULT_SETTINGS = {
     'referral_enabled': '0',
     'referral_count_mode': 'join',
     'referral_notify_referrer': '1',
-    'referral_public_top': '1',
-    'referral_inline_share': '0',
+    'referral_invitee_welcome': '1',
     'referral_top_n': '10',
     'referral_banner_photo': '',
     'referral_campaign_title': '🏆 مسابقه دعوت دوستان Atomic Shop',
@@ -324,6 +323,21 @@ def record_referral(invitee_telegram_id, invitee_user_id, referrer_telegram_id, 
         return None
     ensure_referral_schema()
     with db.get_conn() as conn, conn.cursor() as cur:
+        # قفل دوم: کاربری که از قبل در ربات بوده (عضویت قدیمی، سفارش، تراکنش،
+        # دعوت‌شده یا دعوت‌کننده قبلی) حتی با لینک دعوت هم امتیاز نمی‌دهد.
+        cur.execute(
+            'SELECT u."DateJoined" >= now() - interval \'1 hour\', '
+            'u."ReferredById" IS NOT NULL, '
+            'EXISTS (SELECT 1 FROM "Orders" o WHERE o."UserId"=u."Id"), '
+            'EXISTS (SELECT 1 FROM "Wallets" w JOIN "WalletTransactions" t '
+            'ON t."WalletId"=w."Id" WHERE w."UserId"=u."Id"), '
+            'EXISTS (SELECT 1 FROM "BotReferrals" br WHERE br."ReferrerUserId"=u."Id") '
+            'FROM "Users" u WHERE u."Id"=%s AND u."TelegramId"=%s',
+            (invitee_uid, str(invitee_tg)),
+        )
+        fresh = cur.fetchone()
+        if not fresh or not fresh[0] or any(fresh[1:]):
+            return None
         cur.execute(
             'SELECT "Id", COALESCE("IsBlocked", false), "FirstName", "TelegramUsername" '
             'FROM "Users" WHERE "TelegramId"=%s ORDER BY "Id" LIMIT 1',
