@@ -6,7 +6,6 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
-from urllib.parse import unquote
 
 import appearance
 import db
@@ -90,17 +89,22 @@ def _enabled_settings(**overrides):
     return values
 
 
+def _flat(markup):
+    return [btn for row in markup.inline_keyboard for btn in row]
+
+
 class PayloadAndFormattingTests(unittest.TestCase):
     def test_build_and_parse_payload_kinds(self):
         self.assertEqual(rdb.build_payload(123456789), 'ref_123456789')
-        self.assertEqual(rdb.build_payload(123456789, 'gem'), 'refgem_123456789')
+        self.assertEqual(rdb.build_payload(123456789, 'gift'), 'refgift_123456789')
         self.assertEqual(rdb.parse_payload('refgift_123456789'), (123456789, 'gift'))
+        self.assertEqual(rdb.parse_payload('refgem_123456789'), (123456789, 'gem'))
         self.assertEqual(rdb.parse_payload('ref_123456789'), (123456789, ''))
         self.assertEqual(rdb.parse_payload('ref_abc'), (None, ''))
         self.assertEqual(rdb.parse_payload('promo_123456'), (None, ''))
         self.assertEqual(
-            rdb.referral_link('@AtomicBot', 555666, 'gem'),
-            'https://t.me/AtomicBot?start=refgem_555666',
+            rdb.referral_link('@AtomicBot', 555666, 'gift'),
+            'https://t.me/AtomicBot?start=refgift_555666',
         )
 
     def test_payload_fits_telegram_start_limit(self):
@@ -143,6 +147,41 @@ class PayloadAndFormattingTests(unittest.TestCase):
         self.assertNotIn('star', masked)
         # نام ماسک‌شده هنگام رندر Markdown امن می‌شود.
         self.assertEqual(referral.render('{friend}', {'friend': masked}), '\\*s•••')
+
+
+class GapTextTests(unittest.TestCase):
+    def test_no_points_yet(self):
+        self.assertIn('اولین دوستت', referral.gap_text({'rank': None, 'count': 0}))
+
+    def test_behind_someone_shows_distance_and_needed(self):
+        text = referral.gap_text({'rank': 3, 'count': 5, 'above_count': 8, 'below_count': 2})
+        self.assertIn('رتبه‌ی 2', text)
+        self.assertIn('3 امتیاز', text)
+        self.assertIn('4 دعوت', text)
+
+    def test_tied_with_rank_above(self):
+        text = referral.gap_text({'rank': 2, 'count': 4, 'above_count': 4})
+        self.assertIn('هم‌امتیاز', text)
+        self.assertIn('1 دعوت', text)
+
+    def test_leader_shows_lead_over_second(self):
+        self.assertIn('6 امتیاز', referral.gap_text({'rank': 1, 'count': 10, 'below_count': 4}))
+        self.assertIn('هم‌امتیاز', referral.gap_text({'rank': 1, 'count': 4, 'below_count': 4}))
+        self.assertEqual(referral.gap_text({'rank': 1, 'count': 4, 'below_count': None}), '👑 نفر اول جدولی!')
+
+    def test_page_default_shows_rank_and_gap_but_no_link(self):
+        page = rdb.DEFAULT_SETTINGS['referral_page_text']
+        self.assertIn('{rank}', page)
+        self.assertIn('{gap}', page)
+        self.assertNotIn('{link}', page)
+        self.assertIn('{gap}', rdb.DEFAULT_SETTINGS['referral_notify_text'])
+
+    def test_user_stats_returns_neighbour_counts(self):
+        source = inspect.getsource(rdb.user_stats)
+        self.assertIn('MIN(c.cnt)', source)
+        self.assertIn('MAX(c.cnt)', source)
+        self.assertIn("'above_count'", source)
+        self.assertIn("'below_count'", source)
 
 
 class RecordReferralTests(unittest.TestCase):
@@ -264,10 +303,13 @@ class SettingsAndMenuTests(unittest.TestCase):
         self.assertEqual(rdb.top_n(values), 5)
         self.assertEqual(values['referral_count_mode'], 'join')
 
-    def test_public_leaderboard_settings_are_gone(self):
-        self.assertNotIn('referral_public_top', rdb.DEFAULT_SETTINGS)
-        self.assertNotIn('referral_inline_share', rdb.DEFAULT_SETTINGS)
+    def test_removed_settings_are_gone(self):
+        for key in ('referral_public_top', 'referral_inline_share', 'referral_btn_join', 'referral_btn_gems'):
+            self.assertNotIn(key, rdb.DEFAULT_SETTINGS)
+            self.assertNotIn(key, rdb.TEXT_KEYS)
+        self.assertIn('referral_btn_gift', rdb.TEXT_KEYS)
         self.assertFalse(hasattr(referral, '_public_top_text'))
+        self.assertFalse(hasattr(referral, 'share_url'))
 
     def test_menu_hidden_without_database_or_when_disabled(self):
         with patch.object(appearance, '_CACHE', {}):
@@ -300,45 +342,52 @@ class SettingsAndMenuTests(unittest.TestCase):
 
 
 class KeyboardTests(unittest.TestCase):
-    def test_banner_has_three_colored_deeplink_buttons(self):
+    def test_banner_has_only_the_red_contest_button(self):
         rows = referral.banner_keyboard('AtomicBot', 123456, rdb.DEFAULT_SETTINGS).inline_keyboard
-        self.assertEqual([row[0].url for row in rows], [
-            'https://t.me/AtomicBot?start=ref_123456',
-            'https://t.me/AtomicBot?start=refgem_123456',
-            'https://t.me/AtomicBot?start=refgift_123456',
-        ])
-        self.assertEqual(
-            [row[0].to_dict().get('style') for row in rows], ['success', 'primary', 'danger'],
-        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 1)
+        button = rows[0][0]
+        self.assertEqual(button.text, '🔥 شرکت در مسابقه جایزه‌دار')
+        self.assertEqual(button.url, 'https://t.me/AtomicBot?start=refgift_123456')
+        self.assertEqual(button.to_dict().get('style'), 'danger')
 
-    def test_page_keyboard_share_button_first_and_no_leaderboard(self):
+    def test_page_keyboard_sends_banner_never_a_bare_link(self):
         for inline_ok in (True, False):
-            keyboard = referral.page_keyboard('AtomicBot', 123456, inline_ok)
-            flat = [btn for row in keyboard.inline_keyboard for btn in row]
+            keyboard = referral.page_keyboard(inline_ok)
             share = keyboard.inline_keyboard[0][0]
+            self.assertEqual(share.text, '📨 ارسال بنر برای دوستان')
             self.assertEqual(share.to_dict().get('style'), 'success')
             if inline_ok:
                 self.assertIsNotNone(share.switch_inline_query_chosen_chat)
             else:
-                self.assertTrue(share.url.startswith('https://t.me/share/url'))
-                self.assertIn('start=ref_123456', unquote(share.url))
+                self.assertEqual(share.callback_data, 'refu_banner')
+            flat = _flat(keyboard)
+            self.assertFalse(any(btn.url for btn in flat), 'no link buttons on the page')
+            self.assertFalse(any(btn.copy_text for btn in flat), 'no copy-link button')
             callbacks = [btn.callback_data for btn in flat]
-            self.assertIn('refu_banner', callbacks)
             self.assertIn('refu_mine', callbacks)
             self.assertNotIn('refu_top', callbacks)
-            self.assertTrue(any(btn.copy_text and 'ref_123456' in btn.copy_text.text for btn in flat))
             for btn in flat:
                 self.assertIn(btn.to_dict().get('style'), ('primary', 'success', 'danger'), btn.text)
 
-    def test_banner_is_followed_by_share_button(self):
+    def test_banner_hint_without_inline_has_no_link(self):
         bot = _Bot()
         user = SimpleNamespace(id=123456, first_name='Ali', username='ali')
         asyncio.run(referral.send_banner(bot, 123456, user, _enabled_settings(), None, inline_ok=False))
         self.assertEqual(len(bot.sent), 2)
-        banner_markup = bot.sent[0][2]['reply_markup'].inline_keyboard
-        self.assertEqual(banner_markup[1][0].url, 'https://t.me/AtomicBot?start=refgem_123456')
-        hint_markup = bot.sent[1][2]['reply_markup'].inline_keyboard
-        self.assertTrue(hint_markup[0][0].url.startswith('https://t.me/share/url'))
+        banner = _flat(bot.sent[0][2]['reply_markup'])
+        self.assertEqual([btn.url for btn in banner], ['https://t.me/AtomicBot?start=refgift_123456'])
+        hint = _flat(bot.sent[1][2]['reply_markup'])
+        self.assertEqual([btn.callback_data for btn in hint], ['refu_home'])
+        self.assertIn('فوروارد', bot.sent[1][1])
+
+    def test_banner_hint_with_inline_offers_direct_send(self):
+        bot = _Bot()
+        user = SimpleNamespace(id=123456, first_name='Ali', username='ali')
+        asyncio.run(referral.send_banner(bot, 123456, user, _enabled_settings(), None, inline_ok=True))
+        hint = _flat(bot.sent[1][2]['reply_markup'])
+        self.assertIsNotNone(hint[0].switch_inline_query_chosen_chat)
+        self.assertFalse(any(btn.url for btn in hint))
 
     def test_inline_mode_is_detected_and_cached(self):
         bot = _Bot(inline=True)
@@ -374,8 +423,9 @@ class KeyboardTests(unittest.TestCase):
                     elif data.startswith('radm_'):
                         self.assertTrue(router.match(data), data)
         self.assertIn('radm_tg_welcome', seen)
-        self.assertNotIn('radm_tg_public', seen)
-        self.assertNotIn('radm_tg_inline', seen)
+        self.assertIn('radm_in_bgift', seen)
+        for gone in ('radm_tg_public', 'radm_tg_inline', 'radm_in_bjoin', 'radm_in_bgems'):
+            self.assertNotIn(gone, seen)
         self.assertTrue(inputs.match('radm_in_msg_123456789'))
         self.assertTrue(inputs.match('radm_in_msgwin_12'))
 
@@ -406,7 +456,7 @@ class WiringTests(unittest.TestCase):
     def test_remember_start_payload_only_for_referral_links(self):
         for text, expected in (
             ('/start ref_123456', 'ref_123456'),
-            ('/start refgem_123456', 'refgem_123456'),
+            ('/start refgift_123456', 'refgift_123456'),
             ('/start', None),
             ('/start promo', None),
             ('hello', None),
@@ -422,7 +472,8 @@ class StartPayloadFlowTests(unittest.TestCase):
         user = SimpleNamespace(id=222333, first_name='Sara', username='sara')
         update = SimpleNamespace(effective_user=user)
         ctx = SimpleNamespace(user_data={referral.START_PAYLOAD_KEY: payload}, bot=bot, bot_data={})
-        stats = {'count': 4, 'rank': 2, 'total': 9, 'bought': 1, 'user_id': 7, 'last_at': None}
+        stats = {'count': 4, 'rank': 2, 'total': 9, 'bought': 1, 'user_id': 7, 'last_at': None,
+                 'above_count': 6, 'below_count': 1}
         recorded = {
             'referrer_user_id': 7, 'referrer_telegram_id': '111222',
             'referrer_first_name': 'Ali', 'referrer_username': 'ali', 'created_at': None,
@@ -437,43 +488,46 @@ class StartPayloadFlowTests(unittest.TestCase):
         self.assertNotIn(referral.START_PAYLOAD_KEY, ctx.user_data)
         return bot, record
 
-    def test_new_user_is_recorded_referrer_notified_and_gem_list_sent(self):
-        bot, record = self._run(is_new=True, payload='refgem_111222', values=_enabled_settings())
+    def test_new_user_from_banner_is_recorded_and_referrer_sees_gap(self):
+        bot, record = self._run(is_new=True, payload='refgift_111222', values=_enabled_settings())
         record.assert_called_once_with(222333, 9, 111222)
-        chats = [chat for chat, _text, _kw in bot.sent]
-        self.assertIn(111222, chats)
-        self.assertEqual(chats.count(222333), 2)
-        welcome = next(text for chat, text, _ in bot.sent if chat == 222333)
-        self.assertIn('Ali', welcome)
-        gem_chat, gem_text, gem_kwargs = bot.sent[-1]
-        self.assertEqual(gem_chat, 222333)
-        self.assertIn('جم فری‌فایر با آیدی', gem_text)
-        self.assertNotIn('روش خرید', gem_text)
-        self.assertEqual(gem_kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'gem_7')
+        by_chat = {}
+        for chat, text, _kw in bot.sent:
+            by_chat.setdefault(chat, []).append(text)
+        self.assertEqual(len(by_chat[111222]), 1)
+        self.assertIn('رتبه‌ی 1', by_chat[111222][0])
+        self.assertEqual(len(by_chat[222333]), 1)
+        self.assertIn('Ali', by_chat[222333][0])
 
-    def test_existing_user_is_never_counted_but_gem_button_still_opens_list(self):
+    def test_existing_user_from_banner_sees_contest_page_without_points(self):
+        bot, record = self._run(is_new=False, payload='refgift_111222', values=_enabled_settings())
+        record.assert_not_called()
+        self.assertEqual([chat for chat, _t, _k in bot.sent], [222333])
+        page_text = bot.sent[0][1]
+        self.assertIn('رتبه‌ی فعلی', page_text)
+        self.assertIn('رتبه‌ی 1', page_text)
+        share = bot.sent[0][2]['reply_markup'].inline_keyboard[0][0]
+        self.assertEqual(share.text, '📨 ارسال بنر برای دوستان')
+
+    def test_old_gem_banner_still_opens_gem_list(self):
         bot, record = self._run(is_new=False, payload='refgem_111222', values=_enabled_settings())
         record.assert_not_called()
         self.assertEqual([chat for chat, _t, _k in bot.sent], [222333])
         self.assertIn('جم فری‌فایر با آیدی', bot.sent[0][1])
-
-    def test_existing_user_plain_link_sends_nothing_extra(self):
-        bot, record = self._run(is_new=False, payload='ref_111222', values=_enabled_settings())
-        record.assert_not_called()
-        self.assertEqual(bot.sent, [])
+        self.assertEqual(bot.sent[0][2]['reply_markup'].inline_keyboard[0][0].callback_data, 'gem_7')
 
     def test_invitee_welcome_can_be_turned_off(self):
         bot, record = self._run(
-            is_new=True, payload='ref_111222',
+            is_new=True, payload='refgift_111222',
             values=_enabled_settings(referral_invitee_welcome='0'),
         )
         record.assert_called_once()
         self.assertEqual([chat for chat, _t, _k in bot.sent], [111222])
 
-    def test_disabled_section_records_nothing_but_gem_button_still_works(self):
-        bot, record = self._run(is_new=True, payload='refgem_111222', values=dict(rdb.DEFAULT_SETTINGS))
+    def test_disabled_section_records_nothing(self):
+        bot, record = self._run(is_new=True, payload='refgift_111222', values=dict(rdb.DEFAULT_SETTINGS))
         record.assert_not_called()
-        self.assertEqual([chat for chat, _t, _k in bot.sent], [222333])
+        self.assertEqual(bot.sent, [])
 
 
 if __name__ == '__main__':

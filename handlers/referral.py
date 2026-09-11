@@ -1,8 +1,9 @@
 """بخش «دعوت دوستان و جایزه» (رفرال) — سمت کاربر و پنل مدیریت.
 
-- لینک اختصاصی هر کاربر: t.me/<bot>?start=ref_<telegram_id>
-- بنر با دکمه‌های رنگی: ورود / خرید جم / مسابقه + دکمه ارسال برای دوستان
-- مسابقه دوره‌ای؛ برترین‌ها فقط در پنل مدیر، ثبت برندگان و پیام به برندگان
+- هر کاربر بنر اختصاصی با یک دکمه قرمز «شرکت در مسابقه جایزه‌دار» دارد
+  (پشت دکمه: t.me/<bot>?start=refgift_<telegram_id>)
+- «📨 ارسال بنر برای دوستان» خودِ بنر را می‌فرستد؛ لینک خالی ارسال نمی‌شود
+- رتبه کاربر و فاصله امتیازش با نفر بالایی؛ جدول برترین‌ها فقط در پنل مدیر
 - همه متن‌ها، جوایز، عکس بنر و تنظیمات از /admin ← «🎁 دعوت دوستان و مسابقه»
 
 هیچ منطق خرید، پرداخت یا کیف پول در این فایل نیست.
@@ -11,10 +12,9 @@ import asyncio
 import logging
 import re
 import time
-from urllib.parse import quote
 
 from telegram import (
-    CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup,
+    InlineKeyboardButton, InlineKeyboardMarkup,
     InlineQueryResultArticle, InlineQueryResultCachedPhoto,
     InputTextMessageContent, LinkPreviewOptions, SwitchInlineQueryChosenChat,
     Update,
@@ -44,6 +44,7 @@ PAGE_SIZE = 10
 START_PAYLOAD_KEY = '_ref_start_payload'
 ADMIN_ROUTER_PATTERN = r'^radm_(?!in_)'
 ADMIN_INPUT_PATTERN = r'^radm_in_[a-z]+(?:_\d+)?$'
+SHARE_BUTTON_TEXT = '📨 ارسال بنر برای دوستان'
 
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _MEDALS = ('🥇', '🥈', '🥉')
@@ -51,11 +52,16 @@ _ESCAPED_VALUES = frozenset({'name', 'inviter', 'friend'})
 _INLINE_CHECK_SECONDS = 600
 _DISABLED_TEXT = '🎁 بخش دعوت دوستان به‌زودی فعال می‌شود. منتظر خبرهای خوب باش! 🔥'
 _BLOCKED_TEXT = '🚫 حساب شما بلاک شده است.'
-_SHARE_TEXT = '💎 Atomic Shop — خرید جم فری‌فایر با تحویل لحظه‌ای + مسابقه جایزه‌دار 🎁'
-_BANNER_HINT = (
+_BANNER_HINT_FORWARD = (
     "☝️ *بنر اختصاصی تو آماده‌ست!*\n\n"
-    "دکمه‌ی «📨 ارسال بنر برای دوستان» رو بزن، یا همین پیام بالا رو برای دوستات و گروه‌ها *فوروارد* کن.\n"
-    "هر کی از دکمه‌های بنر وارد ربات بشه، به اسم تو ثبت میشه ✅"
+    "همین پیام بالا رو برای دوستات، گروه‌ها و کانال‌ها *فوروارد* کن.\n"
+    "دکمه‌ی قرمز «شرکت در مسابقه جایزه‌دار» همراهش میره و هر کی از اون وارد ربات بشه، امتیازش مال توست ✅"
+)
+_BANNER_HINT_INLINE = (
+    "☝️ *بنر اختصاصی تو آماده‌ست!*\n\n"
+    "دکمه‌ی «📨 ارسال بنر برای دوستان» رو بزن و چت دوستت یا گروه رو انتخاب کن، "
+    "یا همین پیام بالا رو *فوروارد* کن.\n"
+    "هر کی از دکمه‌ی قرمز بنر وارد ربات بشه، امتیازش مال توست ✅"
 )
 _DEFAULT_WORDS = ('پیش‌فرض', 'پیش فرض', 'پیشفرض', 'default')
 _DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
@@ -69,7 +75,8 @@ TEXT_INPUTS = {
     'ttitle': ('referral_campaign_title', '🏷 عنوان مسابقه', 200, ''),
     'tpage': (
         'referral_page_text', '📄 متن صفحه دعوت کاربر', 3500,
-        'متغیرها: {name} {link} {count} {total} {bought} {rank} {prize} {deadline} {title} {rule}',
+        'متغیرها: {name} {count} {rank} {gap} {total} {bought} {prize} {deadline} {title} {rule}\n'
+        '{gap} = فاصله امتیاز با نفر بالایی',
     ),
     'tbanner': (
         'referral_banner_text', '🪧 متن بنر اشتراک‌گذاری', 3500,
@@ -82,15 +89,13 @@ TEXT_INPUTS = {
     ),
     'tnotify': (
         'referral_notify_text', '🔔 پیام تبریک به معرف', 3500,
-        'متغیرها: {name} {friend} {count} {total} {rank} {rule} {deadline} {prize} {title}',
+        'متغیرها: {name} {friend} {count} {total} {rank} {gap} {rule} {deadline} {prize} {title}',
     ),
     'tannounce': (
         'referral_announce_text', '📣 متن اعلام مسابقه به همه', 3500,
         'متغیرها: {prize} {deadline} {title} {rule}',
     ),
-    'bjoin': ('referral_btn_join', '🔘 دکمه ورود (سبز)', 64, 'متن یک‌خطی دکمه'),
-    'bgems': ('referral_btn_gems', '🔘 دکمه خرید جم (آبی)', 64, 'متن یک‌خطی دکمه'),
-    'bgift': ('referral_btn_gift', '🔘 دکمه مسابقه (قرمز)', 64, 'متن یک‌خطی دکمه'),
+    'bgift': ('referral_btn_gift', '🔘 دکمه قرمز بنر', 64, 'متن یک‌خطی دکمه'),
 }
 
 
@@ -141,8 +146,33 @@ def deadline_text(campaign):
 
 def rule_text(mode):
     if mode == 'purchase':
-        return '✅ هر دوستی که با لینک تو وارد بشه و اولین خریدش رو انجام بده = ۱ امتیاز'
-    return '✅ هر دوستی که با لینک تو وارد ربات بشه = ۱ امتیاز'
+        return '✅ هر دوستی که با بنر تو وارد بشه و اولین خریدش رو انجام بده = ۱ امتیاز'
+    return '✅ هر دوستی که با بنر تو وارد ربات بشه = ۱ امتیاز'
+
+
+def gap_text(stats):
+    """فاصله امتیاز کاربر با نفر بالایی (یا فاصله نفر اول با نفر دوم)."""
+    rank = stats.get('rank')
+    count = int(stats.get('count') or 0)
+    if not rank:
+        return '🚀 اولین دوستت رو دعوت کن تا وارد رقابت بشی!'
+    rank = int(rank)
+    if rank == 1:
+        below = stats.get('below_count')
+        if below is None:
+            return '👑 نفر اول جدولی!'
+        lead = count - int(below)
+        if lead <= 0:
+            return '👑 نفر اول جدولی، ولی نفر دوم هم‌امتیازته؛ مراقب باش!'
+        return f'👑 نفر اول جدولی و {lead} امتیاز از نفر دوم جلوتری!'
+    above = stats.get('above_count')
+    if above is None:
+        return ''
+    diff = max(0, int(above) - count)
+    needed = diff + 1
+    if diff == 0:
+        return f'🔥 با رتبه‌ی {rank - 1} هم‌امتیازی؛ با {needed} دعوت دیگه ازش جلو می‌زنی!'
+    return f'🔥 فاصله‌ت با رتبه‌ی {rank - 1}: {diff} امتیاز — با {needed} دعوت دیگه ازش جلو می‌زنی!'
 
 
 def common_values(values, campaign):
@@ -158,11 +188,12 @@ def page_values(user, bot_username, values, campaign, stats):
     out = common_values(values, campaign)
     out.update(
         name=user.first_name or 'رفیق',
-        link=rdb.referral_link(bot_username, user.id),
+        link=rdb.referral_link(bot_username, user.id, 'gift'),
         count=f'{int(stats.get("count") or 0):,}',
         total=f'{int(stats.get("total") or 0):,}',
         bought=f'{int(stats.get("bought") or 0):,}',
         rank=str(stats['rank']) if stats.get('rank') else '—',
+        gap=gap_text(stats),
     )
     return out
 
@@ -240,49 +271,30 @@ async def inline_enabled(ctx):
 
 
 # ─── Keyboards ──────────────────────────────────────────────────────────────────
-def share_url(link):
-    return (
-        f'https://t.me/share/url?url={quote(link, safe="")}'
-        f'&text={quote(_SHARE_TEXT, safe="")}'
-    )
-
-
-def share_button(bot_username, telegram_id, inline_ok=False):
-    """با inline روشن: خودِ بنر رنگی در چت انتخابی؛ وگرنه لینک دعوت."""
+def share_button(inline_ok=False):
+    """فقط خودِ بنر ارسال می‌شود: با inline مستقیم در چت انتخابی، وگرنه برای فوروارد."""
     if inline_ok:
         return _btn(
-            '📨 ارسال بنر برای دوستان',
+            SHARE_BUTTON_TEXT,
             style='success',
             switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
                 query='دعوت', allow_user_chats=True, allow_group_chats=True,
                 allow_channel_chats=True,
             ),
         )
-    return _btn(
-        '📨 ارسال لینک دعوت برای دوستان', style='success',
-        url=share_url(rdb.referral_link(bot_username, telegram_id)),
-    )
+    return _btn(SHARE_BUTTON_TEXT, 'refu_banner', 'success')
 
 
-def page_keyboard(bot_username, telegram_id, inline_ok=False):
-    link = rdb.referral_link(bot_username, telegram_id)
+def page_keyboard(inline_ok=False):
     return InlineKeyboardMarkup([
-        [share_button(bot_username, telegram_id, inline_ok)],
-        [_btn('📤 ساخت بنر دعوت با دکمه‌های رنگی', 'refu_banner', 'primary')],
-        [
-            _btn('📋 کپی لینک دعوت', style='primary', copy_text=CopyTextButton(link[:256])),
-            _btn('👥 دعوت‌شده‌های من', 'refu_mine'),
-        ],
+        [share_button(inline_ok)],
+        [_btn('👥 دعوت‌شده‌های من', 'refu_mine')],
         [_btn('🔙 منوی اصلی', 'home')],
     ])
 
 
 def banner_keyboard(bot_username, telegram_id, values):
     return InlineKeyboardMarkup([
-        [_btn(values['referral_btn_join'], style='success',
-              url=rdb.referral_link(bot_username, telegram_id))],
-        [_btn(values['referral_btn_gems'], style='primary',
-              url=rdb.referral_link(bot_username, telegram_id, 'gem'))],
         [_btn(values['referral_btn_gift'], style='danger',
               url=rdb.referral_link(bot_username, telegram_id, 'gift'))],
     ])
@@ -291,7 +303,7 @@ def banner_keyboard(bot_username, telegram_id, values):
 def invitee_keyboard():
     return InlineKeyboardMarkup([
         [_btn('💎 خرید جم فری‌فایر', 'gems_by_id', 'success')],
-        [_btn('🎁 لینک دعوت من و شرکت در مسابقه', 'refu_home', 'primary')],
+        [_btn('🎁 بنر دعوت من و شرکت در مسابقه', 'refu_home', 'primary')],
     ])
 
 
@@ -350,7 +362,7 @@ async def referral_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not enabled:
         template += '\n\n🛠 پیش‌نمایش مدیر — این بخش برای کاربران خاموش است.'
     data = page_values(user, ctx.bot.username, values, campaign, stats)
-    markup = page_keyboard(ctx.bot.username, user.id, await inline_enabled(ctx))
+    markup = page_keyboard(await inline_enabled(ctx))
     if query:
         await edit_or_deliver(query, ctx.bot, template, data, markup)
     else:
@@ -365,10 +377,10 @@ async def send_banner(bot, chat_id, user, values, campaign, inline_ok=False):
         banner_keyboard(bot.username, user.id, values),
         photo=values.get('referral_banner_photo') or '',
     )
-    await deliver(bot, chat_id, _BANNER_HINT, None, InlineKeyboardMarkup([
-        [share_button(bot.username, user.id, inline_ok)],
-        [_btn('🔙 صفحه دعوت من', 'refu_home')],
-    ]))
+    rows = [[share_button(True)]] if inline_ok else []
+    rows.append([_btn('🔙 صفحه دعوت من', 'refu_home')])
+    hint = _BANNER_HINT_INLINE if inline_ok else _BANNER_HINT_FORWARD
+    await deliver(bot, chat_id, hint, None, InlineKeyboardMarkup(rows))
 
 
 def _my_invitees_text(telegram_id):
@@ -390,7 +402,7 @@ def _my_invitees_text(telegram_id):
     if total > len(items):
         lines.append(f'… و {total - len(items):,} نفر دیگر')
     if not items:
-        lines.append('هنوز کسی با لینک تو وارد نشده. بنر دعوتت رو بفرست! 🚀')
+        lines.append('هنوز کسی با بنر تو وارد نشده. بنر دعوتت رو بفرست! 🚀')
     elif bought:
         lines.extend(['', f'🛒 خریدارهای این لیست: *{bought:,}* نفر'])
     return '\n'.join(lines)
@@ -427,7 +439,7 @@ async def referral_user_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """ارسال خودِ بنر رنگی در چت انتخابی (نیاز به /setinline در BotFather)."""
+    """ارسال خودِ بنر (با دکمه قرمز) در چت انتخابی — نیاز به /setinline در BotFather."""
     inline = update.inline_query
     if inline is None:
         return
@@ -458,7 +470,7 @@ async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 result = InlineQueryResultArticle(
                     id='ref_banner',
                     title='🎁 ارسال بنر دعوت اختصاصی من',
-                    description='بنر با دکمه‌های رنگی ورود، خرید جم و مسابقه جایزه‌دار',
+                    description='بنر با دکمه قرمز «شرکت در مسابقه جایزه‌دار»',
                     input_message_content=InputTextMessageContent(
                         text[:4096], parse_mode=parse_mode,
                         link_preview_options=_NO_PREVIEW,
@@ -533,6 +545,7 @@ async def _notify_referrer(bot, recorded, invitee, values, campaign):
             count=f'{stats["count"]:,}',
             total=f'{stats["total"]:,}',
             rank=str(stats['rank']) if stats.get('rank') else '—',
+            gap=gap_text(stats),
         )
         await deliver(
             bot, int(recorded['referrer_telegram_id']), values['referral_notify_text'],
@@ -543,7 +556,7 @@ async def _notify_referrer(bot, recorded, invitee, values, campaign):
 
 
 async def handle_start_payload(update, ctx, db_id, is_new, payload):
-    """بعد از خوش‌آمد /start: ثبت دعوت (فقط کاربر جدید) و هدایت دکمه‌های بنر."""
+    """بعد از خوش‌آمد /start: ثبت دعوت (فقط کاربر جدید) و هدایت دکمه بنر."""
     ctx.user_data.pop(START_PAYLOAD_KEY, None)
     referrer_tg, kind = rdb.parse_payload(payload)
     user = update.effective_user
@@ -571,6 +584,7 @@ async def handle_start_payload(update, ctx, db_id, is_new, payload):
             )
             await deliver(ctx.bot, user.id, values['referral_invitee_text'], data, invitee_keyboard())
     if kind == 'gem':
+        # بنرهای قدیمی که دکمه «خرید جم» داشتند
         ctx.user_data['gems_page'] = 1
         await _send_gem_list(ctx.bot, user.id)
     elif kind == 'gift' and enabled and not recorded:
@@ -580,7 +594,7 @@ async def handle_start_payload(update, ctx, db_id, is_new, payload):
         await deliver(
             ctx.bot, user.id, values['referral_page_text'],
             page_values(user, ctx.bot.username, values, campaign, stats),
-            page_keyboard(ctx.bot.username, user.id, await inline_enabled(ctx)),
+            page_keyboard(await inline_enabled(ctx)),
         )
 
 
@@ -663,7 +677,7 @@ def admin_home_text(values, campaign, stats, top):
         '🎁 *مدیریت دعوت دوستان و مسابقه*',
         '━━━━━━━━━━━━━━━',
         f'وضعیت بخش: {"🟢 روشن" if enabled else "🔴 خاموش (کاربران نمی‌بینند)"}',
-        f'ملاک امتیاز: {"🛒 دعوت‌شده‌ای که خرید کرده" if purchase else "👤 هر عضو جدید با لینک"}',
+        f'ملاک امتیاز: {"🛒 دعوت‌شده‌ای که خرید کرده" if purchase else "👤 هر عضو جدید با بنر"}',
         '',
     ]
     if campaign:
@@ -722,21 +736,22 @@ def admin_settings_rows(values):
 
 def settings_text(inline_ok):
     if inline_ok:
-        inline = ('✅ فعال است — دکمه «📨 ارسال بنر برای دوستان» خودِ بنر رنگی را '
+        inline = ('✅ فعال است — دکمه «📨 ارسال بنر برای دوستان» خودِ بنر را '
                   'مستقیم در چت انتخابی کاربر می‌فرستد.')
     else:
-        inline = ('⚠️ غیرفعال — الان دکمه اشتراک فقط لینک دعوت را می‌فرستد.\n'
-                  'برای ارسال خودِ بنر با دکمه‌های رنگی: در @BotFather دستور /setinline را بزن، '
+        inline = ('⚠️ غیرفعال — الان دکمه «📨 ارسال بنر برای دوستان» بنر را برای خود کاربر '
+                  'می‌فرستد تا فوروارد کند.\n'
+                  'برای ارسال مستقیم بنر در چت دوستان: در @BotFather دستور /setinline را بزن، '
                   'ربات را انتخاب کن و یک کلمه مثل «دعوت» بفرست. حداکثر ۱۰ دقیقه بعد خودکار فعال می‌شود.')
     return (
         '⚙️ *تنظیمات دعوت دوستان*\n'
         '━━━━━━━━━━━━━━━\n'
         '🎯 *ملاک امتیاز*\n'
-        '• 👤 عضویت: هر عضو جدید با لینک = ۱ امتیاز (رشد سریع‌تر)\n'
+        '• 👤 عضویت: هر عضو جدید با بنر = ۱ امتیاز (رشد سریع‌تر)\n'
         '• 🛒 اولین خرید: فقط دعوت‌شده‌ای که خرید موفق داشته حساب می‌شود (ضد اکانت فیک)\n\n'
-        '🔒 فقط کسی که *اولین بار* با لینک وارد ربات می‌شود حساب می‌شود؛ کاربران فعلی ربات، '
+        '🔒 فقط کسی که *اولین بار* با بنر وارد ربات می‌شود حساب می‌شود؛ کاربران فعلی ربات، '
         'کسی که سفارش یا تراکنش دارد، و کاربر بلاک امتیاز نمی‌دهند.\n'
-        '👁 جدول برترین‌ها فقط در همین پنل دیده می‌شود، نه برای کاربران.\n\n'
+        '👁 جدول برترین‌ها فقط در همین پنل دیده می‌شود؛ کاربر فقط رتبه و فاصله‌اش با نفر بالایی را می‌بیند.\n\n'
         f'📨 *ارسال مستقیم بنر:* {inline}'
     )
 
@@ -748,8 +763,7 @@ def admin_texts_rows():
         [_btn('🪧 متن بنر', 'radm_in_tbanner'), _btn('🖼 عکس بنر', 'radm_in_photo')],
         [_btn('🤝 خوش‌آمد دعوت‌شده', 'radm_in_tinvitee'), _btn('🔔 پیام تبریک معرف', 'radm_in_tnotify')],
         [_btn('📣 متن اعلام مسابقه', 'radm_in_tannounce')],
-        [_btn('🔘 دکمه ورود', 'radm_in_bjoin'), _btn('🔘 دکمه خرید جم', 'radm_in_bgems')],
-        [_btn('🔘 دکمه مسابقه', 'radm_in_bgift'), _btn('📱 دکمه منوی اصلی', 'radm_in_menulabel')],
+        [_btn('🔘 دکمه قرمز بنر', 'radm_in_bgift'), _btn('📱 دکمه منوی اصلی', 'radm_in_menulabel')],
         [_btn('↩️ بازگشت همه متن‌ها به پیش‌فرض', 'radm_resettexts', 'danger')],
         [_btn('🔙 پنل دعوت', 'radm_home')],
     ]
@@ -940,7 +954,7 @@ async def _run_announce(query, ctx):
         campaign = await asyncio.to_thread(rdb.active_campaign)
         data = common_values(values, campaign)
         markup = InlineKeyboardMarkup([[
-            _btn('🎁 دریافت لینک دعوت و شرکت در مسابقه', 'refu_home', 'success'),
+            _btn('🎁 دریافت بنر دعوت و شرکت در مسابقه', 'refu_home', 'success'),
         ]])
         status = await ctx.bot.send_message(
             chat_id=query.from_user.id, text=f'⏳ ارسال اعلام مسابقه به {len(ids):,} کاربر شروع شد…',
@@ -978,13 +992,14 @@ async def _send_preview(query, ctx):
     await deliver(
         bot, user.id, values['referral_page_text'],
         page_values(user, bot.username, values, campaign, stats),
-        page_keyboard(bot.username, user.id, inline_ok),
+        page_keyboard(inline_ok),
     )
-    await deliver(bot, user.id, '👀 *پیش‌نمایش ۲ — بنر و دکمه ارسال برای دوستان:*')
+    await deliver(bot, user.id, '👀 *پیش‌نمایش ۲ — بنری که برای دوستان ارسال می‌شود:*')
     await send_banner(bot, user.id, user, values, campaign, inline_ok)
     sample = common_values(values, campaign)
     sample.update(name='علی', inviter=user.first_name or 'رضا', friend='سا•••',
-                  count='12', total='30', rank='2')
+                  count='12', total='30', rank='2',
+                  gap=gap_text({'rank': 2, 'count': 12, 'above_count': 14}))
     await deliver(bot, user.id, '👀 *پیش‌نمایش ۳ — خوش‌آمد کاربر دعوت‌شده:*')
     await deliver(bot, user.id, values['referral_invitee_text'], sample, invitee_keyboard())
     await deliver(bot, user.id, '👀 *پیش‌نمایش ۴ — پیام تبریک به معرف:*')
@@ -1036,7 +1051,7 @@ async def referral_admin_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _admin_edit(query, ctx.bot, admin_texts_text(values), admin_texts_rows())
     elif data == 'radm_resettexts':
         await _admin_edit(query, ctx.bot, (
-            '↩️ همه متن‌ها، جوایز، عنوان و متن دکمه‌های بنر به پیش‌فرض برمی‌گردند.\n'
+            '↩️ همه متن‌ها، جوایز، عنوان و متن دکمه بنر به پیش‌فرض برمی‌گردند.\n'
             'تنظیمات روشن/خاموش، عکس بنر و مسابقه‌ها دست نمی‌خورند. مطمئنی؟'
         ), [
             [_btn('✅ بله، برگردان', 'radm_resettextsok', 'danger')],
@@ -1124,7 +1139,7 @@ async def referral_admin_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _admin_edit(query, ctx.bot, (
             f'📣 اعلام مسابقه برای {len(ids):,} کاربر ربات ارسال می‌شود.\n'
             'متن از «✏️ متن‌ها ← 📣 متن اعلام مسابقه» و عکس از «🖼 عکس بنر» خوانده می‌شود.\n'
-            'زیر پیام دکمه‌ی «دریافت لینک دعوت» قرار می‌گیرد.\n\n'
+            'زیر پیام دکمه‌ی «دریافت بنر دعوت» قرار می‌گیرد.\n\n'
             'پیشنهاد: اول «👀 پیش‌نمایش» و متن جوایز را چک کن. ارسال شود؟'
         ), [
             [_btn('✅ بله، ارسال به همه', 'radm_announceok', 'success')],
@@ -1252,8 +1267,8 @@ async def _apply_input(update, ctx, action, arg):
             sample = common_values(values, campaign)
             sample.update(
                 name=update.effective_user.first_name or 'علی', inviter='رضا', friend='سا•••',
-                link=rdb.referral_link(ctx.bot.username, uid), count='12', total='30',
-                bought='5', rank='2',
+                link=rdb.referral_link(ctx.bot.username, uid, 'gift'), count='12', total='30',
+                bought='5', rank='2', gap=gap_text({'rank': 2, 'count': 12, 'above_count': 14}),
             )
             await message.reply_text(result + '\n\n👀 پیش‌نمایش:')
             await deliver(ctx.bot, uid, values[key], sample)

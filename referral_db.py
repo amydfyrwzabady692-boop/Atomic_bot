@@ -42,11 +42,11 @@ DEFAULT_SETTINGS = {
         "📊 *وضعیت تو:*\n"
         "👥 امتیاز این دوره: *{count}*\n"
         "🏅 رتبه‌ی فعلی: *{rank}*\n"
+        "{gap}\n"
         "🤝 کل دعوت‌ها: *{total}* · خریدار: *{bought}*\n\n"
         "{rule}\n\n"
-        "🔗 *لینک اختصاصی تو:*\n"
-        "`{link}`\n\n"
-        "👇 «📤 ساخت بنر دعوت» رو بزن و بنر رو برای دوستات و گروه‌ها فوروارد کن"
+        "👇 دکمه‌ی «📨 ارسال بنر برای دوستان» رو بزن و بنر رو برای دوستات و گروه‌ها بفرست؛ "
+        "هر کی از بنر تو وارد ربات بشه، امتیازش مال توست ✅"
     ),
     'referral_banner_text': (
         "💎 *Atomic Shop | فروشگاه جم فری‌فایر* 💎\n"
@@ -57,7 +57,7 @@ DEFAULT_SETTINGS = {
         "🏆 *مسابقه‌ی جایزه‌دار در جریانه!*\n"
         "{prize}\n\n"
         "🎟 دعوت ویژه از طرف *{inviter}*\n"
-        "👇 از دکمه‌های زیر وارد شو 👇"
+        "👇 از دکمه‌ی زیر وارد مسابقه شو 👇"
     ),
     'referral_invitee_text': (
         "🎉 *{name}* عزیز، خوش اومدی!\n"
@@ -70,10 +70,11 @@ DEFAULT_SETTINGS = {
     ),
     'referral_notify_text': (
         "🎉 *تبریک {name}!*\n"
-        "یک دوست جدید با لینک دعوت تو وارد ربات شد 🙌\n"
+        "یک دوست جدید با بنر دعوت تو وارد ربات شد 🙌\n"
         "👤 دوست جدید: {friend}\n\n"
         "👥 امتیاز این دوره: *{count}*\n"
         "🏅 رتبه‌ی فعلی: *{rank}*\n"
+        "{gap}\n"
         "{rule}\n\n"
         "🔥 ادامه بده، جایزه نزدیکه! 🏆"
     ),
@@ -85,10 +86,8 @@ DEFAULT_SETTINGS = {
         "{prize}\n\n"
         "{deadline}\n"
         "{rule}\n\n"
-        "👇 روی دکمه‌ی زیر بزن و لینک اختصاصی خودت رو بگیر"
+        "👇 روی دکمه‌ی زیر بزن و بنر اختصاصی خودت رو بگیر"
     ),
-    'referral_btn_join': '🚀 ورود به ربات و دریافت جایزه',
-    'referral_btn_gems': '💎 خرید جم فری‌فایر · تحویل لحظه‌ای',
     'referral_btn_gift': '🔥 شرکت در مسابقه جایزه‌دار',
 }
 
@@ -96,8 +95,7 @@ DEFAULT_SETTINGS = {
 TEXT_KEYS = (
     'referral_campaign_title', 'referral_prize_text', 'referral_page_text',
     'referral_banner_text', 'referral_invitee_text', 'referral_notify_text',
-    'referral_announce_text', 'referral_btn_join', 'referral_btn_gems',
-    'referral_btn_gift',
+    'referral_announce_text', 'referral_btn_gift',
 )
 
 _SCHEMA = (
@@ -471,7 +469,10 @@ def find_user(telegram_id):
 
 def user_stats(telegram_id, campaign=None, mode='join'):
     """امتیاز دوره، رتبه، کل دعوت‌ها و تعداد دعوت‌شده‌های خریدار."""
-    empty = {'user_id': None, 'count': 0, 'rank': None, 'total': 0, 'bought': 0, 'last_at': None}
+    empty = {
+        'user_id': None, 'count': 0, 'rank': None, 'total': 0, 'bought': 0,
+        'last_at': None, 'above_count': None, 'below_count': None,
+    }
     ensure_referral_schema()
     with db.get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -483,13 +484,19 @@ def user_stats(telegram_id, campaign=None, mode='join'):
             return empty
         uid = int(row[0])
         where, params = _filters(campaign, mode, True)
+        # «جلوتر از من» با همان ترتیب جدول: امتیاز بیشتر، یا برابر ولی زودتر رسیده.
+        ahead = (
+            '(c.cnt>me.cnt OR (c.cnt=me.cnt AND (c.last_at<me.last_at '
+            'OR (c.last_at=me.last_at AND c.uid<me.uid))))'
+        )
         cur.execute(
             'WITH counts AS (SELECT r."ReferrerUserId" AS uid, COUNT(*) AS cnt, '
             'MAX(r."CreatedAt") AS last_at ' + _FROM + 'WHERE ' + where
             + ' GROUP BY r."ReferrerUserId") '
-            'SELECT me.cnt, (SELECT COUNT(*) FROM counts c WHERE c.cnt>me.cnt '
-            'OR (c.cnt=me.cnt AND (c.last_at<me.last_at '
-            'OR (c.last_at=me.last_at AND c.uid<me.uid)))) '
+            'SELECT me.cnt, '
+            f'(SELECT COUNT(*) FROM counts c WHERE {ahead}), '
+            f'(SELECT MIN(c.cnt) FROM counts c WHERE {ahead}), '
+            f'(SELECT MAX(c.cnt) FROM counts c WHERE c.uid<>me.uid AND NOT {ahead}) '
             'FROM counts me WHERE me.uid=%s',
             (*params, uid),
         )
@@ -507,6 +514,9 @@ def user_stats(telegram_id, campaign=None, mode='join'):
         'total': int(totals[0] or 0),
         'bought': int(totals[1] or 0),
         'last_at': totals[2],
+        # امتیاز نفر درست بالایی و درست پایینی در جدول (برای «فاصله با نفر بعدی»)
+        'above_count': int(ranked[2]) if ranked and ranked[2] is not None else None,
+        'below_count': int(ranked[3]) if ranked and ranked[3] is not None else None,
     }
 
 
