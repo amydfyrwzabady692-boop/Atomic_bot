@@ -1,7 +1,7 @@
 """بخش «دعوت دوستان و جایزه» (رفرال) — سمت کاربر و پنل مدیریت.
 
-- هر کاربر بنر اختصاصی با یک دکمه قرمز «شرکت در مسابقه جایزه‌دار» دارد
-  (پشت دکمه: t.me/<bot>?start=refgift_<telegram_id>)
+- هر کاربر بنر اختصاصی خودش را دارد: اسم تلگرام خودش داخل بنر و یک دکمه قرمز
+  «شرکت در مسابقه جایزه‌دار» (پشت دکمه: t.me/<bot>?start=refgift_<telegram_id>)
 - «📨 ارسال بنر برای دوستان» خودِ بنر را می‌فرستد؛ لینک خالی ارسال نمی‌شود
 - رتبه کاربر و فاصله امتیازش با نفر بالایی؛ جدول برترین‌ها فقط در پنل مدیر
 - همه متن‌ها، جوایز، عکس بنر و تنظیمات از /admin ← «🎁 دعوت دوستان و مسابقه»
@@ -45,11 +45,13 @@ START_PAYLOAD_KEY = '_ref_start_payload'
 ADMIN_ROUTER_PATTERN = r'^radm_(?!in_)'
 ADMIN_INPUT_PATTERN = r'^radm_in_[a-z]+(?:_\d+)?$'
 SHARE_BUTTON_TEXT = '📨 ارسال بنر برای دوستان'
+INVITER_PLACEHOLDER = '{inviter}'
 
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _MEDALS = ('🥇', '🥈', '🥉')
 _ESCAPED_VALUES = frozenset({'name', 'inviter', 'friend'})
 _INLINE_CHECK_SECONDS = 600
+_INVITER_LINE = '\n\n🎟 دعوت ویژه از طرف *{inviter}*'
 _DISABLED_TEXT = '🎁 بخش دعوت دوستان به‌زودی فعال می‌شود. منتظر خبرهای خوب باش! 🔥'
 _BLOCKED_TEXT = '🚫 حساب شما بلاک شده است.'
 _BANNER_HINT_FORWARD = (
@@ -62,6 +64,10 @@ _BANNER_HINT_INLINE = (
     "دکمه‌ی «📨 ارسال بنر برای دوستان» رو بزن و چت دوستت یا گروه رو انتخاب کن، "
     "یا همین پیام بالا رو *فوروارد* کن.\n"
     "هر کی از دکمه‌ی قرمز بنر وارد ربات بشه، امتیازش مال توست ✅"
+)
+_BANNER_NO_INVITER_WARNING = (
+    '⚠️ متن بنر فعلی {inviter} ندارد؛ اسم تلگرام هر نفر خودکار آخر بنرش اضافه می‌شود. '
+    'برای درست شدن، در «🪧 متن بنر» کلمه «پیش‌فرض» را بفرست.'
 )
 _DEFAULT_WORDS = ('پیش‌فرض', 'پیش فرض', 'پیشفرض', 'default')
 _DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
@@ -81,6 +87,7 @@ TEXT_INPUTS = {
     'tbanner': (
         'referral_banner_text', '🪧 متن بنر اشتراک‌گذاری', 3500,
         'متغیرها: {inviter} {prize} {deadline} {title} {rule}\n'
+        '{inviter} = اسم تلگرام همان کسی که بنر را می‌فرستد (اجباری؛ اسم خودت را دستی ننویس)\n'
         'اگر عکس بنر گذاشتی، متن بنر حداکثر ۱۰۲۴ کاراکتر باشد.',
     ),
     'tinvitee': (
@@ -131,6 +138,42 @@ def _btn(text, callback_data=None, style='primary', **kwargs):
 def medal(rank):
     rank = int(rank or 0)
     return _MEDALS[rank - 1] if 1 <= rank <= 3 else f'{rank}.'
+
+
+def inviter_name(user):
+    """اسم تلگرام همان کسی که بنر را می‌سازد (نام + نام خانوادگی، وگرنه یوزرنیم)."""
+    first = str(getattr(user, 'first_name', '') or '').strip()
+    last = str(getattr(user, 'last_name', '') or '').strip()
+    name = f'{first} {last}'.strip()
+    if not name:
+        name = str(getattr(user, 'username', '') or '').lstrip('@').strip()
+    return (name or 'دوستت')[:40]
+
+
+def banner_template(template):
+    """بنر همیشه شخصی است؛ اگر متن مدیر {inviter} نداشت، اسم فرستنده اضافه می‌شود."""
+    text = str(template or '')
+    return text if INVITER_PLACEHOLDER in text else text + _INVITER_LINE
+
+
+def banner_values(user, values, campaign):
+    data = common_values(values, campaign)
+    name = inviter_name(user)
+    data.update(inviter=name, name=name)
+    return data
+
+
+def check_text_input(action, raw):
+    _key, _title, limit, _hint = TEXT_INPUTS[action]
+    if len(raw) > limit:
+        raise ValueError(f'حداکثر {limit} کاراکتر مجاز است (الان {len(raw)}).')
+    if action.startswith('b') and '\n' in raw:
+        raise ValueError('متن دکمه باید یک خط باشد.')
+    if action == 'tbanner' and INVITER_PLACEHOLDER not in raw:
+        raise ValueError(
+            'متن بنر باید {inviter} داشته باشد تا اسم تلگرام هر نفر داخل بنر خودش بیاید. '
+            'اسم خودت را دستی ننویس.'
+        )
 
 
 def deadline_text(campaign):
@@ -370,10 +413,10 @@ async def referral_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_banner(bot, chat_id, user, values, campaign, inline_ok=False):
-    data = common_values(values, campaign)
-    data.update(inviter=user.first_name or 'دوستت', name=user.first_name or 'دوستت')
+    """بنر اختصاصی همان کاربر: اسم تلگرام خودش + دکمه قرمز با رفرال خودش."""
     await deliver(
-        bot, chat_id, values['referral_banner_text'], data,
+        bot, chat_id, banner_template(values['referral_banner_text']),
+        banner_values(user, values, campaign),
         banner_keyboard(bot.username, user.id, values),
         photo=values.get('referral_banner_photo') or '',
     )
@@ -439,7 +482,7 @@ async def referral_user_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """ارسال خودِ بنر (با دکمه قرمز) در چت انتخابی — نیاز به /setinline در BotFather."""
+    """بنر اختصاصی همان کسی که دکمه را زده (اسم و رفرال خودش) در چت انتخابی."""
     inline = update.inline_query
     if inline is None:
         return
@@ -451,26 +494,28 @@ async def referral_inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             and not await asyncio.to_thread(is_user_blocked, user.id)
         )
         if not allowed:
-            await inline.answer([], cache_time=10, is_personal=True)
+            await inline.answer([], cache_time=0, is_personal=True)
             return
         campaign = await asyncio.to_thread(rdb.active_campaign)
-        data = common_values(values, campaign)
-        data.update(inviter=user.first_name or 'دوستت', name=user.first_name or 'دوستت')
+        data = banner_values(user, values, campaign)
+        template = banner_template(values['referral_banner_text'])
         markup = banner_keyboard(ctx.bot.username, user.id, values)
         photo = values.get('referral_banner_photo') or ''
+        # شناسه نتیجه مخصوص همین کاربر است تا تلگرام بنر کس دیگری را نشان ندهد.
+        result_id = f'banner_{int(user.id)}'
         for markdown in (True, False):
-            text = render(values['referral_banner_text'], data, markdown)
+            text = render(template, data, markdown)
             parse_mode = 'Markdown' if markdown else None
             if photo and len(text) <= 1024:
                 result = InlineQueryResultCachedPhoto(
-                    id='ref_banner', photo_file_id=photo, title='🎁 بنر دعوت اختصاصی من',
+                    id=result_id, photo_file_id=photo, title='🎁 بنر دعوت اختصاصی من',
                     caption=text, parse_mode=parse_mode, reply_markup=markup,
                 )
             else:
                 result = InlineQueryResultArticle(
-                    id='ref_banner',
+                    id=result_id,
                     title='🎁 ارسال بنر دعوت اختصاصی من',
-                    description='بنر با دکمه قرمز «شرکت در مسابقه جایزه‌دار»',
+                    description=f'بنر با اسم {data["inviter"]} و دکمه قرمز «شرکت در مسابقه جایزه‌دار»',
                     input_message_content=InputTextMessageContent(
                         text[:4096], parse_mode=parse_mode,
                         link_preview_options=_NO_PREVIEW,
@@ -696,6 +741,8 @@ def admin_home_text(values, campaign, stats, top):
         lines.append('⚠️ مسابقه‌ی فعالی نیست — «🏁 شروع مسابقه جدید» را بزن.')
     if values['referral_prize_text'] == rdb.DEFAULT_SETTINGS['referral_prize_text']:
         lines.append('⚠️ متن جوایز هنوز تنظیم نشده (✏️ متن‌ها ← 🎁 متن جوایز).')
+    if INVITER_PLACEHOLDER not in (values.get('referral_banner_text') or ''):
+        lines.append(_BANNER_NO_INVITER_WARNING)
     if enabled:
         lines.append('ℹ️ دکمه منو با اولین نمایش منوی اصلی (مثلاً /start) برای کاربر ظاهر می‌شود.')
     lines.extend([
@@ -771,14 +818,18 @@ def admin_texts_rows():
 
 def admin_texts_text(values):
     photo = 'تنظیم شده ✅' if values.get('referral_banner_photo') else 'ندارد'
+    warning = ''
+    if INVITER_PLACEHOLDER not in (values.get('referral_banner_text') or ''):
+        warning = f'\n\n{_BANNER_NO_INVITER_WARNING}'
     return (
         '✏️ *متن‌ها، جوایز و بنر*\n'
         '━━━━━━━━━━━━━━━\n'
         'هر مورد را بزن؛ مقدار فعلی را می‌بینی و متن جدید را می‌فرستی.\n\n'
         '• بولد: \\*متن\\* · قابل کپی: \\`متن\\`\n'
         '• برای برگرداندن هر مورد به پیش‌فرض، کلمه «پیش‌فرض» را بفرست.\n'
+        '• در متن بنر، {inviter} اسم تلگرام همان کسی است که بنر را می‌فرستد.\n'
         '• بعد از ذخیره، پیش‌نمایش همان متن برایت ارسال می‌شود.\n\n'
-        f'🖼 عکس بنر: {photo}'
+        f'🖼 عکس بنر: {photo}{warning}'
     )
 
 
@@ -994,10 +1045,13 @@ async def _send_preview(query, ctx):
         page_values(user, bot.username, values, campaign, stats),
         page_keyboard(inline_ok),
     )
-    await deliver(bot, user.id, '👀 *پیش‌نمایش ۲ — بنری که برای دوستان ارسال می‌شود:*')
+    await deliver(
+        bot, user.id,
+        '👀 *پیش‌نمایش ۲ — بنر اختصاصی تو* (برای هر کاربر با اسم تلگرام و رفرال خودش ساخته می‌شود):',
+    )
     await send_banner(bot, user.id, user, values, campaign, inline_ok)
     sample = common_values(values, campaign)
-    sample.update(name='علی', inviter=user.first_name or 'رضا', friend='سا•••',
+    sample.update(name='علی', inviter=inviter_name(user), friend='سا•••',
                   count='12', total='30', rank='2',
                   gap=gap_text({'rank': 2, 'count': 12, 'above_count': 14}))
     await deliver(bot, user.id, '👀 *پیش‌نمایش ۳ — خوش‌آمد کاربر دعوت‌شده:*')
@@ -1245,17 +1299,14 @@ async def _apply_input(update, ctx, action, arg):
     back_texts = [[_btn('🔙 متن‌ها', 'radm_texts')], _home_button()]
 
     if action in TEXT_INPUTS:
-        key, title, limit, _hint = TEXT_INPUTS[action]
+        key, title, _limit, _hint = TEXT_INPUTS[action]
         if not raw:
             raise ValueError('فقط متن بفرست.')
         if raw in _DEFAULT_WORDS:
             await asyncio.to_thread(rdb.put, key, '')
             result = f'✅ {title} به پیش‌فرض برگشت.'
         else:
-            if len(raw) > limit:
-                raise ValueError(f'حداکثر {limit} کاراکتر مجاز است (الان {len(raw)}).')
-            if action.startswith('b') and '\n' in raw:
-                raise ValueError('متن دکمه باید یک خط باشد.')
+            check_text_input(action, raw)
             await asyncio.to_thread(rdb.put, key, raw)
             result = f'✅ {title} ذخیره شد.'
         await asyncio.to_thread(log_admin_action, uid, 'referral_text', 'setting', key, 'value changed')
@@ -1266,12 +1317,18 @@ async def _apply_input(update, ctx, action, arg):
             campaign = await asyncio.to_thread(rdb.active_campaign)
             sample = common_values(values, campaign)
             sample.update(
-                name=update.effective_user.first_name or 'علی', inviter='رضا', friend='سا•••',
-                link=rdb.referral_link(ctx.bot.username, uid, 'gift'), count='12', total='30',
-                bought='5', rank='2', gap=gap_text({'rank': 2, 'count': 12, 'above_count': 14}),
+                name=update.effective_user.first_name or 'علی', inviter=inviter_name(update.effective_user),
+                friend='سا•••', link=rdb.referral_link(ctx.bot.username, uid, 'gift'), count='12',
+                total='30', bought='5', rank='2',
+                gap=gap_text({'rank': 2, 'count': 12, 'above_count': 14}),
             )
-            await message.reply_text(result + '\n\n👀 پیش‌نمایش:')
-            await deliver(ctx.bot, uid, values[key], sample)
+            preview = banner_template(values[key]) if action == 'tbanner' else values[key]
+            note = (
+                '\n\n👀 پیش‌نمایش (برای هر کاربر، اسم تلگرام خود همان کاربر به‌جای اسم تو می‌آید):'
+                if action == 'tbanner' else '\n\n👀 پیش‌نمایش:'
+            )
+            await message.reply_text(result + note)
+            await deliver(ctx.bot, uid, preview, sample)
             return '👆 همین‌طور برای کاربران نمایش داده می‌شود.', back_texts
         return result, back_texts
 

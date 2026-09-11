@@ -466,6 +466,77 @@ class WiringTests(unittest.TestCase):
             self.assertEqual(ctx.user_data.get(referral.START_PAYLOAD_KEY), expected, text)
 
 
+class PersonalBannerTests(unittest.TestCase):
+    ACCOUNTS = ((111111, 'Omid', ''), (222222, 'Sara', 'Karimi'), (333333, 'رضا', ''))
+
+    def test_inviter_name_is_each_users_telegram_name(self):
+        self.assertEqual(
+            referral.inviter_name(SimpleNamespace(first_name='Sara', last_name='Karimi', username='s')),
+            'Sara Karimi',
+        )
+        self.assertEqual(
+            referral.inviter_name(SimpleNamespace(first_name='', last_name='', username='@reza')), 'reza',
+        )
+        self.assertEqual(
+            referral.inviter_name(SimpleNamespace(first_name=None, last_name=None, username=None)), 'دوستت',
+        )
+
+    def test_banner_template_always_personal(self):
+        self.assertIn('{inviter}', referral.banner_template('بنر ثابت omid'))
+        self.assertEqual(referral.banner_template('از طرف {inviter}'), 'از طرف {inviter}')
+
+    def test_each_account_gets_its_own_name_and_referral_even_with_stale_text(self):
+        for banner_text in (rdb.DEFAULT_SETTINGS['referral_banner_text'], '🎟 دعوت از طرف *omid*'):
+            values = _enabled_settings(referral_banner_text=banner_text)
+            for uid, first, last in self.ACCOUNTS:
+                bot = _Bot()
+                user = SimpleNamespace(id=uid, first_name=first, last_name=last, username='')
+                asyncio.run(referral.send_banner(bot, uid, user, values, None))
+                text = bot.sent[0][1]
+                self.assertIn(referral.markdown_safe(f'{first} {last}'.strip()), text)
+                for other_uid, other_first, _l in self.ACCOUNTS:
+                    if other_uid != uid and other_first != 'Omid':
+                        self.assertNotIn(other_first, text)
+                button = bot.sent[0][2]['reply_markup'].inline_keyboard[0][0]
+                self.assertEqual(button.url, f'https://t.me/AtomicBot?start=refgift_{uid}')
+
+    def test_inline_banner_is_built_for_the_sender(self):
+        result_ids = set()
+        for uid, first, last in self.ACCOUNTS:
+            captured = {}
+
+            async def answer(results, **kwargs):
+                captured['results'] = results
+                captured['kwargs'] = kwargs
+
+            sender = SimpleNamespace(id=uid, first_name=first, last_name=last, username='')
+            update = SimpleNamespace(inline_query=SimpleNamespace(from_user=sender, answer=answer))
+            ctx = SimpleNamespace(bot=_Bot(), bot_data={})
+            with patch.object(rdb, 'settings', return_value=_enabled_settings()), \
+                    patch.object(rdb, 'active_campaign', return_value=None), \
+                    patch.object(referral, 'is_user_blocked', return_value=False):
+                asyncio.run(referral.referral_inline_query(update, ctx))
+            result = captured['results'][0]
+            self.assertIn(referral.markdown_safe(f'{first} {last}'.strip()),
+                          result.input_message_content.message_text)
+            self.assertEqual(result.reply_markup.inline_keyboard[0][0].url,
+                             f'https://t.me/AtomicBot?start=refgift_{uid}')
+            self.assertTrue(captured['kwargs'].get('is_personal'))
+            self.assertEqual(captured['kwargs'].get('cache_time'), 0)
+            result_ids.add(result.id)
+        self.assertEqual(len(result_ids), len(self.ACCOUNTS))
+
+    def test_admin_cannot_hardcode_a_name_into_the_banner(self):
+        with self.assertRaises(ValueError):
+            referral.check_text_input('tbanner', '🎟 دعوت از طرف omid')
+        referral.check_text_input('tbanner', '🎟 دعوت از طرف {inviter}')
+        with self.assertRaises(ValueError):
+            referral.check_text_input('bgift', 'دو\nخط')
+        warn_values = _enabled_settings(referral_banner_text='بنر omid')
+        self.assertIn('{inviter}', referral.admin_texts_text(warn_values))
+        self.assertNotIn('⚠️', referral.admin_texts_text(_enabled_settings()))
+
+
 class StartPayloadFlowTests(unittest.TestCase):
     def _run(self, *, is_new, payload, values):
         bot = _Bot()
