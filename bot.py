@@ -12,8 +12,6 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'atomic_bot.settings')
 import django
 django.setup()
 
-__path__ = [str(Path(__file__).parent / 'bot')]
-
 import button_style  # noqa: F401 — قبل از ساخت دکمه‌ها
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType

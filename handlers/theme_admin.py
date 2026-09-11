@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 from admin_notify import is_admin
 from game import emoji, button_emoji
-from bot.buttons import btn
+from buttons import btn
 
 _LOG = logging.getLogger(__name__)
 
