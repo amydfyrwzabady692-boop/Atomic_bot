@@ -84,9 +84,9 @@ def _patch_init(cls):
             t_str = _LEADING_EMOJI.sub('', t_str, count=1).strip()
             text = t_str
 
-        # For InlineKeyboardButton: auto-lookup premium emoji if unthemed and text has leading emoji
+        # Auto-lookup premium emoji if unthemed and text has leading emoji
         m = _LEADING_EMOJI.match(t_str)
-        if not cid and m and cls is InlineKeyboardButton:
+        if not cid and m:
             try:
                 from game import emoji
                 norm_g = emoji._norm_glyph(m.group().strip())
@@ -94,7 +94,7 @@ def _patch_init(cls):
             except Exception:
                 pass
 
-        if cid and cls is InlineKeyboardButton:
+        if cid:
             if m:
                 stripped = _LEADING_EMOJI.sub('', t_str, count=1)
                 if stripped.strip():
@@ -107,12 +107,8 @@ def _patch_init(cls):
             else:
                 icon_custom_emoji_id = str(cid)
                 extra['icon_custom_emoji_id'] = str(cid)
-        elif icon_custom_emoji_id and cls is InlineKeyboardButton:
+        elif icon_custom_emoji_id:
             extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
-        elif cls is KeyboardButton:
-            # KeyboardButton does not support icon_custom_emoji_id; keep clean
-            icon_custom_emoji_id = None
-            extra.pop('icon_custom_emoji_id', None)
 
         if extra:
             kwargs['api_kwargs'] = extra
