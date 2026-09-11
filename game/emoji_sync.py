@@ -41,19 +41,90 @@ from game.button_emoji import (
 
 logger = logging.getLogger(__name__)
 
-KNOWN_PACK_SEEDS = [
-    "CenterOfEmoji686499",
-    "Emoji004_1912R",
-    "Emoji_fan37_by_TgEmodziBot",
+PACK_PRIORITY = [
+    "tgiosicons",                # Primary Apple/iOS clean icons (399 items)
+    "mamali01_by_TgEmojis_bot",  # Secondary glowing 3D icons (Free Fire gems, gold coins, crowns)
     "IconsInTg",
-    "MeowieQ",
-    "NewsEmoji",
-    "Proxy_PJ2",
-    "mamali01_by_TgEmojis_bot",
+    "CenterOfEmoji686499",
     "pack_90fb6_by_TgEmojis_bot",
     "randomRedpack",
-    "tgiosicons",
+    "Emoji004_1912R",
+    "Proxy_PJ2",
+    "NewsEmoji",
+    "MeowieQ",
+    "Emoji_fan37_by_TgEmodziBot",
 ]
+
+KNOWN_PACK_SEEDS = PACK_PRIORITY
+
+# Curated high-priority pins for core main menu and action buttons to guarantee visual neatness & unity
+CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
+    # 1. محصولات فری‌فایر (Free Fire) - Dark Apple Gamepad Controller from tgiosicons
+    "btn_menu_ff": ("5938413566624272793", "🎮"),
+    "b.menu.ff": ("5938413566624272793", "🎮"),
+
+    # 2. کیف پول (Wallet) - Clean Apple Money Bag from tgiosicons
+    "btn_menu_wal": ("5778421276024509124", "💰"),
+    "b.menu.wal": ("5778421276024509124", "💰"),
+
+    # 3. حساب من (Account) - Clean Apple User Profile Silhouette from tgiosicons
+    "btn_menu_acc": ("5767278056389480519", "👤"),
+    "b.menu.acc": ("5767278056389480519", "👤"),
+
+    # 4. پک سنس (Sense Pack) - Crisp Apple Bullseye Target from tgiosicons
+    "btn_menu_se": ("6032949275732742941", "🎯"),
+    "b.menu.se": ("6032949275732742941", "🎯"),
+
+    # 5. دعوت دوستان و جایزه (Referral & Prize) - Apple Community/Friends from tgiosicons
+    "btn_menu_ref": ("6032609071373226027", "👥"),
+    "b.menu.ref": ("6032609071373226027", "👥"),
+
+    # Harmonize rest of main menu with tgiosicons (replacing old crowns & mismatched icons)
+    "btn_menu_ord": ("5778672437122045013", "📦"),
+    "b.menu.ord": ("5778672437122045013", "📦"),
+    "btn_menu_gc": ("5773677501825945508", "🎁"),
+    "b.menu.gc": ("5773677501825945508", "🎁"),
+    "btn_menu_stars": ("5767199127775481841", "⭐"),
+    "b.menu.stars": ("5767199127775481841", "⭐"),
+    "btn_menu_su": ("6030784887093464891", "💬"),
+    "b.menu.su": ("6030784887093464891", "💬"),
+
+    # Free Fire gem buttons
+    "btn_gems_id": ("4906778227604719080", "💎"),
+    "b.gems.id": ("4906778227604719080", "💎"),
+    "btn_gems_cr": ("5899838712992240333", "🔐"),
+    "b.gems.cr": ("5899838712992240333", "🔐"),
+    "b.nav.home": ("6008131872364694876", "🏠"),
+}
+
+CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
+    "game": ("5938413566624272793", "🎮"),
+    "wallet": ("5778421276024509124", "💰"),
+    "user": ("5767278056389480519", "👤"),
+    "sense": ("6032949275732742941", "🎯"),
+    "referral": ("6032609071373226027", "👥"),
+    "order": ("5778672437122045013", "📦"),
+    "giftcard": ("5773677501825945508", "🎁"),
+    "star": ("5767199127775481841", "⭐"),
+    "gem": ("4906778227604719080", "💎"),
+    "support": ("6030784887093464891", "💬"),
+}
+
+CURATED_APPEARANCE_HEADERS: dict[str, tuple[str, str]] = {
+    "t.sense.hdr": ("6032949275732742941", "🎯"),
+    "t.sense.pc": ("6032949275732742941", "🎯"),
+    "t.sense.mob": ("5005900446389241485", "📱"),
+    "t.account.hdr": ("5767278056389480519", "👤"),
+    "t.orders.hdr": ("5778672437122045013", "📦"),
+    "t.orders.empty": ("5778672437122045013", "📦"),
+    "t.gc.hdr": ("5773677501825945508", "🎁"),
+    "t.ff.hdr": ("5938413566624272793", "🎮"),
+    "t.wallet.hdr": ("5778421276024509124", "💰"),
+    "t.gems.hdr": ("4906778227604719080", "💎"),
+    "t.creds.hdr": ("5899838712992240333", "🔐"),
+    "t.stars.hdr": ("5767199127775481841", "⭐"),
+    "t.support": ("6030784887093464891", "💬"),
+}
 
 _VS16 = "\ufe0f"
 
@@ -214,7 +285,12 @@ def discover_sticker_set_names(token: str) -> list[str]:
             except Exception as e:
                 logger.warning("getCustomEmojiStickers error for chunk: %s", e)
 
-    return sorted(set_names)
+    def _pack_sort_key(name: str) -> tuple[int, str]:
+        if name in PACK_PRIORITY:
+            return (PACK_PRIORITY.index(name), name)
+        return (len(PACK_PRIORITY), name)
+
+    return sorted(set_names, key=_pack_sort_key)
 
 
 def fetch_pack_emoji_map(set_names: list[str], token: str) -> dict[str, str]:
@@ -264,12 +340,22 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
             "sets": len(set_names),
         }
 
-    # 3. Auto-populate buttons
+    # 2.5 Apply curated high-priority pins
     existing_btn = {o.key: o for o in ButtonEmojiOverride.objects.all()}
+    existing_txt = {o.key: o for o in EmojiOverride.objects.exclude(key__startswith=_GLYPH_PREFIX)}
     btn_done = 0
     btn_skipped = 0
     btn_unmatched = []
 
+    for pin_k, (pin_cid, pin_ph) in CURATED_BUTTON_PINS.items():
+        set_button_emoji(pin_k, pin_cid, pin_ph)
+        existing_btn[pin_k] = None
+
+    for pin_k, (pin_cid, pin_ph) in CURATED_TEXT_PINS.items():
+        set_emoji(pin_k, pin_cid, pin_ph)
+        existing_txt[pin_k] = None
+
+    # 3. Auto-populate buttons
     for key, (lbl, default_e, _cat) in BUTTON_EMOJI_DEFS.items():
         if key in existing_btn and not force:
             btn_skipped += 1
@@ -295,7 +381,6 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
             btn_unmatched.append(key)
 
     # 4. Auto-populate text / message emojis
-    existing_txt = {o.key: o for o in EmojiOverride.objects.exclude(key__startswith=_GLYPH_PREFIX)}
     txt_done = 0
     txt_skipped = 0
     txt_unmatched = []
@@ -339,6 +424,15 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
                             (key, override.custom_emoji_id, override.placeholder or default_e)
                         )
                         app_synced += 1
+
+                for hkey, (hcid, hchar) in CURATED_APPEARANCE_HEADERS.items():
+                    cur.execute(
+                        'INSERT INTO "Appearance" ("Key", "EmojiId", "EmojiChar") '
+                        'VALUES (%s, %s, %s) '
+                        'ON CONFLICT ("Key") DO UPDATE SET "EmojiId"=EXCLUDED."EmojiId", "EmojiChar"=EXCLUDED."EmojiChar"',
+                        (hkey, hcid, hchar)
+                    )
+                    app_synced += 1
                 conn.commit()
         except Exception as e:
             logger.warning("Appearance sync error: %s", e)
