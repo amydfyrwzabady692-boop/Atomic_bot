@@ -79,6 +79,7 @@ def _main_hub_kb(target_type: str = "text") -> InlineKeyboardMarkup:
         ])
 
     actions = [
+        [InlineKeyboardButton("📦 استخراج و ست خودکار تمام پک‌ها (Auto-Sync Packs)", callback_data="th_sync")],
         [InlineKeyboardButton("⚡ تخصیص خودکار دسته‌ای (Bulk Auto-Assign)", callback_data=f"th_bulk:{target_type}")],
         [InlineKeyboardButton("🔄 بروزرسانی حافظه کش", callback_data=f"th_ref:{target_type}")],
         [InlineKeyboardButton("🔙 پنل اصلی ادمین", callback_data="adm_home")],
@@ -258,6 +259,33 @@ async def theme_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 انصراف", callback_data=f"th_home:{target_type}")]
         ])
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=cancel_kb)
+
+    elif data == "th_sync":
+        await query.answer("⏳ در حال استخراج پک‌ها و همگام‌سازی خودکار...")
+        loading_text = (
+            "⏳ <b>در حال استخراج استیکرپک‌ها و اعمال خودکار تم‌ها...</b>\n"
+            "ربات در حال واکشی پک‌های ایموجی تلگرام است. لطفاً چند لحظه صبر کنید..."
+        )
+        await query.edit_message_text(loading_text, parse_mode="HTML")
+        from game.emoji_sync import sync_all_emojis_from_packs
+        res = await asyncio.to_thread(sync_all_emojis_from_packs, force=False)
+        if res.get("success"):
+            report = (
+                "🎉 <b>همگام‌سازی خودکار تمام پک‌ها با موفقیت انجام شد!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 تعداد استیکرپک‌های کشف‌شده: <b>{res['sets']}</b>\n"
+                f"🎨 مجموع کل ایموجی‌ها در پک‌ها: <b>{res['total_emojis_in_packs']}</b>\n\n"
+                f"🔘 <b>آیکون دکمه‌ها:</b> {res['buttons_assigned']} ست شد ({res['buttons_skipped']} قبلاً ست شده بود)\n"
+                f"📝 <b>ایموجی‌های متن:</b> {res['text_assigned']} ست شد ({res['text_skipped']} قبلاً ست شده بود)\n"
+                f"✨ <b>تم‌های سراسری متون:</b> {res['glyphs_assigned']} تم لغوی فعال شد\n"
+                f"🔄 جداول Appearance و کش‌ها به طور کامل همگام شدند."
+            )
+        else:
+            report = f"❌ خطا در همگام‌سازی خودکار: {res.get('error')}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 بازگشت به منوی تم‌ها", callback_data="th_home:text")]
+        ])
+        await query.edit_message_text(report, parse_mode="HTML", reply_markup=kb)
 
 
 async def handle_theme_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:

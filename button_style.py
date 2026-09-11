@@ -1,7 +1,12 @@
-"""دکمه‌های رنگی تلگرام (Bot API: style = primary / success / danger)."""
+import re
 from telegram import InlineKeyboardButton, KeyboardButton
 
 _PATCHED = False
+
+_LEADING_EMOJI = re.compile(
+    r"^\s*[\U0001F000-\U0001FAFF☀-➿←-⇿⬀-⯿⌀-⏿]"
+    r"[️\U0001F000-\U0001FAFF☀-➿⬀-⯿]*\s*"
+)
 
 # تلگرام فقط همین سه رنگ را دارد؛ هر دکمه یکی می‌گیرد.
 # سبز = خرید/پرداخت/تأیید | قرمز = انصراف/حذف/هشدار | آبی = بقیه
@@ -56,6 +61,11 @@ def _inject_style(kwargs, style):
     return kwargs
 
 
+_DUPLICATE_LEADING_EMOJI = re.compile(
+    r"^(\s*[\U0001F000-\U0001FAFF☀-➿←-⇿⬀-⯿⌀-⏿][️\U0001F000-\U0001FAFF☀-➿⬀-⯿]*\s*){2,}"
+)
+
+
 def _patch_init(cls):
     orig = cls.__init__
     try:
@@ -65,10 +75,48 @@ def _patch_init(cls):
 
     def wrapped(self, text, *args, style=None, icon_custom_emoji_id=None, **kwargs):
         guessed = style or guess_style(text, kwargs.get('callback_data')) or 'primary'
-        if icon_custom_emoji_id:
-            extra = dict(kwargs.get('api_kwargs') or {})
+        extra = dict(kwargs.get('api_kwargs') or {})
+        cid = icon_custom_emoji_id or extra.get('icon_custom_emoji_id')
+        t_str = str(text or '')
+
+        # Deduplicate any repeated consecutive emojis at text start (e.g. '🎮 🎮' or '⭐ 💎')
+        if _DUPLICATE_LEADING_EMOJI.match(t_str):
+            t_str = _LEADING_EMOJI.sub('', t_str, count=1).strip()
+            text = t_str
+
+        # For InlineKeyboardButton: auto-lookup premium emoji if unthemed and text has leading emoji
+        m = _LEADING_EMOJI.match(t_str)
+        if not cid and m and cls is InlineKeyboardButton:
+            try:
+                from game import emoji
+                norm_g = emoji._norm_glyph(m.group().strip())
+                cid = emoji._glyph_map.get(norm_g)
+            except Exception:
+                pass
+
+        if cid and cls is InlineKeyboardButton:
+            if m:
+                stripped = _LEADING_EMOJI.sub('', t_str, count=1)
+                if stripped.strip():
+                    text = stripped
+                    icon_custom_emoji_id = str(cid)
+                    extra['icon_custom_emoji_id'] = str(cid)
+                else:
+                    icon_custom_emoji_id = None
+                    extra.pop('icon_custom_emoji_id', None)
+            else:
+                icon_custom_emoji_id = str(cid)
+                extra['icon_custom_emoji_id'] = str(cid)
+        elif icon_custom_emoji_id and cls is InlineKeyboardButton:
             extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
+        elif cls is KeyboardButton:
+            # KeyboardButton does not support icon_custom_emoji_id; keep clean
+            icon_custom_emoji_id = None
+            extra.pop('icon_custom_emoji_id', None)
+
+        if extra:
             kwargs['api_kwargs'] = extra
+
         if accepts_style:
             orig(self, text, *args, style=guessed, **kwargs)
             return

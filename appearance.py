@@ -385,7 +385,17 @@ def user_label(key, default=None):
 
 def user_emoji(key):
     row = get(key) or {}
-    return str(row.get('emoji_id') or '')
+    val = str(row.get('emoji_id') or '')
+    if val:
+        return val
+    try:
+        from game import button_emoji
+        b_icon = button_emoji.get_button_icon(key)
+        if b_icon:
+            return b_icon
+    except Exception:
+        pass
+    return ''
 
 
 def user_emoji_char(key):
@@ -538,14 +548,32 @@ def message_kwargs(key, default=None, parse_mode='Markdown', **fmt):
     return with_emoji(key, text, parse_mode=parse_mode)
 
 
+import re
+
+_LEADING_EMOJI_RE = re.compile(
+    r"^\s*[\U0001F000-\U0001FAFF☀-➿←-⇿⬀-⯿⌀-⏿]"
+    r"[️\U0001F000-\U0001FAFF☀-➿⬀-⯿]*\s*"
+)
+
+
+def _strip_emoji(t):
+    return _LEADING_EMOJI_RE.sub("", str(t or "")).strip()
+
+
 def with_emoji(key, text, parse_mode='Markdown'):
     out = {'text': text}
     emoji_id = user_emoji(key)
     if emoji_id:
         prefix = user_emoji_char(key) or '⭐'
-        if not str(text).startswith(prefix):
-            text = f'{prefix} {text}'
-        out['text'] = text
+        t_str = str(text or '')
+        # Deduplicate: if text already starts with a unicode emoji, strip it
+        if _LEADING_EMOJI_RE.match(t_str):
+            stripped = _strip_emoji(t_str)
+            if stripped:
+                t_str = stripped
+        if not t_str.startswith(prefix):
+            t_str = f'{prefix} {t_str}'
+        out['text'] = t_str
         out['entities'] = [
             MessageEntity(
                 type='custom_emoji',
@@ -560,12 +588,16 @@ def with_emoji(key, text, parse_mode='Markdown'):
 
 
 def menu_action(text):
-    """متن منوی پایین را به اکشن پایدار نگاشت می‌کند تا منطق ربات نشکند."""
+    """متن منوی پایین را به اکشن پایدار نگاشت می‌کند تا منطق ربات نشکند (حتی با حذف ایموجی تکراری)."""
     raw = (text or '').strip()
+    raw_s = _strip_emoji(raw)
     if raw in _LEGACY_MENU:
         return _LEGACY_MENU[raw]
     for key, action in MENU_KEYS.items():
-        if raw == DEFAULTS.get(key) or raw == user_label(key, DEFAULTS.get(key)):
+        cand = user_label(key, DEFAULTS.get(key))
+        if raw == DEFAULTS.get(key) or raw == cand:
+            return action
+        if raw_s and (raw_s == _strip_emoji(DEFAULTS.get(key)) or raw_s == _strip_emoji(cand)):
             return action
     return None
 
@@ -575,6 +607,8 @@ def all_menu_labels():
     for key in MENU_KEYS:
         labels.add(DEFAULTS[key])
         labels.add(user_label(key, DEFAULTS[key]))
+        labels.add(_strip_emoji(DEFAULTS[key]))
+        labels.add(_strip_emoji(user_label(key, DEFAULTS[key])))
     return labels
 
 

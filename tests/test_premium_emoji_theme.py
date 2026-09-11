@@ -13,7 +13,7 @@ from telegram.ext import ExtBot
 
 from game.models import EmojiOverride, ButtonEmojiOverride
 from game import emoji, button_emoji
-from bot.buttons import btn, back_btn, _LEADING_EMOJI
+from buttons import btn, back_btn, _LEADING_EMOJI
 from handlers import theme_admin
 from bot import _install_premium_glyph_hook
 
@@ -229,6 +229,98 @@ class AdminExtractionTests(unittest.TestCase):
         self.assertEqual(all_emojis[0][0], "cid_1")
         self.assertEqual(all_emojis[1][0], "cid_2")
         self.assertEqual(all_emojis[2][0], "cid_3")
+
+
+class PackSyncAndDuplicateStrippingTests(unittest.TestCase):
+    def setUp(self):
+        EmojiOverride.objects.all().delete()
+        ButtonEmojiOverride.objects.all().delete()
+        emoji.refresh_cache()
+        button_emoji.refresh_cache()
+
+    def tearDown(self):
+        EmojiOverride.objects.all().delete()
+        ButtonEmojiOverride.objects.all().delete()
+        emoji.refresh_cache()
+        button_emoji.refresh_cache()
+
+    def test_button_style_auto_themes_and_strips_duplicate(self):
+        # When a glyph is themed in emoji._glyph_map
+        emoji.set_emoji("gem", "cid_gem_123", "💎")
+        
+        # Creating an InlineKeyboardButton with leading 💎 should auto-assign cid and strip 💎
+        b = InlineKeyboardButton(text="💎 خرید بسته جم", callback_data="buy_gem")
+        self.assertEqual(b.text, "خرید بسته جم")
+        extra = b.api_kwargs or {}
+        self.assertEqual(extra.get("icon_custom_emoji_id"), "cid_gem_123")
+
+    def test_button_style_preserves_emoji_only_label(self):
+        emoji.set_emoji("gem", "cid_gem_123", "💎")
+        # Creating a button that is ONLY an emoji
+        b = InlineKeyboardButton(text="💎", callback_data="only_gem")
+        self.assertEqual(b.text, "💎")
+
+    def test_button_style_deduplicates_repeated_emojis(self):
+        b = InlineKeyboardButton(text="🎮 🎮 محصولات", callback_data="ff")
+        # Repeated emoji at start is deduplicated
+        self.assertNotIn("🎮 🎮", b.text)
+
+    def test_button_aliases_and_glyph_fallback(self):
+        # b.menu.ff aliases to btn_menu_ff
+        button_emoji.set_button_emoji("btn_menu_ff", "cid_ff_999", "🎮")
+        self.assertEqual(button_emoji.get_button_icon("b.menu.ff"), "cid_ff_999")
+        self.assertEqual(button_emoji.get_button_icon("btn_menu_ff"), "cid_ff_999")
+
+        # Unthemed button falls back to themed default glyph
+        emoji.set_emoji("coin", "cid_coin_777", "💰")
+        # b.menu.wal default is 💰
+        self.assertEqual(button_emoji.get_button_icon("b.menu.wal"), "cid_coin_777")
+
+    def test_appearance_with_emoji_deduplicates(self):
+        import appearance
+        # If key has custom emoji
+        button_emoji.set_button_emoji("b.menu.ff", "cid_ff_999", "🎮")
+        out = appearance.with_emoji("b.menu.ff", "🎮 ثبت سفارش فری فایر")
+        # Prefix should not be added alongside existing leading emoji
+        self.assertFalse(out["text"].startswith("⭐ 🎮"))
+        self.assertTrue(out["text"].startswith("⭐ ثبت سفارش فری فایر"))
+
+    @patch("game.emoji_sync._call_telegram_api")
+    def test_pack_sync_all_emojis(self, mock_api):
+        # Mock getCustomEmojiStickers and getStickerSet
+        def side_effect(method, payload, token):
+            if method == "getCustomEmojiStickers":
+                return {"ok": True, "result": [{"set_name": "TestPack"}]}
+            elif method == "getStickerSet":
+                return {
+                    "ok": True,
+                    "result": {
+                        "name": "TestPack",
+                        "title": "Test Pack",
+                        "stickers": [
+                            {"emoji": "💎", "custom_emoji_id": "cid_gem_pack"},
+                            {"emoji": "🎮", "custom_emoji_id": "cid_game_pack"},
+                            {"emoji": "💰", "custom_emoji_id": "cid_coin_pack"},
+                            {"emoji": "✅", "custom_emoji_id": "cid_confirm_pack"},
+                            {"emoji": "❌", "custom_emoji_id": "cid_cancel_pack"},
+                        ]
+                    }
+                }
+            return {"ok": False}
+
+        mock_api.side_effect = side_effect
+
+        from game import emoji_sync
+        res = emoji_sync.sync_all_emojis_from_packs(force=True, bot_token="fake_token")
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(res["buttons_assigned"], 5)
+        self.assertGreaterEqual(res["text_assigned"], 3)
+        self.assertGreaterEqual(res["glyphs_assigned"], 5)
+
+        # Check that cache has the synced custom emoji IDs
+        self.assertEqual(button_emoji.get_button_icon("btn_menu_ff"), "cid_game_pack")
+        self.assertEqual(emoji.get_emoji_id("gem"), "cid_gem_pack")
+        self.assertEqual(emoji.get_emoji_id("g:💎"), "cid_gem_pack")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 import re
-from game.models import EmojiOverride
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from game.models import EmojiOverride
 
 GLYPH_SKIP = {"⚪", "🔵", "🟣", "🟡", "🔴", "▓", "░", "•", "·", "━"}
 _GLYPH_PREFIX = "g:"
@@ -63,10 +66,16 @@ def _norm_glyph(g: str) -> str:
     return g.replace("️", "")   # drop U+FE0F so ⚡️ == ⚡
 
 
+def _get_model():
+    from game.models import EmojiOverride
+    return EmojiOverride
+
+
 def _load_cache() -> dict:
     global _cache
     try:
-        _cache = {o.key: o for o in EmojiOverride.objects.all()}
+        model = _get_model()
+        _cache = {o.key: o for o in model.objects.all()}
     except Exception:
         _cache = {}
     return _cache
@@ -75,9 +84,10 @@ def _load_cache() -> dict:
 def _load_glyph_map() -> dict:
     global _glyph_map, _glyph_re
     try:
+        model = _get_model()
         gm = {
             _norm_glyph(o.key[len(_GLYPH_PREFIX):]): o.custom_emoji_id
-            for o in EmojiOverride.objects.filter(key__startswith=_GLYPH_PREFIX)
+            for o in model.objects.filter(key__startswith=_GLYPH_PREFIX)
             if o.key[len(_GLYPH_PREFIX):] not in GLYPH_SKIP
         }
     except Exception:
@@ -144,12 +154,13 @@ def _key_glyphs(key: str, placeholder: str) -> set[str]:
 
 
 def set_emoji(key: str, custom_emoji_id: str, placeholder: str) -> None:
-    EmojiOverride.objects.update_or_create(
+    model = _get_model()
+    model.objects.update_or_create(
         key=key,
         defaults={"custom_emoji_id": custom_emoji_id, "placeholder": placeholder}
     )
     for g in _key_glyphs(key, placeholder):   # couple the literal glyph(s) too
-        EmojiOverride.objects.update_or_create(
+        model.objects.update_or_create(
             key=f"{_GLYPH_PREFIX}{g}",
             defaults={"custom_emoji_id": custom_emoji_id, "placeholder": g}
         )
@@ -157,15 +168,53 @@ def set_emoji(key: str, custom_emoji_id: str, placeholder: str) -> None:
 
 
 def clear_emoji(key: str) -> bool:
-    existing = EmojiOverride.objects.filter(key=key).first()
+    model = _get_model()
+    existing = model.objects.filter(key=key).first()
     ph = existing.placeholder if existing else ""
-    deleted, _ = EmojiOverride.objects.filter(key=key).delete()
+    deleted, _ = model.objects.filter(key=key).delete()
     gk = [f"{_GLYPH_PREFIX}{g}" for g in _key_glyphs(key, ph)]
     if gk:
-        EmojiOverride.objects.filter(key__in=gk).delete()
+        model.objects.filter(key__in=gk).delete()
     refresh_cache()
     return deleted > 0
 
 
+def get_emoji_id(key: str) -> str | None:
+    """Return custom_emoji_id for key or glyph (or g:<glyph>), or None."""
+    o = _cache.get(key)
+    if o is not None:
+        return o.custom_emoji_id
+    norm = _norm_glyph(key)
+    return _glyph_map.get(norm)
+
+
+def set_glyphs_bulk(glyph_map: dict[str, str]) -> int:
+    """Bulk register literal glyphs into EmojiOverride (g:<glyph> -> custom_emoji_id)."""
+    model = _get_model()
+    to_create = []
+    to_update = []
+    existing = {o.key: o for o in model.objects.filter(key__startswith=_GLYPH_PREFIX)}
+    for g, cid in glyph_map.items():
+        norm = _norm_glyph(g)
+        if not norm or norm in GLYPH_SKIP:
+            continue
+        key = f"{_GLYPH_PREFIX}{norm}"
+        if key in existing:
+            o = existing[key]
+            if o.custom_emoji_id != cid:
+                o.custom_emoji_id = cid
+                o.placeholder = norm
+                to_update.append(o)
+        else:
+            to_create.append(model(key=key, custom_emoji_id=cid, placeholder=norm))
+    if to_create:
+        model.objects.bulk_create(to_create, ignore_conflicts=True)
+    if to_update:
+        model.objects.bulk_update(to_update, ["custom_emoji_id", "placeholder"])
+    refresh_cache()
+    return len(existing) + len(to_create)
+
+
 def list_overrides() -> list:
-    return list(EmojiOverride.objects.order_by("key"))
+    model = _get_model()
+    return list(model.objects.order_by("key"))

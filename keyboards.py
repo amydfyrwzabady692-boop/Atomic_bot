@@ -4,10 +4,18 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
 import appearance
 
 
+from buttons import _LEADING_EMOJI
+
+
 def _menu_btn(text, style=None, icon_custom_emoji_id=None):
     kwargs = {}
     extra = {}
     if icon_custom_emoji_id:
+        t_str = str(text or '')
+        if _LEADING_EMOJI.match(t_str):
+            stripped = _LEADING_EMOJI.sub('', t_str, count=1)
+            if stripped.strip():
+                text = stripped
         extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
     if style:
         try:
@@ -28,16 +36,24 @@ def _menu_btn(text, style=None, icon_custom_emoji_id=None):
 
 
 def _kbtn(key, default, style=None):
+    from game import button_emoji
+    icon = appearance.user_emoji(key) or button_emoji.get_button_icon(key) or None
     return _menu_btn(
         appearance.user_label(key, default),
         style,
-        appearance.user_emoji(key) or None,
+        icon,
     )
 
 
 def _inline_btn(text, callback_data, icon_custom_emoji_id=None):
-    """دکمه اینلاین؛ ایموجی پریمیوم را بدون شکستن PTB قدیمی پاس می‌دهد."""
+    """دکمه اینلاین؛ ایموجی پریمیوم را بدون شکستن PTB قدیمی پاس می‌دهد و از ایموجی تکراری جلوگیری می‌کند."""
     icon = str(icon_custom_emoji_id or '') or None
+    if icon:
+        t_str = str(text or '')
+        if _LEADING_EMOJI.match(t_str):
+            stripped = _LEADING_EMOJI.sub('', t_str, count=1)
+            if stripped.strip():
+                text = stripped
     try:
         if icon:
             return InlineKeyboardButton(
@@ -52,10 +68,12 @@ def _inline_btn(text, callback_data, icon_custom_emoji_id=None):
 
 
 def _ibtn(key, default, callback_data):
+    from game import button_emoji
+    icon = appearance.user_emoji(key) or button_emoji.get_button_icon(key) or None
     return _inline_btn(
         appearance.user_label(key, default),
         callback_data,
-        appearance.user_emoji(key),
+        icon,
     )
 
 GEM_PRODUCTS_PER_PAGE = 8

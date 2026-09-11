@@ -1,6 +1,5 @@
 import re
 from telegram import InlineKeyboardButton
-from game.button_emoji import get_button_icon, get_button_label_emoji
 
 _LEADING_EMOJI = re.compile(
     r"^\s*[\U0001F000-\U0001FAFF☀-➿←-⇿⬀-⯿⌀-⏿]"
@@ -13,6 +12,7 @@ def btn(label: str, *, emoji_key: str | None = None, style: str | None = None, *
     safely strips duplicate leading emoji without creating empty labels, and falls back
     to default unicode emoji prefix if unthemed."""
     if emoji_key is not None:
+        from game.button_emoji import get_button_icon, get_button_label_emoji
         icon = get_button_icon(emoji_key)
         label_has_emoji = bool(_LEADING_EMOJI.match(label))
         if icon is not None:
