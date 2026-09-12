@@ -37,7 +37,7 @@ def _menu_btn(text, style=None, icon_custom_emoji_id=None):
 
 def _kbtn(key, default, style=None):
     from game import button_emoji
-    icon = appearance.user_emoji(key) or button_emoji.get_button_icon(key) or None
+    icon = button_emoji.get_button_icon(key) or appearance.user_emoji(key) or None
     return _menu_btn(
         appearance.user_label(key, default),
         style,
@@ -69,7 +69,7 @@ def _inline_btn(text, callback_data, icon_custom_emoji_id=None):
 
 def _ibtn(key, default, callback_data):
     from game import button_emoji
-    icon = appearance.user_emoji(key) or button_emoji.get_button_icon(key) or None
+    icon = button_emoji.get_button_icon(key) or appearance.user_emoji(key) or None
     return _inline_btn(
         appearance.user_label(key, default),
         callback_data,

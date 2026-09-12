@@ -384,10 +384,6 @@ def user_label(key, default=None):
 
 
 def user_emoji(key):
-    row = get(key) or {}
-    val = str(row.get('emoji_id') or '')
-    if val:
-        return val
     try:
         from game import button_emoji
         b_icon = button_emoji.get_button_icon(key)
@@ -395,6 +391,10 @@ def user_emoji(key):
             return b_icon
     except Exception:
         pass
+    row = get(key) or {}
+    val = str(row.get('emoji_id') or '')
+    if val:
+        return val
     return ''
 
 

@@ -3838,7 +3838,8 @@ def ensure_admin_schema():
             )
         conn.commit()
     _apply_giftcard_profit_ten_once()
-    _seed_catalog_premium_emoji()
+    # Note: Telegram Premium theming is handled comprehensively by game.emoji_sync;
+    # legacy seeder disabled to avoid overwriting curated icons with fallback crowns.
 
 
 def _apply_giftcard_profit_ten_once():

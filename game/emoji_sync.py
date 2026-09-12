@@ -75,9 +75,9 @@ CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
     "btn_menu_se": ("6032949275732742941", "🎯"),
     "b.menu.se": ("6032949275732742941", "🎯"),
 
-    # 5. دعوت دوستان و جایزه (Referral & Prize) - Apple Community/Friends from tgiosicons
-    "btn_menu_ref": ("6032609071373226027", "👥"),
-    "b.menu.ref": ("6032609071373226027", "👥"),
+    # 5. دعوت دوستان و جایزه (Referral & Prize) - 3D Gift Box from tgiosicons
+    "btn_menu_ref": ("5773677501825945508", "🎁"),
+    "b.menu.ref": ("5773677501825945508", "🎁"),
 
     # Harmonize rest of main menu with tgiosicons (replacing old crowns & mismatched icons)
     "btn_menu_ord": ("5778672437122045013", "📦"),
@@ -88,6 +88,8 @@ CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
     "b.menu.stars": ("5767199127775481841", "⭐"),
     "btn_menu_su": ("6030784887093464891", "💬"),
     "b.menu.su": ("6030784887093464891", "💬"),
+    "btn_menu_st": ("5888620056551625531", "🛍"),
+    "b.menu.st": ("5888620056551625531", "🛍"),
 
     # Free Fire gem buttons
     "btn_gems_id": ("4906778227604719080", "💎"),
@@ -102,7 +104,7 @@ CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
     "wallet": ("5778421276024509124", "💰"),
     "user": ("5767278056389480519", "👤"),
     "sense": ("6032949275732742941", "🎯"),
-    "referral": ("6032609071373226027", "👥"),
+    "referral": ("5773677501825945508", "🎁"),
     "order": ("5778672437122045013", "📦"),
     "giftcard": ("5773677501825945508", "🎁"),
     "star": ("5767199127775481841", "⭐"),
@@ -111,6 +113,7 @@ CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
 }
 
 CURATED_APPEARANCE_HEADERS: dict[str, tuple[str, str]] = {
+    "t.welcome": ("5938413566624272793", "🎮"),
     "t.sense.hdr": ("6032949275732742941", "🎯"),
     "t.sense.pc": ("6032949275732742941", "🎯"),
     "t.sense.mob": ("5005900446389241485", "📱"),
