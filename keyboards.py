@@ -136,7 +136,7 @@ def giftcard_menu_keyboard(catalog=None):
             f'gc_b_{brand}',
             appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
         )])
-    rows.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    rows.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(rows)
 
 
@@ -202,7 +202,7 @@ def stars_list_keyboard(packages, page=1, per_page=8):
             for number in range(1, total_pages + 1)
         ]
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    buttons.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -230,7 +230,7 @@ def stars_uid_keyboard(own_username=''):
 def stars_cancel_keyboard():
     return InlineKeyboardMarkup([
         [_ibtn('b.stars.no', '✖️ انصراف', 'st_cancel')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')],
+        [_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')],
     ])
 
 
@@ -375,7 +375,7 @@ def sens_platform_keyboard():
     return InlineKeyboardMarkup([
         [_ibtn('b.se.pc', '🖥 PC', 'sens_pc')],
         [_ibtn('b.se.mob', '📱 موبایل', 'sens_mobile')],
-        [InlineKeyboardButton('منوی اصلی', callback_data='home')],
+        [_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')],
     ])
 
 
@@ -435,7 +435,7 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
             for number in range(1, total_pages + 1)
         ]
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')])
+    buttons.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(buttons)
 
 
