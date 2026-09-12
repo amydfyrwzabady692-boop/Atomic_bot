@@ -42,91 +42,98 @@ from game.button_emoji import (
 logger = logging.getLogger(__name__)
 
 PACK_PRIORITY = [
-    "tgiosicons",                # Primary Apple/iOS clean icons (399 items)
-    "mamali01_by_TgEmojis_bot",  # Secondary glowing 3D icons (Free Fire gems, gold coins, crowns)
-    "IconsInTg",
-    "CenterOfEmoji686499",
+    "Emoji004_1912R",            # Vibrant 3D icons (Cyan Diamond, 3D Chat, Gold Medal)
+    "MeowieQ",                   # Rich 3D icons (Gold Trophy, Lime Money Bag, 3D Bullseye Target, Briefcase)
+    "mamali01_by_TgEmojis_bot",  # Glowing VIP icons (Gold Royal Crown with Cyan Gem, Red SALE Sign, Star)
+    "Emoji_fan37_by_TgEmodziBot",# Vibrant 3D Gift Boxes & celebrations
+    "Proxy_PJ2",                 # 3D Gold Lock & Key, Crystals
+    "NewsEmoji",
     "pack_90fb6_by_TgEmojis_bot",
     "randomRedpack",
-    "Emoji004_1912R",
-    "Proxy_PJ2",
-    "NewsEmoji",
-    "MeowieQ",
-    "Emoji_fan37_by_TgEmodziBot",
+    "IconsInTg",
+    "tgiosicons",                # Monochrome outline icons (lowest priority fallback)
 ]
 
 KNOWN_PACK_SEEDS = PACK_PRIORITY
 
-# Curated high-priority pins for core main menu and action buttons to guarantee visual neatness & unity
+# Curated high-priority pins for core main menu and action buttons to guarantee visual neatness, vibrant 3D colors & eye-catching prominence
 CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
-    # 1. محصولات فری‌فایر (Free Fire) - Dark Apple Gamepad Controller from tgiosicons
-    "btn_menu_ff": ("5938413566624272793", "🎮"),
-    "b.menu.ff": ("5938413566624272793", "🎮"),
+    # 1. محصولات فری‌فایر (Free Fire) - Shimmering Cyan 3D Diamond from Emoji004_1912R (5940725397195853882)
+    "btn_menu_ff": ("5940725397195853882", "💎"),
+    "b.menu.ff": ("5940725397195853882", "💎"),
 
-    # 2. کیف پول (Wallet) - Clean Apple Money Bag from tgiosicons
-    "btn_menu_wal": ("5778421276024509124", "💰"),
-    "b.menu.wal": ("5778421276024509124", "💰"),
+    # 2. کیف پول (Wallet) - Bright Lime-Green 3D Money Bag with Gold Bow from MeowieQ (5823445637231814311)
+    "btn_menu_wal": ("5823445637231814311", "💰"),
+    "b.menu.wal": ("5823445637231814311", "💰"),
 
-    # 3. حساب من (Account) - Clean Apple User Profile Silhouette from tgiosicons
-    "btn_menu_acc": ("5767278056389480519", "👤"),
-    "b.menu.acc": ("5767278056389480519", "👤"),
+    # 3. حساب من (Account) - 3D Shiny Golden Royal Crown with Cyan Gem from mamali01 (4996825193377694860)
+    "btn_menu_acc": ("4996825193377694860", "👑"),
+    "b.menu.acc": ("4996825193377694860", "👑"),
 
-    # 4. پک سنس (Sense Pack) - Crisp Apple Bullseye Target from tgiosicons
-    "btn_menu_se": ("6032949275732742941", "🎯"),
-    "b.menu.se": ("6032949275732742941", "🎯"),
+    # 4. پک سنس (Sense Pack) - 3D Red Bullseye Target with Gold Dart in Center from MeowieQ (5832335747088130009)
+    "btn_menu_se": ("5832335747088130009", "🎯"),
+    "b.menu.se": ("5832335747088130009", "🎯"),
 
-    # 5. دعوت دوستان و جایزه (Referral & Prize) - 3D Gift Box from tgiosicons
-    "btn_menu_ref": ("5773677501825945508", "🎁"),
-    "b.menu.ref": ("5773677501825945508", "🎁"),
+    # 5. دعوت دوستان و جایزه (Referral & Prize) - Big 3D Golden Championship Trophy Cup from MeowieQ (5818913299978263825)
+    "btn_menu_ref": ("5818913299978263825", "🏆"),
+    "b.menu.ref": ("5818913299978263825", "🏆"),
 
-    # Harmonize rest of main menu with tgiosicons (replacing old crowns & mismatched icons)
-    "btn_menu_ord": ("5778672437122045013", "📦"),
-    "b.menu.ord": ("5778672437122045013", "📦"),
-    "btn_menu_gc": ("5773677501825945508", "🎁"),
-    "b.menu.gc": ("5773677501825945508", "🎁"),
-    "btn_menu_stars": ("5767199127775481841", "⭐"),
-    "b.menu.stars": ("5767199127775481841", "⭐"),
-    "btn_menu_su": ("6030784887093464891", "💬"),
-    "b.menu.su": ("6030784887093464891", "💬"),
-    "btn_menu_st": ("5888620056551625531", "🛍"),
-    "b.menu.st": ("5888620056551625531", "🛍"),
+    # 6. سفارش‌های من (Orders) - 3D Polished Leather Executive Briefcase from MeowieQ (5830338333892418460)
+    "btn_menu_ord": ("5830338333892418460", "📦"),
+    "b.menu.ord": ("5830338333892418460", "📦"),
 
-    # Free Fire gem buttons
-    "btn_gems_id": ("4906778227604719080", "💎"),
-    "b.gems.id": ("4906778227604719080", "💎"),
+    # 7. خرید گیفت کارت (Gift Cards) - 3D Double Gift Boxes with Ribbons from Emoji_fan37 (4958699241137505132)
+    "btn_menu_gc": ("4958699241137505132", "🎁"),
+    "b.menu.gc": ("4958699241137505132", "🎁"),
+
+    # 8. خرید استارز (Stars) - 3D Glowing Golden Star from mamali01 (4906812711897138320)
+    "btn_menu_stars": ("4906812711897138320", "⭐"),
+    "b.menu.stars": ("4906812711897138320", "⭐"),
+
+    # 9. پشتیبانی (Support) - 3D Glossy Cyan/Blue Dual Speech Bubbles from Emoji004_1912R (5938359183748370657)
+    "btn_menu_su": ("5938359183748370657", "💬"),
+    "b.menu.su": ("5938359183748370657", "💬"),
+
+    # 10. فروشگاه اکانت (Store) - 3D Red 'SALE' Hanging Signboard from mamali01 (4994523425914487698)
+    "btn_menu_st": ("4994523425914487698", "🛍"),
+    "b.menu.st": ("4994523425914487698", "🛍"),
+
+    # Free Fire gem buttons & navigation
+    "btn_gems_id": ("5940725397195853882", "💎"),
+    "b.gems.id": ("5940725397195853882", "💎"),
     "btn_gems_cr": ("5899838712992240333", "🔐"),
     "b.gems.cr": ("5899838712992240333", "🔐"),
     "b.nav.home": ("6008131872364694876", "🏠"),
 }
 
 CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
-    "game": ("5938413566624272793", "🎮"),
-    "wallet": ("5778421276024509124", "💰"),
-    "user": ("5767278056389480519", "👤"),
-    "sense": ("6032949275732742941", "🎯"),
-    "referral": ("5773677501825945508", "🎁"),
-    "order": ("5778672437122045013", "📦"),
-    "giftcard": ("5773677501825945508", "🎁"),
-    "star": ("5767199127775481841", "⭐"),
-    "gem": ("4906778227604719080", "💎"),
-    "support": ("6030784887093464891", "💬"),
+    "game": ("5940725397195853882", "💎"),
+    "wallet": ("5823445637231814311", "💰"),
+    "user": ("4996825193377694860", "👑"),
+    "sense": ("5832335747088130009", "🎯"),
+    "referral": ("5818913299978263825", "🏆"),
+    "order": ("5830338333892418460", "📦"),
+    "giftcard": ("4958699241137505132", "🎁"),
+    "star": ("4906812711897138320", "⭐"),
+    "gem": ("5940725397195853882", "💎"),
+    "support": ("5938359183748370657", "💬"),
 }
 
 CURATED_APPEARANCE_HEADERS: dict[str, tuple[str, str]] = {
-    "t.welcome": ("5938413566624272793", "🎮"),
-    "t.sense.hdr": ("6032949275732742941", "🎯"),
-    "t.sense.pc": ("6032949275732742941", "🎯"),
+    "t.welcome": ("5940725397195853882", "💎"),
+    "t.sense.hdr": ("5832335747088130009", "🎯"),
+    "t.sense.pc": ("5832335747088130009", "🎯"),
     "t.sense.mob": ("5005900446389241485", "📱"),
-    "t.account.hdr": ("5767278056389480519", "👤"),
-    "t.orders.hdr": ("5778672437122045013", "📦"),
-    "t.orders.empty": ("5778672437122045013", "📦"),
-    "t.gc.hdr": ("5773677501825945508", "🎁"),
-    "t.ff.hdr": ("5938413566624272793", "🎮"),
-    "t.wallet.hdr": ("5778421276024509124", "💰"),
-    "t.gems.hdr": ("4906778227604719080", "💎"),
+    "t.account.hdr": ("4996825193377694860", "👑"),
+    "t.orders.hdr": ("5830338333892418460", "📦"),
+    "t.orders.empty": ("5830338333892418460", "📦"),
+    "t.gc.hdr": ("4958699241137505132", "🎁"),
+    "t.ff.hdr": ("5940725397195853882", "💎"),
+    "t.wallet.hdr": ("5823445637231814311", "💰"),
+    "t.gems.hdr": ("5940725397195853882", "💎"),
     "t.creds.hdr": ("5899838712992240333", "🔐"),
-    "t.stars.hdr": ("5767199127775481841", "⭐"),
-    "t.support": ("6030784887093464891", "💬"),
+    "t.stars.hdr": ("4906812711897138320", "⭐"),
+    "t.support": ("5938359183748370657", "💬"),
 }
 
 _VS16 = "\ufe0f"
