@@ -367,6 +367,8 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
 
     # 3. Auto-populate buttons
     for key, (lbl, default_e, _cat) in BUTTON_EMOJI_DEFS.items():
+        if key in CURATED_BUTTON_PINS:
+            continue
         if key in existing_btn and not force:
             btn_skipped += 1
             continue
@@ -396,6 +398,8 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
     txt_unmatched = []
 
     for key, (_lbl, default_e, _cat) in EMOJI_DEFS.items():
+        if key in CURATED_TEXT_PINS:
+            continue
         if key in existing_txt and not force:
             txt_skipped += 1
             continue
@@ -414,6 +418,13 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
             txt_done += 1
         else:
             txt_unmatched.append(key)
+
+    # 4.5 Ensure curated pins are firmly enforced
+    for pin_k, (pin_cid, pin_ph) in CURATED_BUTTON_PINS.items():
+        set_button_emoji(pin_k, pin_cid, pin_ph)
+
+    for pin_k, (pin_cid, pin_ph) in CURATED_TEXT_PINS.items():
+        set_emoji(pin_k, pin_cid, pin_ph)
 
     # 5. Bulk register literal glyphs
     glyphs_count = set_glyphs_bulk(emap)
@@ -434,6 +445,15 @@ def sync_all_emojis_from_packs(force: bool = False, bot_token: str | None = None
                             (key, override.custom_emoji_id, override.placeholder or default_e)
                         )
                         app_synced += 1
+
+                for pin_k, (pin_cid, pin_ph) in CURATED_BUTTON_PINS.items():
+                    cur.execute(
+                        'INSERT INTO "Appearance" ("Key", "EmojiId", "EmojiChar") '
+                        'VALUES (%s, %s, %s) '
+                        'ON CONFLICT ("Key") DO UPDATE SET "EmojiId"=EXCLUDED."EmojiId", "EmojiChar"=EXCLUDED."EmojiChar"',
+                        (pin_k, pin_cid, pin_ph)
+                    )
+                    app_synced += 1
 
                 for hkey, (hcid, hchar) in CURATED_APPEARANCE_HEADERS.items():
                     cur.execute(
