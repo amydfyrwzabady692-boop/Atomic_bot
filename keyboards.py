@@ -12,10 +12,13 @@ def _menu_btn(text, style=None, icon_custom_emoji_id=None):
     extra = {}
     if icon_custom_emoji_id:
         t_str = str(text or '')
-        if _LEADING_EMOJI.match(t_str):
+        while _LEADING_EMOJI.match(t_str):
             stripped = _LEADING_EMOJI.sub('', t_str, count=1)
             if stripped.strip():
-                text = stripped
+                t_str = stripped
+            else:
+                break
+        text = t_str
         extra['icon_custom_emoji_id'] = str(icon_custom_emoji_id)
     if style:
         try:
@@ -50,10 +53,13 @@ def _inline_btn(text, callback_data, icon_custom_emoji_id=None):
     icon = str(icon_custom_emoji_id or '') or None
     if icon:
         t_str = str(text or '')
-        if _LEADING_EMOJI.match(t_str):
+        while _LEADING_EMOJI.match(t_str):
             stripped = _LEADING_EMOJI.sub('', t_str, count=1)
             if stripped.strip():
-                text = stripped
+                t_str = stripped
+            else:
+                break
+        text = t_str
     try:
         if icon:
             return InlineKeyboardButton(
@@ -179,7 +185,23 @@ def stars_list_keyboard(packages, page=1, per_page=8):
     for pkg in packages[start:start + per_page]:
         key = f'st.{pkg["id"]}'
         title = appearance.user_label(key, pkg['title'])
-        icon = appearance.icon_for(key, 'b.menu.stars')
+        icon = appearance.icon_for(key)
+        if not icon:
+            stars_amt = int(pkg.get('stars') or 0)
+            if stars_amt >= 50000:
+                icon = '5425107576809349359'
+            elif stars_amt >= 10000:
+                icon = '5427116221344539269'
+            elif stars_amt >= 1500:
+                icon = '5424786953205733725'
+            elif stars_amt >= 750:
+                icon = '5424680163138888970'
+            elif stars_amt >= 250:
+                icon = '5424978650481057780'
+            elif stars_amt >= 150:
+                icon = '5424925590455085174'
+            else:
+                icon = '5425040837312538501'
         price = int(pkg.get('price') or 0)
         if pkg.get('available') and price > 0:
             buttons.append([_inline_btn(
@@ -264,7 +286,7 @@ def credential_products_keyboard(products):
         rows.append([_inline_btn(
             f'{title} • {_fmt(p[4])} تومان',
             f'cred_product_{p[0]}',
-            appearance.icon_for(key, 'b.gems.cr', 'b.menu.ff'),
+            appearance.icon_for(key, f'g.{p[0]}', 'b.gems.cr'),
         )])
     rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
     return InlineKeyboardMarkup(rows)
@@ -419,7 +441,7 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
         auto = '⚡️' if g[8] else ''
         sold_out = (not g[8] and (g[10] or 0) <= 0) or (g[11] is False)
         title = appearance.user_label(f'g.{g[0]}', g[1])
-        icon = appearance.icon_for(f'g.{g[0]}', 'b.menu.ff') or None
+        icon = appearance.icon_for(f'g.{g[0]}', 'b.gems.id', 'b.menu.ff') or None
         label = f"{auto} {title}  •  {_fmt(g[4])} تومان"
         if sold_out and not g[8]:
             label = f"❌ ناموجود — {title}"

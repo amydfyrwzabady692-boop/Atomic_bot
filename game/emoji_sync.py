@@ -45,10 +45,15 @@ PACK_PRIORITY = [
     "GamingIcons_by_TgEmodziBot",# Modern fiery sunset gamepads & gaming icons
     "UserEmoji",                 # Apple 3D high-aesthetic skeuomorphic icons (Profile, Folder, Basket, Agent, PC, Phone, Lock)
     "TgStars_by_TgEmodziBot",    # 3D radiant golden Telegram Star coins
-    "MeowieQ",                   # 3D Gold Trophy, 3D Bullseye Target
-    "Emoji_fan37_by_TgEmodziBot",# 3D colorful Double Gift Boxes with ribbons
-    "Proxy_PJ2",                 # 3D Golden burlap money bag with $
-    "Emoji004_1912R",            # 3D Cyan Shimmering Diamond
+    "Stars_by_TgEmodziBot",      # Telegram Stars pack
+    "VIP_by_TgEmodziBot",        # 3D VIP crown & laurel badges
+    "Rank_by_TgEmodziBot",       # 3D Gaming Rank & Battle Pass emblems
+    "Diamonds_by_TgEmodziBot",   # 3D Cut gemstone diamonds
+    "FreeFire_Emoji",            # Free Fire specific emojis
+    "MeowieQ",                   # 3D Gold Trophy, 3D Bullseye Target, Treasure Chest, Calendar
+    "Emoji_fan37_by_TgEmodziBot",# 3D colorful Double Gift Boxes, Diamonds cluster
+    "Proxy_PJ2",                 # 3D Golden burlap money bag with $, 3D VIP badge
+    "Emoji004_1912R",            # 3D Cyan Shimmering Diamond, Royal Gold Crown
     "FlameEmoji",                # 3D Flames
     "mamali01_by_TgEmojis_bot",
     "pack_90fb6_by_TgEmojis_bot",
@@ -121,6 +126,51 @@ CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
     "b.gem.no": ("4994791839895651680", "❌"),
     "b.stars.no": ("4994791839895651680", "❌"),
     "btn_cancel": ("4994791839895651680", "❌"),
+
+    # Free Fire Gems by ID products (g.1 .. g.14)
+    "g.1": ("5940725397195853882", "💎"),   # 110 جم - 3D Shimmering Cyan Diamond
+    "g.2": ("5940725397195853882", "💎"),   # 231 جم - 3D Shimmering Cyan Diamond
+    "g.3": ("4958472587123360612", "💎"),   # 583 جم - 3D Glowing Diamonds Cluster
+    "g.4": ("4958472587123360612", "💎"),   # 1188 جم - 3D Glowing Diamonds Cluster
+    "g.5": ("5823592920250327036", "💎"),   # 2420 جم - 3D Golden Treasure Chest with diamonds
+    "g.6": ("5910988800279978367", "🎯"),   # لول‌آپ سطح 6 - 3D Glowing "EXP" Level-Up badge
+    "g.7": ("5910988800279978367", "🎯"),   # لول‌آپ سطح 10 - 3D Glowing "EXP" Level-Up badge
+    "g.8": ("5910988800279978367", "🎯"),   # لول‌آپ سطح 15 - 3D Glowing "EXP" Level-Up badge
+    "g.9": ("5910988800279978367", "🎯"),   # لول‌آپ سطح 20 - 3D Glowing "EXP" Level-Up badge
+    "g.10": ("5910988800279978367", "🎯"),  # لول‌آپ سطح 25 - 3D Glowing "EXP" Level-Up badge
+    "g.11": ("5910988800279978367", "🎯"),  # لول‌آپ سطح 30 - 3D Glowing "EXP" Level-Up badge
+    "g.12": ("5834925633842453455", "📅"),  # بسته هفتگی - 3D Glossy "JUL 17" Calendar
+    "g.13": ("5404573690354482764", "🏆"),  # بویاه پس - 3D Flaming Wings Grandmaster Battle Emblem
+    "g.14": ("5935933089866846598", "📆"),  # بسته ماهانه - 3D Radiant Royal Gold Crown with Rubies
+
+    # Free Fire Gems by Credentials products (c.15 .. c.17 & g.15 .. g.17)
+    "c.15": ("5899724149034586082", "📅"),  # عضویت هفتگی فری‌فایر - 3D Golden VIP Badge
+    "g.15": ("5899724149034586082", "📅"),
+    "c.16": ("5388601875211763644", "📆"),  # عضویت ماهانه فری‌فایر - 3D Golden VIP Crown Laurel
+    "g.16": ("5388601875211763644", "📆"),
+    "c.17": ("4958699241137505132", "🎁"),  # بویاه پس گیفتی - 3D Vibrant Double Gift Boxes
+    "g.17": ("4958699241137505132", "🎁"),
+    "b.gems.cr": ("5388601875211763644", "👑"), # جم با اطلاعات - 3D Golden VIP Crown Laurel
+    "btn_gems_cr": ("5388601875211763644", "👑"),
+
+    # Telegram Stars Packages (st.39 .. st.55)
+    "st.39": ("5425040837312538501", "⭐"), # 50 استارز - 3D Amber Star
+    "st.40": ("5425040837312538501", "⭐"), # 75 استارز - 3D Amber Star
+    "st.41": ("5425040837312538501", "⭐"), # 100 استارز - 3D Amber Star
+    "st.42": ("5424925590455085174", "⭐"), # 150 استارز - 3D Sparkling Star with Light Rays
+    "st.43": ("5424978650481057780", "⭐"), # 250 استارز - 3D Double Stacked Golden Stars
+    "st.44": ("5424978650481057780", "⭐"), # 350 استارز - 3D Double Stacked Golden Stars
+    "st.45": ("5424978650481057780", "⭐"), # 500 استارز - 3D Double Stacked Golden Stars
+    "st.46": ("5424680163138888970", "⭐"), # 750 استارز - 3D Triple Stacked Golden Stars
+    "st.47": ("5424680163138888970", "⭐"), # 1,000 استارز - 3D Triple Stacked Golden Stars
+    "st.48": ("5424786953205733725", "⭐"), # 1,500 استارز - 3D 4-Stack Golden Stars
+    "st.49": ("5424786953205733725", "⭐"), # 2,500 استارز - 3D 4-Stack Golden Stars
+    "st.50": ("5427060047467273412", "⭐"), # 5,000 استارز - 3D 5-Stack Golden Stars
+    "st.51": ("5427116221344539269", "⭐"), # 10,000 استارز - 3D Multi-Star Massive Bundle
+    "st.52": ("5427116221344539269", "⭐"), # 25,000 استارز - 3D Multi-Star Massive Bundle
+    "st.53": ("5427116221344539269", "⭐"), # 35,000 استارز - 3D Multi-Star Massive Bundle
+    "st.54": ("5425107576809349359", "⭐"), # 50,000 استارز - 3D Radiant Golden Telegram Star Coin
+    "st.55": ("5425107576809349359", "⭐"), # 100,000 استارز - 3D Radiant Golden Telegram Star Coin
 }
 
 CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
