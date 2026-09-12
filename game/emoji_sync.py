@@ -42,98 +42,109 @@ from game.button_emoji import (
 logger = logging.getLogger(__name__)
 
 PACK_PRIORITY = [
-    "Emoji004_1912R",            # Vibrant 3D icons (Cyan Diamond, 3D Chat, Gold Medal)
-    "MeowieQ",                   # Rich 3D icons (Gold Trophy, Lime Money Bag, 3D Bullseye Target, Briefcase)
-    "mamali01_by_TgEmojis_bot",  # Glowing VIP icons (Gold Royal Crown with Cyan Gem, Red SALE Sign, Star)
-    "Emoji_fan37_by_TgEmodziBot",# Vibrant 3D Gift Boxes & celebrations
-    "Proxy_PJ2",                 # 3D Gold Lock & Key, Crystals
-    "NewsEmoji",
+    "GamingIcons_by_TgEmodziBot",# Modern fiery sunset gamepads & gaming icons
+    "UserEmoji",                 # Apple 3D high-aesthetic skeuomorphic icons (Profile, Folder, Basket, Agent, PC, Phone, Lock)
+    "TgStars_by_TgEmodziBot",    # 3D radiant golden Telegram Star coins
+    "MeowieQ",                   # 3D Gold Trophy, 3D Bullseye Target
+    "Emoji_fan37_by_TgEmodziBot",# 3D colorful Double Gift Boxes with ribbons
+    "Proxy_PJ2",                 # 3D Golden burlap money bag with $
+    "Emoji004_1912R",            # 3D Cyan Shimmering Diamond
+    "FlameEmoji",                # 3D Flames
+    "mamali01_by_TgEmojis_bot",
     "pack_90fb6_by_TgEmojis_bot",
     "randomRedpack",
     "IconsInTg",
-    "tgiosicons",                # Monochrome outline icons (lowest priority fallback)
+    "tgiosicons",
 ]
 
 KNOWN_PACK_SEEDS = PACK_PRIORITY
 
 # Curated high-priority pins for core main menu and action buttons to guarantee visual neatness, vibrant 3D colors & eye-catching prominence
 CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
-    # 1. محصولات فری‌فایر (Free Fire) - Shimmering Cyan 3D Diamond from Emoji004_1912R (5940725397195853882)
-    "btn_menu_ff": ("5940725397195853882", "💎"),
-    "b.menu.ff": ("5940725397195853882", "💎"),
+    # 1. محصولات فری‌فایر (Free Fire) - Fiery Sunset Wireless Gamepad from GamingIcons_by_TgEmodziBot
+    "btn_menu_ff": ("5334529375121481680", "🎮"),
+    "b.menu.ff": ("5334529375121481680", "🎮"),
 
-    # 2. کیف پول (Wallet) - Bright Lime-Green 3D Money Bag with Gold Bow from MeowieQ (5823445637231814311)
-    "btn_menu_wal": ("5823445637231814311", "💰"),
-    "b.menu.wal": ("5823445637231814311", "💰"),
+    # 2. کیف پول (Wallet) - 3D Golden Burlap Money Sack with $ from Proxy_PJ2
+    "btn_menu_wal": ("5908958028073275934", "💰"),
+    "b.menu.wal": ("5908958028073275934", "💰"),
 
-    # 3. حساب من (Account) - 3D Shiny Golden Royal Crown with Cyan Gem from mamali01 (4996825193377694860)
-    "btn_menu_acc": ("4996825193377694860", "👑"),
-    "b.menu.acc": ("4996825193377694860", "👑"),
+    # 3. حساب من (Account) - 3D Glossy Royal Blue User Profile Sphere from UserEmoji
+    "btn_menu_acc": ("5307797528735920953", "👤"),
+    "b.menu.acc": ("5307797528735920953", "👤"),
 
-    # 4. پک سنس (Sense Pack) - 3D Red Bullseye Target with Gold Dart in Center from MeowieQ (5832335747088130009)
+    # 4. پک سنس (Sense Pack) - 3D Red Bullseye Target with Gold Dart in Center from MeowieQ
     "btn_menu_se": ("5832335747088130009", "🎯"),
     "b.menu.se": ("5832335747088130009", "🎯"),
 
-    # 5. دعوت دوستان و جایزه (Referral & Prize) - Big 3D Golden Championship Trophy Cup from MeowieQ (5818913299978263825)
+    # 5. دعوت دوستان و جایزه (Referral & Prize) - 3D Golden Championship Trophy Cup from MeowieQ
     "btn_menu_ref": ("5818913299978263825", "🏆"),
     "b.menu.ref": ("5818913299978263825", "🏆"),
 
-    # 6. سفارش‌های من (Orders) - 3D Polished Leather Executive Briefcase from MeowieQ (5830338333892418460)
-    "btn_menu_ord": ("5830338333892418460", "📦"),
-    "b.menu.ord": ("5830338333892418460", "📦"),
+    # 6. سفارش‌های من (Orders) - 3D Glossy Yellow Folder with Documents from UserEmoji
+    "btn_menu_ord": ("5307994908252975336", "📂"),
+    "b.menu.ord": ("5307994908252975336", "📂"),
 
-    # 7. خرید گیفت کارت (Gift Cards) - 3D Double Gift Boxes with Ribbons from Emoji_fan37 (4958699241137505132)
+    # 7. خرید گیفت کارت (Gift Cards) - 3D Double Gift Boxes with Ribbons from Emoji_fan37
     "btn_menu_gc": ("4958699241137505132", "🎁"),
     "b.menu.gc": ("4958699241137505132", "🎁"),
 
-    # 8. خرید استارز (Stars) - 3D Glowing Golden Star from mamali01 (4906812711897138320)
-    "btn_menu_stars": ("4906812711897138320", "⭐"),
-    "b.menu.stars": ("4906812711897138320", "⭐"),
+    # 8. خرید استارز (Stars) - 3D Radiant Golden Telegram Star Coin from TgStars_by_TgEmodziBot
+    "btn_menu_stars": ("5425107576809349359", "⭐"),
+    "b.menu.stars": ("5425107576809349359", "⭐"),
 
-    # 9. پشتیبانی (Support) - 3D Glossy Cyan/Blue Dual Speech Bubbles from Emoji004_1912R (5938359183748370657)
-    "btn_menu_su": ("5938359183748370657", "💬"),
-    "b.menu.su": ("5938359183748370657", "💬"),
+    # 9. پشتیبانی (Support) - 3D Support Agent with Headset from UserEmoji
+    "btn_menu_su": ("5307861601058042068", "🎧"),
+    "b.menu.su": ("5307861601058042068", "🎧"),
 
-    # 10. فروشگاه اکانت (Store) - 3D Red 'SALE' Hanging Signboard from mamali01 (4994523425914487698)
-    "btn_menu_st": ("4994523425914487698", "🛍"),
-    "b.menu.st": ("4994523425914487698", "🛍"),
+    # 10. فروشگاه اکانت (Store) - 3D Glossy Emerald Green Shopping Basket from UserEmoji
+    "btn_menu_st": ("5309909110752293449", "🛍"),
+    "b.menu.st": ("5309909110752293449", "🛍"),
 
-    # Free Fire gem buttons & navigation
+    # Sub-menu action buttons
     "btn_gems_id": ("5940725397195853882", "💎"),
     "b.gems.id": ("5940725397195853882", "💎"),
-    "btn_gems_cr": ("5899838712992240333", "🔐"),
-    "b.gems.cr": ("5899838712992240333", "🔐"),
-    "b.nav.home": ("6008131872364694876", "🏠"),
+    "btn_gems_cr": ("5307946864748803590", "🔒"),
+    "b.gems.cr": ("5307946864748803590", "🔒"),
+    "b.nav.home": ("5307731102771719870", "🏠"),
+    "btn_home": ("5307731102771719870", "🏠"),
+    "b.gem.ok": ("5307875864644432289", "✅"),
+    "b.stars.ok": ("5307875864644432289", "✅"),
+    "btn_confirm": ("5307875864644432289", "✅"),
+    "btn_sense_pc": ("5307910396181491682", "🖥"),
+    "b.se.pc": ("5307910396181491682", "🖥"),
+    "btn_sense_mob": ("5307754269825315648", "📱"),
+    "b.se.mob": ("5307754269825315648", "📱"),
 }
 
 CURATED_TEXT_PINS: dict[str, tuple[str, str]] = {
-    "game": ("5940725397195853882", "💎"),
-    "wallet": ("5823445637231814311", "💰"),
-    "user": ("4996825193377694860", "👑"),
+    "game": ("5334529375121481680", "🎮"),
+    "wallet": ("5908958028073275934", "💰"),
+    "user": ("5307797528735920953", "👤"),
     "sense": ("5832335747088130009", "🎯"),
     "referral": ("5818913299978263825", "🏆"),
-    "order": ("5830338333892418460", "📦"),
+    "order": ("5307994908252975336", "📂"),
     "giftcard": ("4958699241137505132", "🎁"),
-    "star": ("4906812711897138320", "⭐"),
+    "star": ("5425107576809349359", "⭐"),
     "gem": ("5940725397195853882", "💎"),
-    "support": ("5938359183748370657", "💬"),
+    "support": ("5307861601058042068", "🎧"),
 }
 
 CURATED_APPEARANCE_HEADERS: dict[str, tuple[str, str]] = {
-    "t.welcome": ("5940725397195853882", "💎"),
+    "t.welcome": ("5334529375121481680", "🎮"),
     "t.sense.hdr": ("5832335747088130009", "🎯"),
-    "t.sense.pc": ("5832335747088130009", "🎯"),
-    "t.sense.mob": ("5005900446389241485", "📱"),
-    "t.account.hdr": ("4996825193377694860", "👑"),
-    "t.orders.hdr": ("5830338333892418460", "📦"),
-    "t.orders.empty": ("5830338333892418460", "📦"),
+    "t.sense.pc": ("5307910396181491682", "🖥"),
+    "t.sense.mob": ("5307754269825315648", "📱"),
+    "t.account.hdr": ("5307797528735920953", "👤"),
+    "t.orders.hdr": ("5307994908252975336", "📂"),
+    "t.orders.empty": ("5307994908252975336", "📂"),
     "t.gc.hdr": ("4958699241137505132", "🎁"),
-    "t.ff.hdr": ("5940725397195853882", "💎"),
-    "t.wallet.hdr": ("5823445637231814311", "💰"),
+    "t.ff.hdr": ("5334529375121481680", "🎮"),
+    "t.wallet.hdr": ("5908958028073275934", "💰"),
     "t.gems.hdr": ("5940725397195853882", "💎"),
-    "t.creds.hdr": ("5899838712992240333", "🔐"),
-    "t.stars.hdr": ("4906812711897138320", "⭐"),
-    "t.support": ("5938359183748370657", "💬"),
+    "t.creds.hdr": ("5307946864748803590", "🔒"),
+    "t.stars.hdr": ("5425107576809349359", "⭐"),
+    "t.support": ("5307861601058042068", "🎧"),
 }
 
 _VS16 = "\ufe0f"
