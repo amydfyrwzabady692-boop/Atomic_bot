@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 log = logging.getLogger(__name__)
 
 from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatType
 from telegram.ext import (
     CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
     MessageHandler, filters,
@@ -60,6 +61,59 @@ from keyboards import (
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
     admin_pricing_keyboard, main_menu, credential_admin_home_keyboard,
 )
+
+_KNOWN_ADMIN_CHANNELS: dict[str, dict] = {}
+
+
+async def on_bot_chat_member_updated(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cm = update.my_chat_member
+    if not cm:
+        return
+    chat = cm.chat
+    if not chat or chat.type not in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+        return
+
+    new_member = cm.new_chat_member
+    if not new_member or new_member.status not in ('administrator', 'creator'):
+        return
+
+    user = cm.from_user or update.effective_user
+    if not user:
+        return
+
+    is_adm = await asyncio.to_thread(is_admin, user.id)
+    if not is_adm:
+        return
+
+    title = chat.title or str(chat.id)
+    chat_id_str = f"@{chat.username}" if chat.username else str(chat.id)
+
+    _KNOWN_ADMIN_CHANNELS[str(chat.id)] = {
+        'chat_id': chat_id_str,
+        'title': title,
+        'username': chat.username,
+        'raw_id': chat.id,
+    }
+
+    kb = [
+        [InlineKeyboardButton('✅ فعال‌سازی جوین اجباری برای این کانال', callback_data=f'admx_fjquick_{chat.id}')],
+        [InlineKeyboardButton('❌ بعداً', callback_data='admx_noop')],
+    ]
+
+    try:
+        await ctx.bot.send_message(
+            chat_id=user.id,
+            text=(
+                f'🎉 *ربات با موفقیت در کانال شما ادمین شد!*\n\n'
+                f'📢 *عنوان کانال:* {title}\n'
+                f'🆔 *شناسه:* `{chat_id_str}`\n\n'
+                'آیا می‌خواهی این کانال فوراً به **جوین اجباری** ربات اضافه شود؟'
+            ),
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+    except Exception as exc:
+        log.warning("Could not send quick forced join prompt to admin %s: %s", user.id, exc)
 
 WAIT_VALUE = 50
 
@@ -1690,31 +1744,53 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     elif data == 'admx_forcedjoin':
         channels = list_forced_join_channels(active_only=False)
+        bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
+        add_bot_url = f"https://t.me/{bot_user}?startchannel=forcedjoin&admin=invite_users+post_messages"
+
         lines = [
-            '📢 مدیریت جوین اجباری',
+            '📢 *مدیریت جوین اجباری*',
             '━━━━━━━━━━━━━━━',
-            'ربات باید در هر کانال ادمین باشد تا عضویت کاربران را بررسی کند.',
+            'کاربران برای استفاده از ربات، باید در کانال‌های زیر عضو شوند.',
             '',
         ]
         buttons = []
+        existing_chat_ids = set()
         for channel_id, chat_id, title, invite_url, active in channels:
+            existing_chat_ids.add(str(chat_id).lower())
             lines.append(
-                f'{"✅" if active else "❌"} #{channel_id} · '
-                f'{title or chat_id}\n{chat_id}\n{invite_url}'
+                f'{"✅" if active else "❌"} *{title or chat_id}*\n'
+                f'شناسه: `{chat_id}`\n'
+                f'لینک: {invite_url}\n'
             )
             buttons.append([InlineKeyboardButton(
                 f'🗑 حذف {title or chat_id}',
                 callback_data=f'admx_fjdel_{channel_id}',
             )])
         if not channels:
-            lines.append('هیچ کانال اجباری ثبت نشده است.')
+            lines.append('❌ هیچ کانال اجباری ثبت نشده است.\n')
+
+        # Channels where bot is known to be admin but not yet in forced join
+        for cid, cinfo in list(_KNOWN_ADMIN_CHANNELS.items()):
+            c_uname = (cinfo.get('username') or '').lower()
+            c_raw = str(cinfo.get('raw_id') or cid).lower()
+            if f"@{c_uname}" not in existing_chat_ids and c_raw not in existing_chat_ids:
+                buttons.append([InlineKeyboardButton(
+                    f'➕ فعال‌سازی «{cinfo.get("title") or cid}»',
+                    callback_data=f'admx_fjquick_{cid}',
+                )])
+
         buttons.extend([
             [InlineKeyboardButton(
-                '➕ افزودن کانال', callback_data='admi_forcedjoin'
+                '⚡️ افزودن آسان (انتخاب کانال از تلگرام)',
+                url=add_bot_url,
+            )],
+            [InlineKeyboardButton(
+                '➕ افزودن با فوروارد یا آیدی',
+                callback_data='admi_forcedjoin',
             )],
             _back('admx_hub_system'),
         ])
-        await _edit(query, '\n'.join(lines), buttons)
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data.startswith('admx_fjdel_'):
         channel_id = int(data.rsplit('_', 1)[1])
         removed = remove_forced_join_channel(channel_id)
@@ -1723,6 +1799,54 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             '✅ کانال از جوین اجباری حذف شد.'
             if removed else 'کانال پیدا نشد.',
+            reply_markup=_kb([_back('admx_forcedjoin')]),
+        )
+    elif data.startswith('admx_fjquick_'):
+        raw_id = data.replace('admx_fjquick_', '').strip()
+        info = _KNOWN_ADMIN_CHANNELS.get(raw_id) or {}
+        target_id = int(raw_id) if (raw_id.startswith('-') and raw_id[1:].isdigit()) else raw_id
+
+        try:
+            chat = await ctx.bot.get_chat(target_id)
+            title = chat.title or info.get('title') or str(target_id)
+            if chat.username:
+                chat_id_str = f"@{chat.username}"
+                invite_url = f"https://t.me/{chat.username}"
+            else:
+                chat_id_str = str(chat.id)
+                invite_url = chat.invite_link or ''
+                if not invite_url:
+                    try:
+                        invite_url = await ctx.bot.export_chat_invite_link(chat.id)
+                    except Exception:
+                        invite_url = ''
+        except Exception as exc:
+            await query.edit_message_text(
+                f'❌ خطا در خواندن اطلاعات کانال ({exc}).\nلطفاً از بخش مدیریت جوین اجباری اقدام کنید.',
+                reply_markup=_kb([_back('admx_forcedjoin')]),
+            )
+            return
+
+        if not invite_url:
+            ctx.user_data['admin_ext_action'] = 'forcedjoinadd'
+            ctx.user_data['fj_pending_id'] = str(chat_id_str)
+            ctx.user_data['fj_pending_title'] = title
+            await query.edit_message_text(
+                f'✅ کانال *{title}* تأیید شد.\n\n'
+                '🔗 لطفاً لینک دعوت (Invite Link) کانال را بفرستید:',
+                parse_mode='Markdown',
+            )
+            return
+
+        add_forced_join_channel(str(chat_id_str), invite_url, title)
+        invalidate_forced_join_cache()
+        _KNOWN_ADMIN_CHANNELS.pop(raw_id, None)
+
+        await query.edit_message_text(
+            f'✅ کانال *{title}* با موفقیت به جوین اجباری اضافه شد.\n\n'
+            f'📢 شناسه: `{chat_id_str}`\n'
+            f'🔗 لینک: {invite_url}',
+            parse_mode='Markdown',
             reply_markup=_kb([_back('admx_forcedjoin')]),
         )
     elif data == 'admx_stats':

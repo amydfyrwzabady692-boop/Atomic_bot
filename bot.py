@@ -19,7 +19,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    BaseUpdateProcessor, CallbackQueryHandler, InlineQueryHandler, TypeHandler, filters,
+    BaseUpdateProcessor, CallbackQueryHandler, ChatMemberHandler, InlineQueryHandler, TypeHandler, filters,
     ExtBot,
 )
 from game import emoji, button_emoji
@@ -66,6 +66,7 @@ from handlers.admin import (
 from handlers.admin_extended import (
     admin_ext_router, admin_extended_conversation_handler, credadmin_cmd,
     admin_order_cmd, admin_order_search_start, admin_order_text_lookup,
+    on_bot_chat_member_updated,
 )
 from handlers.premium_admin import (
     premium_admin_conversation_handler, studio_cmd, studio_router,
@@ -894,6 +895,7 @@ def main():
     app.add_handler(premium_admin_conversation_handler())
     app.add_handler(appearance_conversation_handler())
     app.add_handler(referral_admin_conversation_handler())
+    app.add_handler(ChatMemberHandler(on_bot_chat_member_updated, ChatMemberHandler.MY_CHAT_MEMBER))
 
     app.add_handler(CallbackQueryHandler(home_callback, pattern='^home$'))
     app.add_handler(CallbackQueryHandler(freefire_products_menu, pattern=r'^gems$'))
@@ -1017,7 +1019,7 @@ def main():
     ))
 
     logging.info("Atomic Bot started")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == '__main__':
