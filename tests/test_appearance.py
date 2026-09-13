@@ -83,10 +83,9 @@ class AppearanceTests(unittest.TestCase):
             },
         }
         payload = appearance.message_kwargs('t.gems.hdr', 'لیست جم', page=1, total=2)
-        self.assertTrue(payload['text'].startswith('💎'))
+        self.assertTrue(payload['text'].startswith('<tg-emoji emoji-id="111">💎</tg-emoji>'))
         self.assertIn('لیست جم', payload['text'])
-        self.assertEqual(payload['entities'][0].custom_emoji_id, '111')
-        self.assertNotIn('parse_mode', payload)
+        self.assertEqual(payload.get('parse_mode'), 'HTML')
 
     def test_main_menu_defaults_without_db(self):
         with patch.object(appearance, '_CACHE', {}):

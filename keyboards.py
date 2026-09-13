@@ -122,6 +122,12 @@ def main_menu():
 def giftcard_menu_keyboard(catalog=None):
     rows = []
     brands = (catalog or {}).get('brands') or {}
+    brand_icons = {
+        'gplay_us': '6024100028195279285',  # 3D Google Play Logo
+        'gplay_tr': '6024100028195279285',  # 3D Google Play Logo
+        'itunes_us': '6023902876311490783', # 3D Apple App Store Logo
+        'itunes_tr': '6023902876311490783', # 3D Apple App Store Logo
+    }
     for brand in (
         'gplay_us', 'itunes_us', 'itunes_tr', 'gplay_tr',
     ):
@@ -137,10 +143,11 @@ def giftcard_menu_keyboard(catalog=None):
         items = brands.get(brand) or []
         live = sum(1 for item in items if item.get('can_buy'))
         suffix = f' · {live} موجود' if items else ''
+        icon = appearance.icon_for(f'b.gc.{brand}') or brand_icons.get(brand, '4958699241137505132')
         rows.append([_inline_btn(
             f'{title}{suffix}',
             f'gc_b_{brand}',
-            appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
+            icon,
         )])
     rows.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(rows)
@@ -148,21 +155,32 @@ def giftcard_menu_keyboard(catalog=None):
 
 def giftcard_list_keyboard(brand, items):
     rows = []
+    default_brand_icon = '6024100028195279285' if 'gplay' in str(brand) else '6023902876311490783'
     for item in items or []:
-        face = item.get('face_label') or item.get('title')
+        face = str(item.get('face_label') or item.get('title') or '')
         price = int(item.get('sale_toman') or 0)
+        curr = str(item.get('currency') or '')
+        item_icon = appearance.icon_for(f'gc.p.{item.get("id")}')
+        if not item_icon:
+            if 'دلار' in face or '$' in face or curr.upper() == 'USD':
+                item_icon = '4956601935592424315'  # 3D Emerald Green Dollar Sign
+            elif 'لیر' in face or curr.upper() == 'TRY':
+                item_icon = '5888625992196431593'  # 3D Cyan Gift Card
+            else:
+                item_icon = default_brand_icon
         if item.get('can_buy') and price > 0:
             rows.append([_inline_btn(
                 f'{face}  •  {_fmt(price)} تومان',
                 f'gc_p_{item["id"]}',
-                appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
+                item_icon,
             )])
         else:
             rows.append([_inline_btn(
                 f'❌ ناموجود — {face}',
                 'noop',
+                '4994791839895651680',
             )])
-    rows.append([InlineKeyboardButton('🔙 دسته‌ها', callback_data='gc_home')])
+    rows.append([_inline_btn('🔙 دسته‌ها', 'gc_home', '5307731102771719870')])
     return InlineKeyboardMarkup(rows)
 
 
@@ -170,7 +188,7 @@ def giftcard_buy_keyboard(product_id, brand):
     return InlineKeyboardMarkup([
         [_inline_btn(
             '✅ خرید این گیفت‌کارت', f'gc_buy_{int(product_id)}',
-            appearance.icon_for(f'b.gc.{brand}', 'b.menu.gc'),
+            '5307875864644432289',
         )],
         [InlineKeyboardButton('🔙 بازگشت به لیست', callback_data=f'gc_b_{brand}')],
     ])

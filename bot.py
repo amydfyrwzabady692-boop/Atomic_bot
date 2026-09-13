@@ -1,6 +1,8 @@
 import logging
 import os
 import asyncio
+import html as _html_module
+import re
 import weakref
 from pathlib import Path
 
@@ -590,43 +592,252 @@ def _log_startup_checks():
         log.warning('Startup checks found problems — see errors above')
 
 
+def _markdown_to_html_safe(text: str) -> str:
+    """Converts basic Telegram Markdown (bold, italic, code, pre, links) to safe Telegram HTML."""
+    if not text:
+        return ""
+    placeholders = []
+
+    def _stash_pre(m):
+        code_content = _html_module.escape(m.group(1))
+        idx = len(placeholders)
+        placeholders.append(f"<pre>{code_content}</pre>")
+        return f"\x00PRE_{idx}\x00"
+
+    def _stash_code(m):
+        code_content = _html_module.escape(m.group(1))
+        idx = len(placeholders)
+        placeholders.append(f"<code>{code_content}</code>")
+        return f"\x00CODE_{idx}\x00"
+
+    # Stash pre blocks and inline code
+    s = re.sub(r'```([\s\S]*?)```', _stash_pre, text)
+    s = re.sub(r'`([^`\n]+)`', _stash_code, s)
+
+    # Escape HTML special chars in surrounding text
+    s = _html_module.escape(s)
+
+    # Convert links, bold, italic
+    s = re.sub(r'\[([^\]]+)\]\(((?:https?://|tg://)[^\)\s]+)\)', r'<a href="\2">\1</a>', s)
+    s = re.sub(r'(?<!\*)\*(\S(?:.*?\S)?)\*(?!\*)', r'<b>\1</b>', s)
+    s = re.sub(r'(?<![_a-zA-Z0-9\u0600-\u06FF])_(\S(?:.*?\S)?)_(?![_a-zA-Z0-9\u0600-\u06FF])', r'<i>\1</i>', s)
+
+    # Restore placeholders
+    for idx, repl in enumerate(placeholders):
+        s = s.replace(f"\x00PRE_{idx}\x00", repl)
+        s = s.replace(f"\x00CODE_{idx}\x00", repl)
+
+    return s
+
+
+def _transform_message_content(text: str, parse_mode: str | None) -> tuple[str, str | None, bool]:
+    """Inspects text and converts it to HTML with custom emojis if needed.
+    Returns (new_text, new_parse_mode, was_transformed)."""
+    if not text or not isinstance(text, str):
+        return text, parse_mode, False
+
+    # Check if text contains any emoji in glyph map or already has <tg-emoji>
+    gm = emoji._glyph_map
+    has_custom = '<tg-emoji' in text
+    has_glyph = bool(gm and emoji._glyph_re and emoji._glyph_re.search(text))
+
+    if not has_custom and not has_glyph:
+        return text, parse_mode, False
+
+    pm_str = str(parse_mode).lower() if parse_mode else ""
+    is_html = "html" in pm_str or bool(re.search(r'<(?:b|i|u|s|a|code|pre|tg-emoji)\b', text, re.IGNORECASE))
+
+    if is_html:
+        new_text = premiumize_html(text)
+        return new_text, "HTML", (new_text != text or pm_str != "html")
+    elif "markdown" in pm_str:
+        html_text = _markdown_to_html_safe(text)
+        new_text = premiumize_html(html_text)
+        return new_text, "HTML", True
+    else:
+        # parse_mode is None or plain text
+        escaped = _html_module.escape(text)
+        new_text = premiumize_html(escaped)
+        if '<tg-emoji' in new_text:
+            return new_text, "HTML", True
+        return text, parse_mode, False
+
+
 def _install_premium_glyph_hook(application=None) -> None:
     if getattr(ExtBot, "_premium_glyph_hooked", False):
         return
 
     orig_send = ExtBot.send_message
     orig_edit = ExtBot.edit_message_text
+    orig_send_photo = ExtBot.send_photo
+    orig_send_doc = ExtBot.send_document
+    orig_edit_caption = ExtBot.edit_message_caption
 
     async def wrapped_send(self, *args, **kwargs):
+        if kwargs.get("entities") or (len(args) > 4 and args[4]):
+            return await orig_send(self, *args, **kwargs)
+        orig_args = args
+        orig_kwargs = dict(kwargs)
+        transformed = False
         try:
-            parse_mode = kwargs.get("parse_mode")
-            if parse_mode and "html" in str(parse_mode).lower():
-                if "text" in kwargs and isinstance(kwargs["text"], str):
-                    kwargs["text"] = premiumize_html(kwargs["text"])
-                elif len(args) > 1 and isinstance(args[1], str):
-                    args_list = list(args)
-                    args_list[1] = premiumize_html(args_list[1])
-                    args = tuple(args_list)
-        except Exception:
-            pass
-        return await orig_send(self, *args, **kwargs)
+            text = None
+            is_kw = False
+            if "text" in kwargs and isinstance(kwargs["text"], str):
+                text = kwargs["text"]
+                is_kw = True
+            elif len(args) > 1 and isinstance(args[1], str):
+                text = args[1]
+
+            if text:
+                new_text, new_pm, transformed = _transform_message_content(text, kwargs.get("parse_mode"))
+                if transformed:
+                    if is_kw:
+                        kwargs["text"] = new_text
+                    else:
+                        args_list = list(args)
+                        args_list[1] = new_text
+                        args = tuple(args_list)
+                    kwargs["parse_mode"] = new_pm
+            return await orig_send(self, *args, **kwargs)
+        except Exception as err:
+            if transformed:
+                log.warning("Universal premium emoji hook send_message fallback: %s", err)
+                return await orig_send(self, *orig_args, **orig_kwargs)
+            raise
 
     async def wrapped_edit(self, *args, **kwargs):
+        if kwargs.get("entities") or (len(args) > 5 and args[5]):
+            return await orig_edit(self, *args, **kwargs)
+        orig_args = args
+        orig_kwargs = dict(kwargs)
+        transformed = False
         try:
-            parse_mode = kwargs.get("parse_mode")
-            if parse_mode and "html" in str(parse_mode).lower():
-                if "text" in kwargs and isinstance(kwargs["text"], str):
-                    kwargs["text"] = premiumize_html(kwargs["text"])
-                elif len(args) > 0 and isinstance(args[0], str):
-                    args_list = list(args)
-                    args_list[0] = premiumize_html(args_list[0])
-                    args = tuple(args_list)
-        except Exception:
-            pass
-        return await orig_edit(self, *args, **kwargs)
+            text = None
+            is_kw = False
+            if "text" in kwargs and isinstance(kwargs["text"], str):
+                text = kwargs["text"]
+                is_kw = True
+            elif len(args) > 0 and isinstance(args[0], str):
+                text = args[0]
+
+            if text:
+                new_text, new_pm, transformed = _transform_message_content(text, kwargs.get("parse_mode"))
+                if transformed:
+                    if is_kw:
+                        kwargs["text"] = new_text
+                    else:
+                        args_list = list(args)
+                        args_list[0] = new_text
+                        args = tuple(args_list)
+                    kwargs["parse_mode"] = new_pm
+            return await orig_edit(self, *args, **kwargs)
+        except Exception as err:
+            if transformed:
+                log.warning("Universal premium emoji hook edit_message_text fallback: %s", err)
+                return await orig_edit(self, *orig_args, **orig_kwargs)
+            raise
+
+    async def wrapped_send_photo(self, *args, **kwargs):
+        if kwargs.get("caption_entities"):
+            return await orig_send_photo(self, *args, **kwargs)
+        orig_args = args
+        orig_kwargs = dict(kwargs)
+        transformed = False
+        try:
+            caption = None
+            is_kw = False
+            if "caption" in kwargs and isinstance(kwargs["caption"], str):
+                caption = kwargs["caption"]
+                is_kw = True
+            elif len(args) > 2 and isinstance(args[2], str):
+                caption = args[2]
+
+            if caption:
+                new_cap, new_pm, transformed = _transform_message_content(caption, kwargs.get("parse_mode"))
+                if transformed:
+                    if is_kw:
+                        kwargs["caption"] = new_cap
+                    else:
+                        args_list = list(args)
+                        args_list[2] = new_cap
+                        args = tuple(args_list)
+                    kwargs["parse_mode"] = new_pm
+            return await orig_send_photo(self, *args, **kwargs)
+        except Exception as err:
+            if transformed:
+                log.warning("Universal premium emoji hook send_photo fallback: %s", err)
+                return await orig_send_photo(self, *orig_args, **orig_kwargs)
+            raise
+
+    async def wrapped_send_doc(self, *args, **kwargs):
+        if kwargs.get("caption_entities"):
+            return await orig_send_doc(self, *args, **kwargs)
+        orig_args = args
+        orig_kwargs = dict(kwargs)
+        transformed = False
+        try:
+            caption = None
+            is_kw = False
+            if "caption" in kwargs and isinstance(kwargs["caption"], str):
+                caption = kwargs["caption"]
+                is_kw = True
+            elif len(args) > 2 and isinstance(args[2], str):
+                caption = args[2]
+
+            if caption:
+                new_cap, new_pm, transformed = _transform_message_content(caption, kwargs.get("parse_mode"))
+                if transformed:
+                    if is_kw:
+                        kwargs["caption"] = new_cap
+                    else:
+                        args_list = list(args)
+                        args_list[2] = new_cap
+                        args = tuple(args_list)
+                    kwargs["parse_mode"] = new_pm
+            return await orig_send_doc(self, *args, **kwargs)
+        except Exception as err:
+            if transformed:
+                log.warning("Universal premium emoji hook send_document fallback: %s", err)
+                return await orig_send_doc(self, *orig_args, **orig_kwargs)
+            raise
+
+    async def wrapped_edit_caption(self, *args, **kwargs):
+        if kwargs.get("caption_entities"):
+            return await orig_edit_caption(self, *args, **kwargs)
+        orig_args = args
+        orig_kwargs = dict(kwargs)
+        transformed = False
+        try:
+            caption = None
+            is_kw = False
+            if "caption" in kwargs and isinstance(kwargs["caption"], str):
+                caption = kwargs["caption"]
+                is_kw = True
+            elif len(args) > 0 and isinstance(args[0], str):
+                caption = args[0]
+
+            if caption:
+                new_cap, new_pm, transformed = _transform_message_content(caption, kwargs.get("parse_mode"))
+                if transformed:
+                    if is_kw:
+                        kwargs["caption"] = new_cap
+                    else:
+                        args_list = list(args)
+                        args_list[0] = new_cap
+                        args = tuple(args_list)
+                    kwargs["parse_mode"] = new_pm
+            return await orig_edit_caption(self, *args, **kwargs)
+        except Exception as err:
+            if transformed:
+                log.warning("Universal premium emoji hook edit_message_caption fallback: %s", err)
+                return await orig_edit_caption(self, *orig_args, **orig_kwargs)
+            raise
 
     ExtBot.send_message = wrapped_send
     ExtBot.edit_message_text = wrapped_edit
+    ExtBot.send_photo = wrapped_send_photo
+    ExtBot.send_document = wrapped_send_doc
+    ExtBot.edit_message_caption = wrapped_edit_caption
     ExtBot._premium_glyph_hooked = True
 
 

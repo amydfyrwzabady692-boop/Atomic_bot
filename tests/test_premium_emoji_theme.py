@@ -163,38 +163,46 @@ class OutgoingHookTests(unittest.IsolatedAsyncioTestCase):
         bot = ExtBot("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
         captured = {}
 
-        async def dummy_send_message(self, *args, **kwargs):
+        async def dummy_send(self, *args, **kwargs):
+            captured["args"] = args
             captured["kwargs"] = kwargs
             return True
 
-        with patch.object(ExtBot, "send_message", new=_install_send_wrapper(dummy_send_message)):
+        with patch.object(ExtBot, "send_message", new=dummy_send):
+            ExtBot._premium_glyph_hooked = False
+            _install_premium_glyph_hook()
             await bot.send_message(chat_id=123, text="خرید 💎 100", parse_mode="HTML")
             self.assertIn('<tg-emoji emoji-id="cid_gem_999">💎</tg-emoji>', captured["kwargs"]["text"])
+            self.assertEqual(captured["kwargs"]["parse_mode"], "HTML")
 
-    async def test_hook_ignores_non_html(self):
+    async def test_hook_rewrites_markdown_and_plain_text(self):
         bot = ExtBot("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11")
         captured = {}
 
-        async def dummy_send_message(self, *args, **kwargs):
+        async def dummy_send(self, *args, **kwargs):
+            captured["args"] = args
             captured["kwargs"] = kwargs
             return True
 
-        with patch.object(ExtBot, "send_message", new=_install_send_wrapper(dummy_send_message)):
+        with patch.object(ExtBot, "send_message", new=dummy_send):
+            ExtBot._premium_glyph_hooked = False
+            _install_premium_glyph_hook()
+            # Plain text with emoji converts to HTML
             await bot.send_message(chat_id=123, text="خرید 💎 100", parse_mode=None)
-            self.assertEqual(captured["kwargs"]["text"], "خرید 💎 100")
+            self.assertIn('<tg-emoji emoji-id="cid_gem_999">💎</tg-emoji>', captured["kwargs"]["text"])
+            self.assertEqual(captured["kwargs"]["parse_mode"], "HTML")
 
+            # Markdown with emoji converts to HTML
+            await bot.send_message(chat_id=123, text="*خرید* 💎 `100`", parse_mode="Markdown")
+            self.assertIn('<b>خرید</b>', captured["kwargs"]["text"])
+            self.assertIn('<code>100</code>', captured["kwargs"]["text"])
+            self.assertIn('<tg-emoji emoji-id="cid_gem_999">💎</tg-emoji>', captured["kwargs"]["text"])
+            self.assertEqual(captured["kwargs"]["parse_mode"], "HTML")
 
-def _install_send_wrapper(orig_func):
-    async def wrapped(self, *args, **kwargs):
-        try:
-            parse_mode = kwargs.get("parse_mode")
-            if parse_mode and "html" in str(parse_mode).lower():
-                if "text" in kwargs and isinstance(kwargs["text"], str):
-                    kwargs["text"] = emoji.premiumize_html(kwargs["text"])
-        except Exception:
-            pass
-        return await orig_func(self, *args, **kwargs)
-    return wrapped
+            # Plain text WITHOUT emoji stays plain text
+            await bot.send_message(chat_id=123, text="متن ساده بدون ایموجی", parse_mode=None)
+            self.assertEqual(captured["kwargs"]["text"], "متن ساده بدون ایموجی")
+            self.assertIsNone(captured["kwargs"].get("parse_mode"))
 
 
 class AdminExtractionTests(unittest.TestCase):

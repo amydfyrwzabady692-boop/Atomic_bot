@@ -571,17 +571,10 @@ def with_emoji(key, text, parse_mode='Markdown'):
             stripped = _strip_emoji(t_str)
             if stripped:
                 t_str = stripped
-        if not t_str.startswith(prefix):
-            t_str = f'{prefix} {t_str}'
+        if not t_str.startswith(f'<tg-emoji emoji-id="{emoji_id}">'):
+            t_str = f'<tg-emoji emoji-id="{emoji_id}">{prefix}</tg-emoji> {t_str}'
         out['text'] = t_str
-        out['entities'] = [
-            MessageEntity(
-                type='custom_emoji',
-                offset=0,
-                length=utf16_len(prefix),
-                custom_emoji_id=emoji_id,
-            )
-        ]
+        out['parse_mode'] = 'HTML'
     elif parse_mode:
         out['parse_mode'] = parse_mode
     return out

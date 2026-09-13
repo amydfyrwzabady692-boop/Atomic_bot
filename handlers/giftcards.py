@@ -81,8 +81,9 @@ async def giftcard_brand(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     items = catalog.get('brands', {}).get(brand) or catalog.get('items') or []
+    hdr_icon = '🎮' if 'gplay' in str(brand) else ('🍎' if 'itunes' in str(brand) else '🎁')
     text = (
-        f'🎁 *{markdown_safe(title, 80)}*\n'
+        f'{hdr_icon} *{markdown_safe(title, 80)}*\n'
         '━━━━━━━━━━━━━━━\n'
         'مبلغ روی کارت را انتخاب کن.\n'
         'قیمت فروش فقط به *تومان* است.'
@@ -109,8 +110,9 @@ async def giftcard_show(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     title = markdown_safe(item['brand_title'], 80)
     face = markdown_safe(item['face_label'], 40)
     price = int(item['sale_toman'])
+    hdr_icon = '🎮' if 'gplay' in str(item.get('brand')) else ('🍎' if 'itunes' in str(item.get('brand')) else '🎁')
     text = (
-        f'🎁 *{title}*\n'
+        f'{hdr_icon} *{title}*\n'
         f'━━━━━━━━━━━━━━━\n'
         f'📦 مبلغ کارت: *{face}*\n'
         f'💰 قیمت: *{price:,} تومان*\n'
@@ -187,11 +189,13 @@ async def giftcard_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'title': title,
         'tg_id': user.id,
     }
+    brand_hint = str(item.get('brand') or '')
+    hdr_icon = '🎮' if 'gplay' in brand_hint else ('🍎' if 'itunes' in brand_hint else '🎁')
     text = (
         f'✦ *انتخاب روش پرداخت*\n'
         f'سفارش `#{order_id}`\n'
         f'┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n'
-        f'🎁 {markdown_safe(title, 120)}\n'
+        f'{hdr_icon} {markdown_safe(title, 120)}\n'
         f'مبلغ: *{sale:,}* تومان\n'
         f'موجودی کیف پول: *{balance:,}* ت\n'
         '⚡ بعد از تأیید پرداخت، کد گیفت‌کارت همان لحظه برایت ارسال می‌شود.\n'

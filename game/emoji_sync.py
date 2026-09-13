@@ -127,6 +127,13 @@ CURATED_BUTTON_PINS: dict[str, tuple[str, str]] = {
     "b.stars.no": ("4994791839895651680", "❌"),
     "btn_cancel": ("4994791839895651680", "❌"),
 
+    # Gift Cards brands & actions
+    "b.gc.gplay_us": ("6024100028195279285", "🎮"),
+    "b.gc.gplay_tr": ("6024100028195279285", "🎮"),
+    "b.gc.itunes_us": ("6023902876311490783", "🍎"),
+    "b.gc.itunes_tr": ("6023902876311490783", "🍎"),
+    "b.gc.buy": ("5307875864644432289", "✅"),
+
     # Free Fire Gems by ID products (g.1 .. g.14)
     "g.1": ("5940725397195853882", "💎"),   # 110 جم - 3D Shimmering Cyan Diamond
     "g.2": ("5940725397195853882", "💎"),   # 231 جم - 3D Shimmering Cyan Diamond
@@ -195,6 +202,8 @@ CURATED_APPEARANCE_HEADERS: dict[str, tuple[str, str]] = {
     "t.orders.hdr": ("5307994908252975336", "📂"),
     "t.orders.empty": ("5307994908252975336", "📂"),
     "t.gc.hdr": ("4958699241137505132", "🎁"),
+    "t.gc.gplay": ("6024100028195279285", "🎮"),
+    "t.gc.itunes": ("6023902876311490783", "🍎"),
     "t.ff.hdr": ("5334529375121481680", "🎮"),
     "t.wallet.hdr": ("5908958028073275934", "💰"),
     "t.gems.hdr": ("5940725397195853882", "💎"),
