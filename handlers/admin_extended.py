@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import re
 import time
 import uuid
 from urllib.parse import urlparse
+
+log = logging.getLogger(__name__)
 
 from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -16,6 +19,7 @@ import profitability
 from credential_vault import CredentialVaultError, decrypt_credentials, mask_identifier
 from forced_join_logic import (
     valid_forced_join_chat_id, valid_telegram_invite_url,
+    normalize_telegram_invite_url, extract_channel_identifier,
 )
 from db import (
     add_bot_admin, add_category, add_department, add_gem_package, add_promo_code,
@@ -99,14 +103,6 @@ COMPOUND_FIELDS = {
     'credentialadminadd': (
         ('شناسه عددی تلگرام', 'مثال: 123456789'),
         ('نام پشتیبان جم با اطلاعات', 'مثال: پشتیبان هفتگی'),
-    ),
-    'forcedjoinadd': (
-        (
-            'شناسه کانال',
-            'کانال عمومی: @Omid_AtomicFF — کانال خصوصی: شناسه -100...',
-        ),
-        ('لینک ورود', 'مثال: https://t.me/Omid_AtomicFF یا لینک دعوت خصوصی'),
-        ('نام نمایشی', 'مثال: کانال اصلی فروشگاه'),
     ),
 }
 
@@ -2388,7 +2384,12 @@ INPUT_ACTIONS = {
     ),
     'admi_forcedjoin': (
         'forcedjoinadd',
-        'مشخصات کانال جوین اجباری را وارد کن.',
+        '📢 *افزودن کانال به جوین اجباری*\n\n'
+        '1️⃣ ابتدا ربات (@atomicshoporg_bot) را در کانال خود «ادمین» کنید (با دسترسی مشاهده اعضا).\n\n'
+        '2️⃣ سپس یکی از کارهای زیر را انجام دهید:\n'
+        '• یک پیام از کانال را به اینجا **فوروارد (Forward)** کنید.\n'
+        '• یا آیدی یا لینک کانال را بفرستید (مثلاً @channel یا https://t.me/channel).\n'
+        '• برای کانال خصوصی: شناسه عددی (-100...) همراه با لینک دعوت.',
     ),
 }
 
@@ -2423,7 +2424,7 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             _compound_prompt(action, 0), parse_mode='Markdown'
         )
     else:
-        await query.edit_message_text(prompt + '\n\n/cancel برای انصراف')
+        await query.edit_message_text(prompt + '\n\n/cancel برای انصراف', parse_mode='Markdown')
     return WAIT_VALUE
 
 
@@ -2682,34 +2683,129 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     '✅ دسترسی مدیر ثبت شد.', reply_markup=admin_home_keyboard()
                 )
         elif action == 'forcedjoinadd':
-            chat_id = p[0].strip()
-            if not valid_forced_join_chat_id(chat_id):
-                raise ValueError(
-                    'شناسه باید @username عمومی یا شناسه عددی -100... باشد.'
-                )
-            if not valid_telegram_invite_url(p[1]):
-                raise ValueError('لینک باید HTTPS معتبر تلگرام باشد.')
+            pending_id = ctx.user_data.pop('fj_pending_id', None)
+            pending_title = ctx.user_data.pop('fj_pending_title', '')
+
+            forward_chat = None
+            if update.message:
+                if getattr(update.message, 'forward_from_chat', None):
+                    forward_chat = update.message.forward_from_chat
+                elif getattr(update.message, 'forward_origin', None):
+                    forward_chat = getattr(update.message.forward_origin, 'chat', None)
+
+            chat_id = None
+            invite_url = None
+            title = None
+
+            if pending_id:
+                chat_id = pending_id
+                title = pending_title
+                invite_url = normalize_telegram_invite_url(raw)
+                if not invite_url:
+                    ctx.user_data['fj_pending_id'] = pending_id
+                    ctx.user_data['fj_pending_title'] = pending_title
+                    raise ValueError('لینک دعوت معتبر نیست. لطفاً یک لینک معتبر تلگرام (مثل https://t.me/...) بفرستید.')
+            elif forward_chat:
+                if getattr(forward_chat, 'username', None):
+                    chat_id = f"@{forward_chat.username}"
+                    invite_url = f"https://t.me/{forward_chat.username}"
+                else:
+                    chat_id = str(forward_chat.id)
+                title = getattr(forward_chat, 'title', '') or ''
+            else:
+                if not raw:
+                    raise ValueError(
+                        'لطفاً آیدی کانال، لینک آن یا یک پیام فوروارد شده از کانال را ارسال کنید.'
+                    )
+
+                parts = _split_compound(raw)
+                if parts and len(parts) >= 2:
+                    chat_id = parts[0].strip()
+                    invite_url = normalize_telegram_invite_url(parts[1].strip())
+                    title = parts[2].strip() if len(parts) >= 3 else ''
+                else:
+                    extracted_id, extracted_inv = extract_channel_identifier(raw)
+                    if extracted_id:
+                        chat_id = extracted_id
+                        invite_url = extracted_inv
+                    elif extracted_inv:
+                        raise ValueError(
+                            'این لینک دعوت خصوصی است. ربات برای بررسی عضویت به شناسه عددی کانال نیز نیاز دارد.\n\n'
+                            '👈 ساده‌ترین راه: یک پیام از کانال را به اینجا **فوروارد (Forward)** کنید.'
+                        )
+                    else:
+                        raise ValueError(
+                            'فرمت ورودی نامعتبر است.\n\n'
+                            'روش‌های مجاز:\n'
+                            '• فوروارد یک پیام از کانال\n'
+                            '• ارسال آیدی کانال (مثل @mychannel یا mychannel)\n'
+                            '• ارسال لینک عمومی کانال (مثل https://t.me/mychannel)\n'
+                            '• ارسال شناسه عددی برای کانال خصوصی (-100...)'
+                        )
+
+            target_id = int(chat_id) if (str(chat_id).startswith('-') and str(chat_id)[1:].isdigit()) else chat_id
+            bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
+
             try:
-                bot_member = await ctx.bot.get_chat_member(
-                    chat_id=chat_id,
-                    user_id=ctx.bot.id,
-                )
-            except Exception:
+                chat_obj = await ctx.bot.get_chat(target_id)
+            except Exception as exc:
                 raise ValueError(
-                    'ربات به کانال دسترسی ندارد؛ اول ربات را داخل کانال ادمین کن.'
+                    f'ربات به این کانال دسترسی ندارد ({exc}).\n\n'
+                    f'👈 ابتدا ربات (@{bot_user}) را به عنوان «مدیر / Administrator» به کانال اضافه کنید و مجدداً پیام را ارسال یا فوروارد کنید.'
                 ) from None
+
+            title = title or getattr(chat_obj, 'title', '') or str(chat_id)
+
+            if not invite_url:
+                if getattr(chat_obj, 'username', None):
+                    invite_url = f"https://t.me/{chat_obj.username}"
+                    if not str(chat_id).startswith('@'):
+                        chat_id = f"@{chat_obj.username}"
+                elif getattr(chat_obj, 'invite_link', None):
+                    invite_url = chat_obj.invite_link
+                else:
+                    try:
+                        invite_url = await ctx.bot.export_chat_invite_link(target_id)
+                    except Exception:
+                        pass
+
+            if not invite_url:
+                ctx.user_data['admin_ext_action'] = 'forcedjoinadd'
+                ctx.user_data['fj_pending_id'] = str(target_id)
+                ctx.user_data['fj_pending_title'] = title
+                await update.message.reply_text(
+                    f'✅ کانال *{title}* شناسایی شد.\n\n'
+                    '🔗 لطفاً لینک دعوت (Invite Link) کانال را بفرستید:',
+                    parse_mode='Markdown',
+                )
+                return WAIT_VALUE
+
+            try:
+                bot_member = await ctx.bot.get_chat_member(chat_id=target_id, user_id=ctx.bot.id)
+            except Exception as member_err:
+                raise ValueError(
+                    f'خطا در بررسی عضویت ربات در کانال: {member_err}\n'
+                    f'مطمئن شوید ربات در کانال ادمین است.'
+                ) from None
+
             if bot_member.status not in ('administrator', 'creator'):
                 raise ValueError(
-                    'برای بررسی مطمئن عضویت، ربات باید ادمین کانال باشد.'
+                    f'ربات (@{bot_user}) در کانال «{title}» هنوز ادمین نشده است!\n\n'
+                    'برای اینکه ربات بتواند عضویت کاربران را بررسی کند، باید در کانال دسترسی مدیریت (مشاهده اعضا) داشته باشد.'
                 )
-            title = '' if p[2].strip() == '-' else p[2].strip()
-            add_forced_join_channel(chat_id, p[1].strip(), title)
+
+            final_title = title.strip()[:150]
+            add_forced_join_channel(str(chat_id), invite_url, final_title)
             invalidate_forced_join_cache()
+
             await update.message.reply_text(
-                '✅ کانال به جوین اجباری اضافه شد.\n'
-                'حتماً ربات را داخل کانال ادمین کن.',
+                f'✅ کانال *{final_title}* با موفقیت به جوین اجباری اضافه شد.\n\n'
+                f'📢 شناسه: `{chat_id}`\n'
+                f'🔗 لینک: {invite_url}',
+                parse_mode='Markdown',
                 reply_markup=admin_home_keyboard(),
             )
+            return ConversationHandler.END
         elif action.startswith(('gemprice:', 'gemtitle:', 'gemstock:')):
             kind, gid = action.split(':')
             field = {'gemprice': 'Price', 'gemtitle': 'Title', 'gemstock': 'Stock'}[kind]
@@ -2752,6 +2848,8 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_input_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop('admin_ext_action', None)
     ctx.user_data.pop('admin_ext_draft', None)
+    ctx.user_data.pop('fj_pending_id', None)
+    ctx.user_data.pop('fj_pending_title', None)
     await update.message.reply_text('انصراف.', reply_markup=admin_home_keyboard())
     return ConversationHandler.END
 
@@ -2765,7 +2863,7 @@ def admin_extended_conversation_handler():
     )
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_input_start, pattern=entry_pattern)],
-        states={WAIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_input_receive)]},
+        states={WAIT_VALUE: [MessageHandler(~filters.COMMAND, admin_input_receive)]},
         fallbacks=[CommandHandler('cancel', admin_input_cancel)],
         allow_reentry=True,
         block=False,

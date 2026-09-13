@@ -39,5 +39,49 @@ class ForcedJoinValidationTests(unittest.TestCase):
         self.assertFalse(member_is_joined('kicked'))
 
 
+    def test_normalize_telegram_invite_url(self):
+        from forced_join_logic import normalize_telegram_invite_url
+        self.assertEqual(
+            normalize_telegram_invite_url('t.me/Omid_AtomicFF'),
+            'https://t.me/Omid_AtomicFF',
+        )
+        self.assertEqual(
+            normalize_telegram_invite_url('http://t.me/Omid_AtomicFF'),
+            'https://t.me/Omid_AtomicFF',
+        )
+        self.assertEqual(
+            normalize_telegram_invite_url('https://t.me/+invite'),
+            'https://t.me/+invite',
+        )
+        self.assertEqual(normalize_telegram_invite_url('https://invalid.com'), '')
+
+    def test_extract_channel_identifier(self):
+        from forced_join_logic import extract_channel_identifier
+        self.assertEqual(
+            extract_channel_identifier('@mychannel'),
+            ('@mychannel', 'https://t.me/mychannel'),
+        )
+        self.assertEqual(
+            extract_channel_identifier('https://t.me/mychannel'),
+            ('@mychannel', 'https://t.me/mychannel'),
+        )
+        self.assertEqual(
+            extract_channel_identifier('t.me/mychannel'),
+            ('@mychannel', 'https://t.me/mychannel'),
+        )
+        self.assertEqual(
+            extract_channel_identifier('mychannel'),
+            ('@mychannel', 'https://t.me/mychannel'),
+        )
+        self.assertEqual(
+            extract_channel_identifier('-1001234567890'),
+            ('-1001234567890', ''),
+        )
+        self.assertEqual(
+            extract_channel_identifier('https://t.me/+invitecode'),
+            ('', 'https://t.me/+invitecode'),
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

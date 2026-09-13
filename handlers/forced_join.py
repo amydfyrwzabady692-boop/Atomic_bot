@@ -31,13 +31,15 @@ async def _forced_join_channels():
 
 
 def _join_keyboard(channels):
-    rows = [
-        [InlineKeyboardButton(
+    rows = []
+    for _channel_id, chat_id, title, invite_url, _active in channels:
+        url = str(invite_url or '').strip()
+        if url and not url.startswith(('http://', 'https://')):
+            url = f'https://{url}'
+        rows.append([InlineKeyboardButton(
             f'📢 عضویت در {title or chat_id}',
-            url=invite_url,
-        )]
-        for _channel_id, chat_id, title, invite_url, _active in channels
-    ]
+            url=url or f'https://t.me/{str(chat_id).lstrip("@")}',
+        )])
     rows.append([
         InlineKeyboardButton(
             '✅ عضو شدم — بررسی عضویت',
@@ -52,7 +54,8 @@ async def _membership_result(bot, user_id, channels):
     unavailable = []
     for _channel_id, chat_id, title, _invite_url, _active in channels:
         try:
-            member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+            target_id = int(chat_id) if (str(chat_id).startswith('-') and str(chat_id)[1:].isdigit()) else chat_id
+            member = await bot.get_chat_member(chat_id=target_id, user_id=user_id)
             joined = member_is_joined(
                 member.status,
                 getattr(member, 'is_member', False),
