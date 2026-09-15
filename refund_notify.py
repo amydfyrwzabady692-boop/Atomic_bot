@@ -25,14 +25,11 @@ async def notify_g2_refund(bot, order_id, telegram_id=None, amount=0):
 
     if tg:
         try:
-            text = (
-                f"❌ سفارش #{order_id} انجام نشد.\n"
-                "سرویس تأمین (G2Bulk) تحویل را رد کرد یا ناموفق بود.\n"
-            )
+            text = f"❌ سفارش #{order_id} انجام نشد.\n"
             if amount > 0:
-                text += f"💰 مبلغ {amount:,} تومان به کیف پولت واریز شد."
+                text += f"💰 مبلغ {amount:,} تومان به کیف پولت برگشت."
             else:
-                text += "پشتیبانی وضعیت را بررسی می‌کند."
+                text += "مبلغ پرداختی توسط پشتیبانی بررسی و پیگیری می‌شود."
             await bot.send_message(chat_id=int(tg), text=text)
         except Exception:
             _LOG.exception('Could not notify user for refunded order %s', order_id)

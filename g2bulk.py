@@ -474,7 +474,7 @@ def can_fulfill_gift_card(product_id, force=False):
     cost = product['unit_price']
     balance = Decimal(str(snapshot['balance']))
     if balance < cost:
-        return False, cost, balance, 'موجودی سرویس تأمین برای این گیفت‌کارت کافی نیست.'
+        return False, cost, balance, 'موجودی این گیفت‌کارت در حال حاضر کافی نیست.'
     return True, cost, balance, None
 
 
@@ -590,7 +590,7 @@ def can_fulfill(amount, catalogue_name='', force=False):
     # Decimal raises TypeError and used to break every product click.
     available = Decimal(str(snapshot['balance'])) >= Decimal(str(cost))
     return available, cost, snapshot['balance'], (
-        None if available else 'موجودی سرویس تأمین برای این بسته کافی نیست.'
+        None if available else 'موجودی این بسته در حال حاضر کافی نیست.'
     )
 
 
@@ -948,5 +948,5 @@ def can_fulfill_stars(catalogue_name, force=False):
         return False, None, snapshot.get('balance'), 'این مقدار استارز در کاتالوگ زنده نیست.'
     available = Decimal(str(snapshot['balance'])) >= Decimal(str(cost))
     return available, cost, snapshot['balance'], (
-        None if available else 'موجودی سرویس تأمین برای این استارز کافی نیست.'
+        None if available else 'موجودی این بسته در حال حاضر کافی نیست.'
     )

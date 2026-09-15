@@ -671,12 +671,12 @@ def create_gift_card_order_atomic(
     if not live.get('ok'):
         raise ValueError(live.get('error') or 'گیفت‌کارت در دسترس نیست.')
     if not live.get('can_buy'):
-        raise ValueError('موجودی این گیفت‌کارت تمام شده یا سرویس تأمین کافی نیست.')
+        raise ValueError('موجودی این گیفت‌کارت در حال حاضر کافی نیست.')
     available, _cost, _balance, error = g2bulk.can_fulfill_gift_card(
         product_id, force=True
     )
     if not available:
-        raise ValueError(error or 'موجودی این گیفت‌کارت تمام شده یا سرویس تأمین کافی نیست.')
+        raise ValueError(error or 'موجودی این گیفت‌کارت در حال حاضر کافی نیست.')
     price = checked_amount(live['sale_toman'], label='قیمت گیفت‌کارت')
     if price != expected_price:
         raise ValueError('قیمت گیفت‌کارت تغییر کرده است؛ دوباره از فهرست انتخاب کن.')

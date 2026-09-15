@@ -220,7 +220,7 @@ def _delivery_preflight(order_id, force=True):
             amount, catalogue or str(amount), force=force
         )
         if not available:
-            return False, error or 'موجودی سرویس تأمین کافی نیست.', cost, balance
+            return False, error or 'موجودی این بسته در حال حاضر کافی نیست.', cost, balance
         force = False
     return True, None, None, None
 
@@ -448,17 +448,14 @@ def _success_user_text(order_id, status, ref_id=None):
 
 def _fail_refund_user_text(order_id, refunded):
     amount = int(refunded or 0)
-    msg = (
-        f"❌ *سفارش #{order_id} انجام نشد*\n"
-        f"سرویس تأمین (G2Bulk) سفارش را رد کرد یا تحویل ناموفق بود.\n"
-    )
+    msg = f"❌ *سفارش #{order_id} انجام نشد.*\n"
     if amount > 0:
         msg += (
-            f"💰 مبلغ *{amount:,}* تومان به کیف پولت واریز شد.\n"
-            "می‌توانی دوباره خرید کنی یا موجودی را نگه داری."
+            f"💰 مبلغ *{amount:,}* تومان به کیف پولت برگشت.\n"
+            "می‌توانی دوباره خرید کنی یا موجودی را در حسابت نگه داری."
         )
     else:
-        msg += "پشتیبانی وضعیت پرداخت را بررسی می‌کند."
+        msg += "مبلغ پرداختی توسط پشتیبانی بررسی و پیگیری می‌شود."
     return msg
 
 
@@ -697,7 +694,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             message=availability_error,
         )
         await query.edit_message_text(
-            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ "
+            "❌ موجودی این بسته در حال حاضر کافی نیست؛ "
             "برای جلوگیری از کسر پول، پرداخت باز نشد."
         )
         return
@@ -979,7 +976,7 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if not available:
         await query.edit_message_text(
-            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ کارت‌به‌کارت باز نشد."
+            "❌ موجودی این بسته در حال حاضر کافی نیست؛ کارت‌به‌کارت باز نشد."
         )
         return
 
@@ -1090,7 +1087,7 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if not available:
         await query.edit_message_text(
-            "❌ موجودی سرویس تحویل برای این بسته کافی نیست؛ "
+            "❌ موجودی این بسته در حال حاضر کافی نیست؛ "
             "هیچ مبلغی از کیف پول کم نشد."
         )
         return
