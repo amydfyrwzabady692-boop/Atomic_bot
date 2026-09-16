@@ -666,16 +666,20 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         cred_tickets = await asyncio.to_thread(count_open_tickets, 'credential')
         site = await asyncio.to_thread(site_ops_counts)
-        await query.edit_message_text(
-            '🔐 *پنل جم با اطلاعات*\n'
-            'دو بخش جدا: سفارش‌های *ربات* و سفارش‌های *سایت*.',
-            parse_mode='Markdown',
-            reply_markup=credential_admin_home_keyboard({
-                'ready_creds': ready_creds,
-                'site_ready_creds': site['site_ready_creds'],
-                'cred_tickets': cred_tickets,
-            }),
-        )
+        try:
+            await query.edit_message_text(
+                '🔐 *پنل جم با اطلاعات*\n'
+                'دو بخش جدا: سفارش‌های *ربات* و سفارش‌های *سایت*.',
+                parse_mode='Markdown',
+                reply_markup=credential_admin_home_keyboard({
+                    'ready_creds': ready_creds,
+                    'site_ready_creds': site['site_ready_creds'],
+                    'cred_tickets': cred_tickets,
+                }),
+            )
+        except Exception as exc:
+            if 'not modified' not in str(exc).lower():
+                raise
         return
 
     if data == 'admx_hub_orders':
@@ -683,19 +687,23 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ready_creds = await asyncio.to_thread(count_ready_credential_orders)
         stats = await asyncio.to_thread(get_admin_stats)
         site = await asyncio.to_thread(site_ops_counts)
-        await query.edit_message_text(
-            '📦 *مدیریت سفارش‌ها*\n'
-            'استعلام با شماره سفارش · لیست کامل · جم · رسید',
-            parse_mode='Markdown',
-            reply_markup=admin_hub_orders_keyboard({
-                'ready_creds': ready_creds,
-                'site_ready_creds': site['site_ready_creds'],
-                'stuck': ops['stuck_processing'],
-                'failed_g2': stats.get('failed_g2', 0),
-                'receipts': ops['pending_receipts'],
-                'site_receipts': site['site_receipts'],
-            }),
-        )
+        try:
+            await query.edit_message_text(
+                '📦 *مدیریت سفارش‌ها*\n'
+                'استعلام با شماره سفارش · لیست کامل · جم · رسید',
+                parse_mode='Markdown',
+                reply_markup=admin_hub_orders_keyboard({
+                    'ready_creds': ready_creds,
+                    'site_ready_creds': site['site_ready_creds'],
+                    'stuck': ops['stuck_processing'],
+                    'failed_g2': stats.get('failed_g2', 0),
+                    'receipts': ops['pending_receipts'],
+                    'site_receipts': site['site_receipts'],
+                }),
+            )
+        except Exception as exc:
+            if 'not modified' not in str(exc).lower():
+                raise
         return
     if data == 'admx_allorders':
         rows = await asyncio.to_thread(list_recent_orders_admin, 20)
@@ -1540,7 +1548,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cfg = await asyncio.to_thread(get_credential_pricing_config)
         try:
             updated = await asyncio.to_thread(sync_gem_prices_daily, True)
-        except TypeError:
+        except Exception:
             updated = 0
         if updated:
             text = (

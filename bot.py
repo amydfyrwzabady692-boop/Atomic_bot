@@ -1,4 +1,5 @@
 import logging
+log = logging.getLogger(__name__)
 import os
 import asyncio
 import html as _html_module
@@ -708,7 +709,12 @@ def _install_premium_glyph_hook(application=None) -> None:
 
     async def wrapped_edit(self, *args, **kwargs):
         if kwargs.get("entities") or (len(args) > 5 and args[5]):
-            return await orig_edit(self, *args, **kwargs)
+            try:
+                return await orig_edit(self, *args, **kwargs)
+            except Exception as err:
+                if 'not modified' in str(err).lower():
+                    return None
+                raise
         orig_args = args
         orig_kwargs = dict(kwargs)
         transformed = False
@@ -733,9 +739,16 @@ def _install_premium_glyph_hook(application=None) -> None:
                     kwargs["parse_mode"] = new_pm
             return await orig_edit(self, *args, **kwargs)
         except Exception as err:
+            if 'not modified' in str(err).lower():
+                return None
             if transformed:
                 log.warning("Universal premium emoji hook edit_message_text fallback: %s", err)
-                return await orig_edit(self, *orig_args, **orig_kwargs)
+                try:
+                    return await orig_edit(self, *orig_args, **orig_kwargs)
+                except Exception as fallback_err:
+                    if 'not modified' in str(fallback_err).lower():
+                        return None
+                    raise
             raise
 
     async def wrapped_send_photo(self, *args, **kwargs):
@@ -804,7 +817,12 @@ def _install_premium_glyph_hook(application=None) -> None:
 
     async def wrapped_edit_caption(self, *args, **kwargs):
         if kwargs.get("caption_entities"):
-            return await orig_edit_caption(self, *args, **kwargs)
+            try:
+                return await orig_edit_caption(self, *args, **kwargs)
+            except Exception as err:
+                if 'not modified' in str(err).lower():
+                    return None
+                raise
         orig_args = args
         orig_kwargs = dict(kwargs)
         transformed = False
@@ -829,9 +847,16 @@ def _install_premium_glyph_hook(application=None) -> None:
                     kwargs["parse_mode"] = new_pm
             return await orig_edit_caption(self, *args, **kwargs)
         except Exception as err:
+            if 'not modified' in str(err).lower():
+                return None
             if transformed:
                 log.warning("Universal premium emoji hook edit_message_caption fallback: %s", err)
-                return await orig_edit_caption(self, *orig_args, **orig_kwargs)
+                try:
+                    return await orig_edit_caption(self, *orig_args, **orig_kwargs)
+                except Exception as fallback_err:
+                    if 'not modified' in str(fallback_err).lower():
+                        return None
+                    raise
             raise
 
     ExtBot.send_message = wrapped_send

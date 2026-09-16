@@ -80,27 +80,24 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not await asyncio.to_thread(get_bool_setting, 'sales_enabled', True):
-        await query.edit_message_text(
-            "⛔ فروش موقتاً توسط مدیریت متوقف شده است.",
-            reply_markup=main_menu(),
-        )
+        await query.edit_message_text("⛔ فروش موقتاً توسط مدیریت متوقف شده است.")
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
     key = query.data.replace('sens_buy_', '')
     # Only current database rows are purchasable. Old static callback buttons
     # must not bypass an admin deletion, deactivation, or price change.
     row = await asyncio.to_thread(get_sense_package, key) if key.isdigit() else None
     if not row or not row[5]:
-        await query.edit_message_text("بسته پیدا نشد.", reply_markup=main_menu())
+        await query.edit_message_text("بسته پیدا نشد.")
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
     pack = {'key': row[0], 'title': row[1], 'price': row[3], 'desc': row[4]}
 
     try:
         pack['price'] = checked_amount(pack.get('price'), label='قیمت بسته')
     except ValueError:
-        await query.edit_message_text(
-            "❌ قیمت این بسته معتبر نیست؛ سفارش ساخته نشد.",
-            reply_markup=main_menu(),
-        )
+        await query.edit_message_text("❌ قیمت این بسته معتبر نیست؛ سفارش ساخته نشد.")
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
 
     user = update.effective_user
@@ -119,7 +116,8 @@ async def sens_buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         db_id, order_id, title, price, balance = await asyncio.to_thread(persist_order)
     except ValueError as exc:
-        await query.edit_message_text(f"❌ {exc}", reply_markup=main_menu())
+        await query.edit_message_text(f"❌ {exc}")
+        await query.message.reply_text("چه کاری برات بکنم؟", reply_markup=main_menu())
         return
     pack['title'], pack['price'] = title, price
     ctx.user_data['db_id'] = db_id

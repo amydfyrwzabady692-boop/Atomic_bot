@@ -37,18 +37,18 @@ def _deny_text():
     return "❌ این دستور برای شما فعال نیست."
 
 
-def _edit_safe(query, text, reply_markup=None, parse_mode='Markdown'):
+async def _edit_safe(query, text, reply_markup=None, parse_mode='Markdown'):
     """ویرایش امن پیام؛ خطای «Message is not modified» را بی‌صدا رد می‌کند.
 
     دکمه‌های رفرش/بروزرسانی پنل ادمین اغلب همان متن قبلی را دوباره edit می‌کنند؛
     تلگرام این‌جا ۴۰۰ برمی‌گرداند که نباید به اعلان «خطای داکر» منجر شود.
     """
     try:
-        return query.edit_message_text(
+        return await query.edit_message_text(
             text, parse_mode=parse_mode, reply_markup=reply_markup
         )
     except Exception as exc:
-        if 'message is not modified' not in str(exc).lower():
+        if 'not modified' not in str(exc).lower():
             raise
 
 

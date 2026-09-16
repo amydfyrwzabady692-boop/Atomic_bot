@@ -939,9 +939,13 @@ async def check_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     (ctx.user_data.get('zp_meta') or {}).pop(str(order_id), None)
 
     async def _edit(text):
-        await query.edit_message_text(
-            text, parse_mode='Markdown', reply_markup=main_menu(),
-        )
+        try:
+            await query.edit_message_text(text, parse_mode='Markdown')
+        except Exception:
+            try:
+                await query.edit_message_text(text)
+            except Exception:
+                pass
 
     await _handle_fulfill_result(
         ctx.bot, order_id, success, status,
@@ -1105,9 +1109,13 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         async def _edit(text):
             extra = f"\nکسر از کیف پول: *{used:,}* ت\nموجودی بعد از کسر: *{new_bal:,}* ت"
-            await query.edit_message_text(
-                text + extra, parse_mode='Markdown', reply_markup=main_menu(),
-            )
+            try:
+                await query.edit_message_text(text + extra, parse_mode='Markdown')
+            except Exception:
+                try:
+                    await query.edit_message_text(text + extra)
+                except Exception:
+                    pass
 
         await _handle_fulfill_result(
             ctx.bot, order_id, success, status,
