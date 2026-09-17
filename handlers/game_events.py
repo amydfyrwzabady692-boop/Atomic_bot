@@ -20,7 +20,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import button_style  # noqa: F401 — دکمه‌های رنگی
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
-    LinkPreviewOptions, MessageEntity, Update,
+    KeyboardButton, KeyboardButtonRequestChat, LinkPreviewOptions,
+    MessageEntity, ReplyKeyboardMarkup, Update,
 )
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
@@ -33,6 +34,7 @@ import events_db as edb
 import referral_db
 from admin_notify import is_admin
 from db import is_user_blocked, list_all_telegram_ids, list_forced_join_channels, log_admin_action
+from keyboards import main_menu
 
 _LOG = logging.getLogger(__name__)
 
@@ -411,7 +413,44 @@ def panel_view(event, channels, values):
     return '\n'.join(lines), rows
 
 
-def channel_picker_view(event, channels):
+def get_known_unregistered_channels(existing_channels):
+    """لیست چنل‌های شناخته‌شده (از جوین اجباری یا کش ادمینی) که هنوز در رویدادها اضافه نشده‌اند."""
+    existing_refs = {str(c['chat_id']).lower() for c in (existing_channels or [])}
+    for c in (existing_channels or []):
+        if c.get('username'):
+            existing_refs.add(f"@{c['username'].lower()}")
+            existing_refs.add(c['username'].lower())
+    known = []
+    # 1) Forced join channels
+    try:
+        for row in list_forced_join_channels(False):
+            _cid, chat_id, title, _url, _act = row
+            cid_str = str(chat_id).strip()
+            if cid_str.lower() not in existing_refs and cid_str.lstrip('@').lower() not in existing_refs:
+                known.append({'chat_ref': cid_str, 'title': title or cid_str})
+                existing_refs.add(cid_str.lower())
+                existing_refs.add(cid_str.lstrip('@').lower())
+    except Exception:
+        pass
+    # 2) _KNOWN_ADMIN_CHANNELS
+    try:
+        from handlers.admin_extended import _KNOWN_ADMIN_CHANNELS
+        for raw_id, cinfo in list(_KNOWN_ADMIN_CHANNELS.items()):
+            c_chat_id = str(cinfo.get('chat_id') or raw_id).strip()
+            c_raw = str(cinfo.get('raw_id') or raw_id).strip()
+            if (c_chat_id.lower() not in existing_refs
+                    and c_raw.lower() not in existing_refs
+                    and c_chat_id.lstrip('@').lower() not in existing_refs):
+                known.append({'chat_ref': c_chat_id, 'title': cinfo.get('title') or c_chat_id})
+                existing_refs.add(c_chat_id.lower())
+                existing_refs.add(c_raw.lower())
+                existing_refs.add(c_chat_id.lstrip('@').lower())
+    except Exception:
+        pass
+    return known
+
+
+def channel_picker_view(event, channels, bot_username=None):
     eid = event['id']
     selected = selected_channel_ids(event, channels)
     lines = [
@@ -420,41 +459,58 @@ def channel_picker_view(event, channels):
         'روی هر چنل بزن تا انتخاب/لغو شود.',
     ]
     if not channels:
-        lines.append('\nهنوز چنلی ثبت نشده. ربات را در چنل ادمین کن (ارسال پست)، '
-                     'یا «➕ افزودن چنل» را بزن و یک پست از چنل فوروارد کن.')
+        lines.append('\nهنوز چنلی برای این رویداد انتخاب یا ثبت نشده.')
     rows = []
     for channel in channels:
         mark = '✅' if channel['id'] in selected else '⬜️'
-        icon = _TYPE_LABEL.get(channel['chat_type'], '📢')
+        icon = _TYPE_LABEL.get(channel.get('chat_type'), '📢')
         rows.append([_btn(f'{mark} {icon} {channel["title"][:40]}',
                           f'gev_cht_{eid}_{channel["id"]}',
                           'success' if channel['id'] in selected else 'primary')])
     if channels:
         rows.append([_btn('☑️ همه', f'gev_chall_{eid}'), _btn('⬜️ هیچ‌کدام', f'gev_chnone_{eid}')])
-    rows.append([_btn('➕ افزودن چنل', f'gevin_addch_{eid}'),
-                 _btn('🔄 بررسی دسترسی', f'gev_chref_{eid}')])
+
+    # Show known channels that can be registered directly with 1 click
+    unregistered = get_known_unregistered_channels(channels)
+    for k in unregistered[:3]:
+        rows.append([_btn(f'⚡️ افزودن آسان «{k["title"][:28]}»', f'gev_qadd_{eid}_{k["chat_ref"]}', 'success')])
+
+    bot_user = (bot_username or 'atomicshoporg_bot').lstrip('@')
+    add_url = f"https://t.me/{bot_user}?startchannel=game_event&admin=post_messages+edit_messages"
+    rows.append([
+        _btn('➕ افزودن چنل', f'gevin_addch_{eid}'),
+        _btn('⚡️ انتخاب از تلگرام', url=add_url),
+    ])
+    rows.append([_btn('🔄 بررسی دسترسی', f'gev_chref_{eid}')])
     rows.append([_btn('🔙 رویداد', f'gev_ev_{eid}')])
     return '\n'.join(lines), rows
 
 
-def channels_view(channels):
+def channels_view(channels, bot_username=None):
     lines = ['📢 چنل‌های ربات برای انتشار رویداد', '━━━━━━━━━━━━━━━']
     rows = []
     if not channels:
         lines.append('هنوز چنلی ثبت نشده.')
     for channel in channels:
-        state = '✅' if channel['active'] and channel['can_post'] else (
-            '⚠️ بدون دسترسی ارسال' if channel['active'] else '❌ ربات ادمین نیست')
-        handle = f'@{channel["username"]}' if channel['username'] else channel['chat_id']
-        lines.append(f'{_TYPE_LABEL.get(channel["chat_type"], "📢")} {channel["title"]} · {handle} · {state}')
+        state = '✅' if channel.get('active', True) and channel.get('can_post', True) else (
+            '⚠️ بدون دسترسی ارسال' if channel.get('active', True) else '❌ ربات ادمین نیست')
+        handle = f'@{channel["username"]}' if channel.get('username') else channel['chat_id']
+        lines.append(f'{_TYPE_LABEL.get(channel.get("chat_type"), "📢")} {channel["title"]} · {handle} · {state}')
         rows.append([_btn(f'🗑 {channel["title"][:40]}', f'gev_chdel_{channel["id"]}', 'danger')])
-    lines.extend([
-        '',
-        '➕ چنل جدید: ربات را در چنل ادمین کن تا خودکار اضافه شود،',
-        'یا «افزودن چنل» را بزن و یک پست از چنل فوروارد کن یا @username / شناسه -100… بفرست.',
+
+    unregistered = get_known_unregistered_channels(channels)
+    if unregistered:
+        lines.extend(['', '💡 چنل‌های شناخته‌شده (برای افزودن با ۱ کلیک):'])
+        for k in unregistered[:4]:
+            rows.append([_btn(f'⚡️ افزودن آسان «{k["title"][:28]}»', f'gev_qadd__{k["chat_ref"]}', 'success')])
+
+    bot_user = (bot_username or 'atomicshoporg_bot').lstrip('@')
+    add_url = f"https://t.me/{bot_user}?startchannel=game_event&admin=post_messages+edit_messages"
+    rows.append([
+        _btn('➕ افزودن چنل', 'gevin_addch', 'success'),
+        _btn('⚡️ انتخاب از تلگرام', url=add_url),
     ])
-    rows.append([_btn('➕ افزودن چنل', 'gevin_addch', 'success'),
-                 _btn('🔄 بررسی دسترسی همه', 'gev_chansref')])
+    rows.append([_btn('🔄 بررسی دسترسی همه', 'gev_chansref')])
     rows.append([_btn('🔙 پنل رویداد', 'gev_home')])
     return '\n'.join(lines), rows
 
@@ -699,7 +755,7 @@ async def event_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not channels:
             await refresh_channels(ctx.bot)
             channels = await asyncio.to_thread(edb.list_channels, True)
-        text, rows = channel_picker_view(event, channels)
+        text, rows = channel_picker_view(event, channels, ctx.bot.username)
         await _edit(query, text, rows)
     elif name in ('cht', 'chall', 'chnone') and eid:
         event = await asyncio.to_thread(edb.get_event, eid)
@@ -713,14 +769,14 @@ async def event_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             selected = set()
         target = None if selected == {c['id'] for c in channels} else selected
         event = await asyncio.to_thread(edb.update_event, eid, target_chats=target)
-        text, rows = channel_picker_view(event, channels)
+        text, rows = channel_picker_view(event, channels, ctx.bot.username)
         await _edit(query, text, rows)
     elif name == 'chref' and eid:
         await query.answer('در حال بررسی دسترسی چنل‌ها…')
         await refresh_channels(ctx.bot)
         event = await asyncio.to_thread(edb.get_event, eid)
         channels = await asyncio.to_thread(edb.list_channels, True)
-        text, rows = channel_picker_view(event, channels)
+        text, rows = channel_picker_view(event, channels, ctx.bot.username)
         await _edit(query, text, rows)
     elif name == 'pub' and eid:
         event = await asyncio.to_thread(edb.get_event, eid)
@@ -767,8 +823,6 @@ async def event_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'🔄 به‌روزرسانی: {counts["ok"]} پست تغییر کرد · {counts["same"]} بدون تغییر'
             + (f' · {counts["gone"]} پست پاک شده بود' if counts['gone'] else '')
             + (f' · {counts["failed"]} خطا' if counts['failed'] else '')
-            + (f'\n⚠️ {counts["mismatch"]} پست نوع دیگری دارد (عکس/متن)؛ حذف و دوباره منتشر کن.'
-               if counts['mismatch'] else '')
         )
         await show_panel(query, eid, notice)
     elif name == 'unpub' and eid:
@@ -802,12 +856,50 @@ async def event_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if name == 'chansref':
             await query.answer('در حال بررسی دسترسی چنل‌ها…')
             await refresh_channels(ctx.bot)
-        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False))
+        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False), ctx.bot.username)
         await _edit(query, text, rows)
     elif name == 'chdel' and eid:
         await asyncio.to_thread(edb.remove_channel, eid)
-        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False))
+        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False), ctx.bot.username)
         await _edit(query, '✅ چنل از لیست انتشار حذف شد (ربات از چنل خارج نمی‌شود).\n\n' + text, rows)
+    elif name == 'qadd':
+        parts = data.split('_', 3)
+        arg = parts[2] if len(parts) > 2 else ''
+        chat_ref = parts[3] if len(parts) > 3 else ''
+        if not chat_ref:
+            await query.answer('شناسه چنل یافت نشد.', show_alert=True)
+            return
+        await query.answer('در حال بررسی و افزودن چنل…')
+        target_ref = int(chat_ref) if (chat_ref.startswith('-') and chat_ref[1:].isdigit()) else chat_ref
+        channel, error = await check_chat(ctx.bot, target_ref)
+        if not channel:
+            bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
+            add_url = f"https://t.me/{bot_user}?startchannel=game_event&admin=post_messages+edit_messages"
+            kb = [
+                [_btn('⚡️ افزودن ربات به عنوان ادمین', url=add_url)],
+                [_btn('🔙 بازگشت', f'gev_ch_{arg}' if arg.isdigit() else 'gev_chans')],
+            ]
+            await _edit(query, f'❌ خطا در دسترسی به چنل ({error}).\nلطفاً ابتدا ربات را در چنل ادمین کنید:', kb)
+            return
+        note = f'✅ چنل «{channel["title"]}» با موفقیت اضافه شد.'
+        if not channel['can_post']:
+            note += '\n⚠️ اما ربات دسترسی «ارسال پست» ندارد.'
+        await asyncio.to_thread(
+            log_admin_action, uid, 'event_channel_added', 'channel', channel['chat_id'], ''
+        )
+        if arg.isdigit():
+            eid = int(arg)
+            event = await asyncio.to_thread(edb.get_event, eid)
+            channels = await asyncio.to_thread(edb.list_channels, True)
+            selected = selected_channel_ids(event, channels) | {channel['id']}
+            await asyncio.to_thread(edb.update_event, eid, target_chats=selected)
+            event = await asyncio.to_thread(edb.get_event, eid)
+            text, rows = channel_picker_view(event, channels, ctx.bot.username)
+            await _edit(query, f'{note}\n\n{text}', rows)
+        else:
+            channels = await asyncio.to_thread(edb.list_channels, False)
+            text, rows = channels_view(channels, ctx.bot.username)
+            await _edit(query, f'{note}\n\n{text}', rows)
     elif name == 'set':
         text, rows = settings_view(await asyncio.to_thread(edb.settings, True))
         await _edit(query, text, rows)
@@ -961,19 +1053,56 @@ async def input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text, markup = _text_prompt(flow, bool(event['photo_file_id']))
         await _edit(query, text, markup.inline_keyboard)
         return ST_TEXT
+    if action == 'addch':
+        bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
+        add_url = f"https://t.me/{bot_user}?startchannel=game_event&admin=post_messages+edit_messages"
+
+        existing_channels = await asyncio.to_thread(edb.list_channels, False)
+        unregistered = get_known_unregistered_channels(existing_channels)
+
+        inline_rows = []
+        for k in unregistered[:5]:
+            cb_data = f'gev_qadd_{arg}_{k["chat_ref"]}' if arg else f'gev_qadd__{k["chat_ref"]}'
+            inline_rows.append([_btn(f'➕ انتخاب مستقیم «{k["title"][:30]}»', cb_data, 'success')])
+
+        inline_rows.append([_btn('⚡️ انتخاب چنل از تلگرام و افزودن ربات', url=add_url)])
+        back_cb = f'gev_ch_{arg}' if arg.isdigit() else 'gev_chans'
+        inline_rows.append([_btn('🔙 بازگشت / انصراف', back_cb)])
+
+        prompt_text = (
+            '📢 *افزودن چنل برای انتشار رویداد*\n'
+            '━━━━━━━━━━━━━━━\n'
+            'برای ثبت چنل نیازی به تایپ یوزرنیم نیست؛ یکی از روش‌های مستقیم زیر را انتخاب کن:\n\n'
+            '1️⃣ دکمه بزرگ **«📢 انتخاب مستقیم چنل از تلگرام»** در پایین صفحه را بزن.\n'
+            '2️⃣ یا اگر چنل در گزینه‌های زیر هست، مستقیماً روی دکمه‌اش بزن.\n'
+            '3️⃣ یا با دکمه **«⚡️ انتخاب چنل از تلگرام و افزودن ربات»** مستقیماً ربات را با دسترسی ارسال پست اد کن.\n\n'
+            '_(همچنین می‌توانی یک پست از چنل را فوروارد کنی یا آیدی بفرستی)_'
+        )
+
+        ctx.user_data[FLOW_KEY] = {'action': action, 'arg': arg}
+
+        req_kb = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton('📢 انتخاب مستقیم چنل از تلگرام', request_chat=KeyboardButtonRequestChat(request_id=99, chat_is_channel=True))],
+                [KeyboardButton('🔙 انصراف')],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+
+        await _edit(query, prompt_text, inline_rows)
+        await ctx.bot.send_message(
+            chat_id=uid,
+            text='👇 دکمه انتخاب چنل در کیبورد پایین صفحه فعال شد:',
+            reply_markup=req_kb,
+        )
+        return ST_INPUT
+
     prompts = {
         'extra': (
             '🔘 دکمه دلخواه (قرمز) زیر پست\n\n'
             'با این قالب بفرست:\nمتن دکمه | لینک\n\n'
             'مثال:\n🎮 تریلر آیتم جدید | https://youtube.com/...'
-        ),
-        'addch': (
-            '➕ افزودن چنل برای انتشار\n\n'
-            'یکی از این‌ها را بفرست:\n'
-            '• یک پست از چنل را فوروارد کن (برای چنل خصوصی بهترین راه)\n'
-            '• @username چنل یا لینک t.me/…\n'
-            '• شناسه عددی -100…\n\n'
-            'ربات باید در چنل ادمین با دسترسی «ارسال پست» باشد.'
         ),
     }
     if action == 'set' and arg in SETTING_INPUTS:
@@ -1116,6 +1245,10 @@ async def _apply_input(update, ctx, flow):
     raw = (message.text or '').strip()
     action, arg = flow['action'], flow['arg']
     uid = update.effective_user.id
+    if raw in ('انصراف', '🔙 انصراف', 'لغو'):
+        if arg.isdigit():
+            return 'picker', int(arg), 'انصراف داده شد.'
+        return 'channels', None, 'انصراف داده شد.'
     if action == 'extra':
         label, sep, url = raw.replace('｜', '|').partition('|')
         label, url = label.strip(), normalize_url(url)
@@ -1169,6 +1302,65 @@ async def _apply_input(update, ctx, flow):
     raise ValueError('عملیات نامعتبر است.')
 
 
+async def receive_shared_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _guard(update):
+        return ConversationHandler.END
+    message = update.effective_message
+    if not message or not getattr(message, 'chat_shared', None):
+        return ST_INPUT
+    shared = message.chat_shared
+    raw_id = shared.chat_id
+
+    flow = _flow(ctx)
+    arg = flow.get('arg', '')
+    ctx.user_data.pop(FLOW_KEY, None)
+
+    channel, error = await check_chat(ctx.bot, raw_id)
+    if not channel and raw_id > 0:
+        channel, error = await check_chat(ctx.bot, int(f"-100{raw_id}"))
+
+    bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
+    add_url = f"https://t.me/{bot_user}?startchannel=game_event&admin=post_messages+edit_messages"
+
+    if not channel:
+        kb = [
+            [_btn('⚡️ افزودن ربات به عنوان ادمین', url=add_url)],
+            [_btn('🔙 بازگشت', f'gev_ch_{arg}' if arg.isdigit() else 'gev_chans')],
+        ]
+        await message.reply_text(
+            f'❌ ربات در چنل انتخاب‌شده ادمین نیست ({error}).\n'
+            'لطفاً ابتدا با دکمه زیر ربات را با دسترسی «ارسال پست» در چنل ادمین کنید:',
+            reply_markup=main_menu(),
+        )
+        await message.reply_text('برای ادامه یکی از گزینه‌ها را بزنید:', reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    note = f'✅ چنل «{channel["title"]}» با موفقیت اضافه شد.'
+    if not channel['can_post']:
+        note += '\n⚠️ اما ربات دسترسی «ارسال پست» ندارد.'
+
+    await asyncio.to_thread(
+        log_admin_action, update.effective_user.id, 'event_channel_added', 'channel', channel['chat_id'], ''
+    )
+
+    if arg.isdigit():
+        eid = int(arg)
+        event = await asyncio.to_thread(edb.get_event, eid)
+        channels = await asyncio.to_thread(edb.list_channels, True)
+        selected = selected_channel_ids(event, channels) | {channel['id']}
+        await asyncio.to_thread(edb.update_event, eid, target_chats=selected)
+        event = await asyncio.to_thread(edb.get_event, eid)
+        text, rows = channel_picker_view(event, channels, ctx.bot.username)
+    else:
+        channels = await asyncio.to_thread(edb.list_channels, False)
+        text, rows = channels_view(channels, ctx.bot.username)
+
+    await message.reply_text('منوی اصلی بازگردانده شد.', reply_markup=main_menu())
+    await message.reply_text(f'{note}\n\n{text}', reply_markup=InlineKeyboardMarkup(rows),
+                             link_preview_options=_NO_PREVIEW)
+    return ConversationHandler.END
+
+
 async def receive_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update):
         return ConversationHandler.END
@@ -1194,11 +1386,13 @@ async def receive_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if target == 'picker':
         event = await asyncio.to_thread(edb.get_event, event_id)
         channels = await asyncio.to_thread(edb.list_channels, True)
-        text, rows = channel_picker_view(event, channels)
+        text, rows = channel_picker_view(event, channels, ctx.bot.username)
     elif target == 'channels':
-        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False))
+        text, rows = channels_view(await asyncio.to_thread(edb.list_channels, False), ctx.bot.username)
     else:
         text, rows = settings_view(await asyncio.to_thread(edb.settings, True))
+    if flow.get('action') == 'addch':
+        await update.message.reply_text('منوی اصلی بازگردانده شد.', reply_markup=main_menu())
     await update.message.reply_text(f'{note}\n\n{text}', reply_markup=InlineKeyboardMarkup(rows),
                                     link_preview_options=_NO_PREVIEW)
     return ConversationHandler.END
@@ -1217,6 +1411,15 @@ async def cancel_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer('لغو شد')
     flow = ctx.user_data.pop(FLOW_KEY, None) or {}
     await _drop_empty_draft(flow)
+    if flow.get('action') == 'addch':
+        try:
+            await query.get_bot().send_message(
+                chat_id=query.from_user.id,
+                text='منوی اصلی بازگردانده شد.',
+                reply_markup=main_menu(),
+            )
+        except Exception:
+            pass
     if flow.get('id') and flow.get('mode') == 'edit':
         await show_panel(query, flow['id'])
     else:
@@ -1228,7 +1431,10 @@ async def cancel_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     flow = ctx.user_data.pop(FLOW_KEY, None) or {}
     await _drop_empty_draft(flow)
     await update.message.reply_text(
-        'انصراف.', reply_markup=InlineKeyboardMarkup([[_btn('🆕 پنل رویداد', 'gev_home')]]),
+        'انصراف داده شد.', reply_markup=main_menu(),
+    )
+    await update.message.reply_text(
+        'پنل رویداد:', reply_markup=InlineKeyboardMarkup([[_btn('🆕 پنل رویداد', 'gev_home')]]),
     )
     return ConversationHandler.END
 
@@ -1251,6 +1457,7 @@ def events_conversation_handler():
                 cancel_cb,
             ],
             ST_INPUT: [
+                MessageHandler(filters.StatusUpdate.CHAT_SHARED, receive_shared_chat),
                 MessageHandler(filters.UpdateType.MESSAGE & ~filters.COMMAND, receive_input),
                 cancel_cb,
             ],
@@ -1270,6 +1477,7 @@ def register(app):
     from telegram.ext import ChatMemberHandler
 
     app.add_handler(events_conversation_handler())
+    app.add_handler(MessageHandler(filters.StatusUpdate.CHAT_SHARED, receive_shared_chat))
     app.add_handler(CallbackQueryHandler(event_router, pattern=ROUTER_PATTERN))
     # گروه جدا تا هندلر my_chat_member فعلی (جوین اجباری) هم اجرا شود.
     app.add_handler(ChatMemberHandler(track_bot_membership, ChatMemberHandler.MY_CHAT_MEMBER), group=-2)

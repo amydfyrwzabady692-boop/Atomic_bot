@@ -336,6 +336,32 @@ class ConversationTests(unittest.TestCase):
         preview.assert_awaited_once()
         self.assertNotIn(ge.FLOW_KEY, ctx.user_data)
 
+    def test_receive_shared_chat_adds_channel(self):
+        message = SimpleNamespace(
+            chat_shared=SimpleNamespace(chat_id=123456),
+            reply_text=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            message=message, effective_message=message,
+            effective_user=SimpleNamespace(id=1), callback_query=None,
+        )
+        ctx = self._ctx({'action': 'addch', 'arg': '7'})
+        fake_chan = {
+            'id': 10, 'chat_id': '-100123456', 'title': 'Shared Channel',
+            'can_post': True, 'chat_type': 'channel', 'username': '', 'active': True,
+        }
+        with patch.object(ge, 'is_admin', return_value=True), \
+                patch.object(ge, 'check_chat', AsyncMock(return_value=(fake_chan, ''))), \
+                patch.object(ge, 'log_admin_action'), \
+                patch.object(edb, 'get_event', return_value=_event(target_chats=[1])), \
+                patch.object(edb, 'list_channels', return_value=CHANNELS + [fake_chan]), \
+                patch.object(edb, 'update_event') as update_event:
+            state = asyncio.run(ge.receive_shared_chat(update, ctx))
+        self.assertEqual(state, ge.ConversationHandler.END)
+        update_event.assert_called_once_with(7, target_chats={1, 10})
+        self.assertNotIn(ge.FLOW_KEY, ctx.user_data)
+        self.assertEqual(message.reply_text.call_count, 2)
+
 
 class WiringTests(unittest.TestCase):
     def test_bot_registers_event_handlers_before_generic_start(self):
