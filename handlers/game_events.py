@@ -39,7 +39,7 @@ _LOG = logging.getLogger(__name__)
 ST_PHOTO, ST_TEXT, ST_INPUT = 81, 82, 83
 ROUTER_PATTERN = r'^gev_'
 INPUT_PATTERN = r'^gevin_[a-z]+(?:_[a-z0-9]+)?$'
-START_PATTERN = r'^/start evgem_\d+$'
+START_PATTERN = r'^/start(?:@[A-Za-z0-9_]+)?\s+evgem_\d+$'
 FLOW_KEY = 'gev_flow'
 PAGE_SIZE = 8
 CAPTION_MAX = 1024
@@ -237,6 +237,9 @@ def parse_chat_ref(message):
     raw = str(getattr(message, 'text', '') or '').translate(_DIGITS).strip()
     if not raw:
         return None
+    c_match = re.search(r'(?:t\.me|telegram\.me)/c/(\d+)', raw)
+    if c_match:
+        return int(f"-100{c_match.group(1)}")
     match = re.fullmatch(r'(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z][A-Za-z0-9_]{3,})/?(?:\d+)?', raw)
     if match:
         return '@' + match.group(1)
@@ -856,7 +859,19 @@ async def event_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         if await asyncio.to_thread(is_user_blocked, user.id) and not await asyncio.to_thread(is_admin, user.id):
             return
-        event_id = int(ctx.args[0].split('_', 1)[1]) if ctx.args else None
+        event_id = None
+        if ctx.args:
+            for arg in ctx.args:
+                if arg.startswith('evgem_'):
+                    try:
+                        event_id = int(arg.split('_', 1)[1])
+                        break
+                    except (ValueError, IndexError):
+                        pass
+        if not event_id and update.effective_message and update.effective_message.text:
+            m = re.search(r'evgem_(\d+)', update.effective_message.text)
+            if m:
+                event_id = int(m.group(1))
         if event_id:
             try:
                 await asyncio.to_thread(edb.record_click, event_id, user.id)
