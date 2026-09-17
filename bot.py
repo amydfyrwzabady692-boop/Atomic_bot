@@ -78,6 +78,7 @@ from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
 )
 from handlers.site_panel import site_panel_router
+from handlers import game_events
 from handlers.referral import (
     ADMIN_ROUTER_PATTERN as REFERRAL_ADMIN_PATTERN,
     referral_admin_conversation_handler, referral_admin_router,
@@ -247,6 +248,12 @@ async def post_init(app):
     except Exception as e:
         # بخش دعوت اختیاری است؛ خطای آن نباید فروش را متوقف کند.
         logging.getLogger(__name__).warning('Referral schema setup failed: %s', e)
+    try:
+        from events_db import ensure_events_schema
+        await asyncio.to_thread(ensure_events_schema)
+    except Exception as e:
+        # بخش رویداد اختیاری است؛ خطای آن نباید فروش را متوقف کند.
+        logging.getLogger(__name__).warning('Game events schema setup failed: %s', e)
     from db import sync_gem_prices, sync_gift_and_star_catalogs
     try:
         await asyncio.to_thread(sync_gem_prices)
@@ -893,6 +900,8 @@ def main():
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
     app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
 
+    # دکمه «خرید جم» پست‌های رویداد (/start evgem_<id>) — باید قبل از /start عمومی باشد.
+    app.add_handler(game_events.start_link_handler())
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
@@ -1033,6 +1042,9 @@ def main():
         referral_admin_router, pattern=REFERRAL_ADMIN_PATTERN
     ))
     app.add_handler(InlineQueryHandler(referral_inline_query))
+
+    # رویداد جدید بازی (اعلام آیتم تازه در چنل‌ها)
+    game_events.register(app)
 
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))

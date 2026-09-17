@@ -701,6 +701,7 @@ def admin_home_keyboard(counts=None):
             InlineKeyboardButton(support_label, callback_data='admx_hub_support'),
         ],
         [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
+        [InlineKeyboardButton('🆕 رویداد جدید بازی · انتشار در چنل', callback_data='gev_home')],
         [InlineKeyboardButton('⚙️ تنظیمات سیستم', callback_data='admx_hub_system')],
         [InlineKeyboardButton('🔄 بروزرسانی پنل', callback_data='adm_home')],
     ])
