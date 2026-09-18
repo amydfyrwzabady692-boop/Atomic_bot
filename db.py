@@ -138,10 +138,10 @@ _GEM_COLS = (
 
 
 def get_gems_by_id():
-    """همه بسته‌های فعال جم با آیدی که مدیر ساخته است."""
+    """همه بسته‌های فعال و موجود جم با آیدی که مدیر ساخته است."""
     sql = (
         f'SELECT {_GEM_COLS} FROM "GemPackages" '
-        'WHERE "IsActive"=true '
+        'WHERE "IsActive"=true AND "IsAvailable"=true '
         'AND "PurchaseType"=\'by_id\' '
         'AND "PlanType"=\'once\' '
         'ORDER BY "SortOrder", "Id"'
@@ -5798,6 +5798,18 @@ def sync_gem_prices():
                 'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
                 (package_title_marker,),
             )
+        api_gem_sync_marker = 'g2bulk_catalogue_active_sync_20260918'
+        cur.execute('SELECT 1 FROM "BotSettings" WHERE "Key"=%s', (api_gem_sync_marker,))
+        if not cur.fetchone():
+            cur.execute(
+                'UPDATE "GemPackages" SET "IsActive"=false, "IsAvailable"=false '
+                'WHERE "PurchaseType"=\'by_id\' AND "G2BulkCatalogueName" NOT IN (\'110\', \'231\', \'583\', \'1188\', \'2420\')'
+            )
+            cur.execute(
+                'INSERT INTO "BotSettings" ("Key","Value","UpdatedAt") '
+                'VALUES (%s,\'1\',now()) ON CONFLICT ("Key") DO NOTHING',
+                (api_gem_sync_marker,),
+            )
         cur.execute('SELECT COUNT(*) FROM "SensePackages"')
         if cur.fetchone()[0] == 0:
             cur.executemany(
@@ -6004,17 +6016,19 @@ def sync_gem_prices_daily(_force=False):
     # به‌روزرسانی قیمت در دیتابیس
     updated = 0
     matched = 0
+    g2_snapshot_ok = bool(snapshot.get("ok"))
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """SELECT "Id","Price","G2BulkCatalogueName","PurchaseType",
-                          "Amount","PlanType"
+                          "Amount","PlanType","IsActive","IsAvailable"
                    FROM "GemPackages"
-                   WHERE "IsActive"=true AND "G2BulkCatalogueName" IS NOT NULL
+                   WHERE "G2BulkCatalogueName" IS NOT NULL
                    AND "G2BulkCatalogueName"<>''"""
             )
             for (gem_id, current_price, catalogue_name,
-                 purchase_type, amount, plan_type) in cur.fetchall():
+                 purchase_type, amount, plan_type,
+                 is_active, is_available) in cur.fetchall():
                 if purchase_type == 'by_credentials':
                     cost_usd = credential_cost_for_package(amount, plan_type)
                     package_profit_percent = credential_profit_for_package(
@@ -6023,17 +6037,31 @@ def sync_gem_prices_daily(_force=False):
                 else:
                     name_key = g2bulk._normalise_catalogue_name(catalogue_name)
                     cost_usd = prices_by_name.get(name_key)
+                    if cost_usd is None and str(amount).isdigit():
+                        cost_usd = snapshot.get('prices', {}).get(int(amount))
                     package_profit_percent = profit_percent
+
                 if cost_usd is None:
+                    # اگر کاتالوگ زنده API تأمین‌کننده با موفقیت دریافت شد ولی محصول در آن نبود:
+                    # در ربات ناموجود است و غیرفعال می‌شود تا نمایش داده نشود.
+                    if purchase_type == 'by_id' and g2_snapshot_ok:
+                        if is_active or is_available:
+                            cur.execute(
+                                'UPDATE "GemPackages" SET "IsAvailable"=false, "IsActive"=false WHERE "Id"=%s',
+                                (gem_id,),
+                            )
+                            updated += 1
                     continue
+
                 matched += 1
                 new_price = compute_gem_sale_price(
                     cost_usd, rate_value,
                     profit_percent=package_profit_percent,
                 )
-                if int(new_price) != int(current_price):
+                # در صورت تغییر قیمت یا نیاز به فعال‌سازی مجدد محصولی که دوباره به کاتالوگ برگشته:
+                if int(new_price) != int(current_price) or not is_active or not is_available:
                     cur.execute(
-                        'UPDATE "GemPackages" SET "Price"=%s WHERE "Id"=%s',
+                        'UPDATE "GemPackages" SET "Price"=%s, "IsAvailable"=true, "IsActive"=true WHERE "Id"=%s',
                         (new_price, gem_id),
                     )
                     updated += 1

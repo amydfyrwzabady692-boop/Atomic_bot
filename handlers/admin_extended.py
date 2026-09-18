@@ -1552,15 +1552,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             updated = 0
         if updated:
             text = (
-                f'✅ قیمت {updated} محصول به‌روزرسانی شد.\n'
+                f'✅ قیمت و وضعیت {updated} محصول با API به‌روزرسانی شد.\n'
                 f'جم با آیدی: سود {gem_profit}٪\n'
                 f'هفتگی: ${cfg["weekly_cost"]} · سود {cfg["weekly_profit"]}٪\n'
                 f'ماهانه: ${cfg["monthly_cost"]} · سود {cfg["monthly_profit"]}٪'
             )
         else:
             text = (
-                'ℹ️ سینک انجام شد؛ اگر قیمتی عوض نشد یعنی همان قیمت قبلی '
-                'با نرخ/سود فعلی معتبر است.'
+                'ℹ️ بروزرسانی انجام شد؛ وضعیت موجودی و قیمت همه بسته‌ها با API همگام است.'
             )
         await _edit(query, text, [
             _back('admx_pricing'),
