@@ -1272,10 +1272,13 @@ def admin_complete_star_order(order_id):
         if not row:
             return False, None, 'سفارش پیدا نشد.'
         status, tg_id = row[0], row[1]
+        if status in ('delivered', 'completed'):
+            star['g2_status'] = 'COMPLETED'
+            return True, tg_id, star
         if status not in ('paid', 'processing'):
             return False, tg_id, f'وضعیت سفارش {status} است و قابل تحویل نیست.'
         cur.execute(
-            'UPDATE "Orders" SET "Status"=\'delivered\',"UpdatedAt"=now() WHERE "Id"=%s',
+            'UPDATE "Orders" SET "Status"=\'delivered\' WHERE "Id"=%s',
             (order_id,),
         )
         cur.execute(
@@ -1283,6 +1286,7 @@ def admin_complete_star_order(order_id):
             (order_id,),
         )
         conn.commit()
+    star['g2_status'] = 'COMPLETED'
     return True, tg_id, star
 
 
