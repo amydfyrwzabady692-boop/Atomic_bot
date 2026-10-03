@@ -298,6 +298,60 @@ async def _notify_sense_sale(bot, order_id):
     await notify_admin(bot, text)
 
 
+async def _notify_manual_star_sale(bot, order_id, payment_hint=''):
+    """اعلان سفارش استارز دستی برای واریز ادمین."""
+    order = await asyncio.to_thread(get_order, order_id)
+    if not order:
+        return
+    star = await asyncio.to_thread(get_star_order, order_id)
+    if not star:
+        log.warning('manual star notify skipped; star order %s not found', order_id)
+        return
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, CopyTextButton
+    tg = order[6] or '—'
+    target_un = (star.get('target_username') or '—').strip().lstrip('@')
+    stars_amt = int(star.get('stars_amount') or 0)
+    title = star.get('title') or f"{stars_amt:,} استارز"
+    amount = int(star.get('sale_toman') or order[2])
+    name = '—'
+    uname = '—'
+    try:
+        from db import get_user_profile
+        p = await asyncio.to_thread(get_user_profile, telegram_id=tg)
+        if p:
+            name = f"{p[3] or ''} {p[4] or ''}".strip() or '—'
+            un = (p[2] or '').strip()
+            uname = f"@{un}" if un else '—'
+    except Exception:
+        pass
+
+    text = (
+        f"⭐ *سفارش استارز دستی — #{order_id}*\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"بسته: *{title}*\n"
+        f"تعداد استارز: *{stars_amt:,}* ⭐\n"
+        f"مبلغ: *{amount:,}* تومان\n"
+        f"پرداخت: `{payment_hint or order[4]}`\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"خریدار: {name} ({uname})\n"
+        f"شناسه خریدار: `{tg}`\n\n"
+        f"🎯 *آیدی مقصد واریز استارز:*\n"
+        f"`@{target_un}`\n\n"
+        f"_(روی آیدی بزن کپی می‌شود؛ استارز را برای این آیدی گیفت کن و دکمه «انجام شد» را بزن)_"
+    )
+    copy_un = f"@{target_un}" if target_un != '—' else ''
+    row1 = []
+    if copy_un:
+        row1.append(InlineKeyboardButton('📋 کپی آیدی مقصد', copy_text=CopyTextButton(text=copy_un)))
+    row1.append(InlineKeyboardButton('✅ انجام شد (تحویل)', callback_data=f'admx_stardone_{order_id}'))
+
+    markup = InlineKeyboardMarkup([
+        row1,
+        [InlineKeyboardButton(f'🔍 جزئیات سفارش #{order_id}', callback_data=f'admx_orddetail_{order_id}')],
+    ])
+    await notify_admin(bot, text, reply_markup=markup, parse_mode='Markdown')
+
+
 async def _notify_credential_sale(bot, order_id, *, event='paid'):
     """اعلان ادمین برای سفارش جم با اطلاعات.
 
@@ -397,7 +451,7 @@ def _parse_refunded_amount(status):
 
 def _success_user_text(order_id, status, ref_id=None):
     auto_text = auto_delivery_user_text(order_id)
-    if auto_text and status in ('delivered', 'processing', 'paid'):
+    if auto_text and status in ('delivered', 'processing', 'paid', 'manual_star'):
         return auto_text
     if status == 'sense_manual':
         msg = (
@@ -485,7 +539,7 @@ async def _handle_fulfill_result(
 
     refunded = _parse_refunded_amount(status)
     gift_text = None
-    if success and status in ('delivered', 'processing', 'paid'):
+    if success and status in ('delivered', 'processing', 'paid', 'manual_star'):
         gift_text = auto_delivery_user_text(order_id)
     if success and status == 'delivered':
         text = gift_text or _success_user_text(order_id, status, ref_id)
@@ -508,9 +562,11 @@ async def _handle_fulfill_result(
         await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
         return 'delivered'
 
-    if success and status in ('paid', 'processing', 'sense_manual'):
+    if success and status in ('paid', 'processing', 'sense_manual', 'manual_star'):
         if status == 'sense_manual':
             await _notify_sense_sale(bot, order_id)
+        elif status == 'manual_star':
+            await _notify_manual_star_sale(bot, order_id, payment_hint)
         elif await asyncio.to_thread(get_credential_order, order_id):
             try:
                 await _notify_credential_sale(bot, order_id, event='paid')
@@ -520,7 +576,7 @@ async def _handle_fulfill_result(
                 )
         text = _success_user_text(order_id, status, ref_id)
         is_cred = (
-            status != 'sense_manual'
+            status not in ('sense_manual', 'manual_star')
             and await asyncio.to_thread(get_credential_order, order_id)
         )
         if edit_message:
@@ -1391,6 +1447,18 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ctx.bot,
             tg_id,
             f"✅ سفارش #{order_id} تایید شد.\nپک سنس به‌زودی در پیوی برات ارسال می‌شود.",
+        )
+    elif success and status == 'manual_star':
+        await _notify_manual_star_sale(ctx.bot, order_id, 'card_transfer')
+        await _edit_review_message(
+            query,
+            f"✅ سفارش #{order_id} تایید شد (استارز دستی).\nاطلاعات مقصد برای واریز ارسال شد."
+        )
+        auto_text = auto_delivery_user_text(order_id)
+        await _notify_user(
+            ctx.bot,
+            tg_id,
+            auto_text or f"✅ سفارش #{order_id} تایید شد و استارز در حال واریز است.",
         )
     elif success and status == 'delivered':
         await _edit_review_message(

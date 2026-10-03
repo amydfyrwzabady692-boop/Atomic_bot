@@ -46,6 +46,14 @@ class StarsFulfillmentWiringTests(unittest.TestCase):
         self.assertIn("'10'", star_src)
         self.assertNotIn("'15'", gift_src)
 
+    def test_manual_star_order_fulfillment(self):
+        star_fn = inspect.getsource(db._fulfill_star_order)
+        self.assertIn("star.get('is_manual')", star_fn)
+        self.assertIn("'manual_star'", star_fn)
+        self.assertIn("MANUAL_PENDING", star_fn)
+        # Verify manual check happens BEFORE G2 API call
+        self.assertLess(star_fn.index("star.get('is_manual')"), star_fn.index("place_game_order"))
+
 
 class StarsCatalogueFilterTests(unittest.TestCase):
     def test_can_fulfill_stars_requires_live_cost(self):

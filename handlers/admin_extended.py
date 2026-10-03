@@ -51,6 +51,8 @@ from db import (
     set_credential_support_from_admin, get_user_profile, get_gift_support_contact,
     priced_gift_cards, giftcard_profit_percent,
     list_star_packages, stars_profit_percent, sync_gift_and_star_catalogs,
+    toggle_star_package_manual, list_manual_star_orders, count_pending_manual_star_orders,
+    admin_complete_star_order, star_user_delivery_text,
 )
 from handlers.forced_join import invalidate_forced_join_cache
 from handlers.site_panel import site_ops_counts
@@ -345,6 +347,21 @@ def _order_admin_card(detail):
             f'{_md_safe(gift.get("face_label"), 20)} · '
             f'{_md_safe(gift.get("g2_status"), 16)}'
         )
+    star = detail.get('star')
+    if star:
+        is_manual = bool(star.get('is_manual'))
+        mode_str = '✋ دستی (ادمین)' if is_manual else '🤖 خودکار (G2Bulk)'
+        target_un = (star.get('target_username') or '—').strip().lstrip('@')
+        lines.append('')
+        lines.append('⭐ *سفارش استارز تلگرام:*')
+        lines.append(f'  بسته: {_md_safe(star.get("title") or star.get("catalogue_name"), 40)}')
+        lines.append(f'  تعداد استارز: *{int(star.get("stars_amount") or 0):,}* ⭐')
+        lines.append(f'  نحوه انجام: *{mode_str}*')
+        lines.append(f'  آیدی مقصد واریز: `@{_md_safe(target_un, 40)}`')
+        if star.get('g2_status'):
+            lines.append(f'  وضعیت انجام: `{_md_safe(star.get("g2_status"), 20)}`')
+        if star.get('player_name'):
+            lines.append(f'  نام اکانت تلگرام: {_md_safe(star.get("player_name"), 40)}')
     parked = detail.get('parked')
     if parked:
         parked_paid = 'واریز شده' if parked[2] else 'در انتظار پرداخت درگاه'
@@ -397,6 +414,11 @@ def _order_admin_card(detail):
         btn = _copy_btn('📋 کپی آیدی بازی', first_uid)
         if btn:
             copy_row.append(btn)
+    if star and star.get('target_username'):
+        target_handle = f"@{str(star['target_username']).strip().lstrip('@')}"
+        btn = _copy_btn('📋 کپی آیدی استارز', target_handle)
+        if btn:
+            copy_row.append(btn)
     if copy_row:
         buttons.append(copy_row)
     action_row = []
@@ -411,6 +433,10 @@ def _order_admin_card(detail):
         ))
     if action_row:
         buttons.append(action_row)
+    if star and status.lower() in ('processing', 'paid'):
+        buttons.append([
+            InlineKeyboardButton('✅ انجام شد (تحویل استارز دستی)', callback_data=f'admx_stardone_{oid}'),
+        ])
     if status.lower() in ('processing', 'paid'):
         buttons.append([
             InlineKeyboardButton(f'🔁 تلاش مجدد #{oid}', callback_data=f'adm_retry_{oid}'),
@@ -658,6 +684,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         or data.startswith('admx_adminremove_')
         or data.startswith('admx_gemtoggle_')
         or data.startswith('admx_zpcredit_')
+        or data.startswith('admx_stardone_')
+        or data.startswith('admx_startoggle_')
     )
     if not self_answer:
         await query.answer()
@@ -680,6 +708,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:
             if 'not modified' not in str(exc).lower():
                 raise
+            return
         return
 
     if data == 'admx_hub_orders':
@@ -690,11 +719,12 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text(
                 '📦 *مدیریت سفارش‌ها*\n'
-                'استعلام با شماره سفارش · لیست کامل · جم · رسید',
+                'استعلام با شماره سفارش · لیست کامل · جم · رسید · استارز',
                 parse_mode='Markdown',
                 reply_markup=admin_hub_orders_keyboard({
                     'ready_creds': ready_creds,
                     'site_ready_creds': site['site_ready_creds'],
+                    'manual_stars': ops.get('manual_stars', 0),
                     'stuck': ops['stuck_processing'],
                     'failed_g2': stats.get('failed_g2', 0),
                     'receipts': ops['pending_receipts'],
@@ -1603,30 +1633,168 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         packages = await asyncio.to_thread(list_star_packages)
         profit = stars_profit_percent()
         live = sum(1 for item in packages if item.get('available'))
+        pending_manual = await asyncio.to_thread(count_pending_manual_star_orders)
         lines = [
-            '⭐ *استارز تلگرام G2Bulk*',
+            '⭐ *مدیریت استارز تلگرام*',
             f'سود فروش: *{profit}٪*',
             f'بسته‌های فعال: *{live}/{len(packages)}*',
-            'تحویل مستقیم روی @آیدی تلگرام. کاتالوگ هر ۲۴ ساعت در دیتابیس ذخیره می‌شود.',
+            f'سفارش‌های دستی در انتظار: *{pending_manual}*',
+            '━━━━━━━━━━━━━━━',
+            '💡 *تنظیم حالت دستی یا خودکار:*',
+            'روی دکمه هر بسته بزنید تا بین «🤖 خودکار (G2Bulk)» و «✋ دستی (توسط شما)» جابه‌جا شود.',
             '━━━━━━━━━━━━━━━',
         ]
         if not packages:
             lines.append('❌ هنوز بسته‌ای در دیتابیس نیست. یک‌بار بروزرسانی را بزن.')
-        for item in packages[:16]:
+        buttons = []
+        row = []
+        for item in packages:
             mark = '✅' if item.get('available') else '❌'
+            is_m = bool(item.get('is_manual'))
+            mode_badge = '✋ دستی' if is_m else '🤖 خودکار'
             lines.append(
                 f'{mark} {_md_safe(item.get("title"), 40)}'
-                f' · *{int(item["price"]):,}* ت'
+                f' · *{int(item["price"]):,}* ت · [{mode_badge}]'
             )
-        if len(packages) > 16:
-            lines.append('…')
-        buttons = [
-            [InlineKeyboardButton('✏️ تغییر سود استارز', callback_data='admi_starprofit')],
-            [InlineKeyboardButton('🔄 بروزرسانی موجودی', callback_data='admx_stars')],
+            short_title = str(item.get('title') or '').replace('Stars', '').replace('استارز', '').strip()
+            btn_text = f"{'✋ دستی' if is_m else '🤖 خودکار'}: {short_title}"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f'admx_startoggle_{item["id"]}'))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        buttons.extend([
+            [InlineKeyboardButton(f'⭐ لیست سفارش‌های دستی ({pending_manual})', callback_data='admx_manual_stars')],
+            [InlineKeyboardButton('✏️ تغییر سود استارز', callback_data='admi_starprofit'),
+             InlineKeyboardButton('🔄 بروزرسانی کاتالوگ', callback_data='admx_stars')],
             [InlineKeyboardButton('💱 قیمت‌گذاری', callback_data='admx_pricing')],
             _back('admx_shop'),
-        ]
+        ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
+
+    elif data.startswith('admx_startoggle_'):
+        pkg_id = int(data.rsplit('_', 1)[1])
+        new_val = await asyncio.to_thread(toggle_star_package_manual, pkg_id)
+        mode_text = '✋ دستی (ادمین)' if new_val else '🤖 خودکار (G2Bulk)'
+        await query.answer(f'حالت بسته به {mode_text} تغییر یافت.', show_alert=False)
+        packages = await asyncio.to_thread(list_star_packages)
+        profit = stars_profit_percent()
+        live = sum(1 for item in packages if item.get('available'))
+        pending_manual = await asyncio.to_thread(count_pending_manual_star_orders)
+        lines = [
+            '⭐ *مدیریت استارز تلگرام*',
+            f'سود فروش: *{profit}٪*',
+            f'بسته‌های فعال: *{live}/{len(packages)}*',
+            f'سفارش‌های دستی در انتظار: *{pending_manual}*',
+            '━━━━━━━━━━━━━━━',
+            '💡 *تنظیم حالت دستی یا خودکار:*',
+            'روی دکمه هر بسته بزنید تا بین «🤖 خودکار (G2Bulk)» و «✋ دستی (توسط شما)» جابه‌جا شود.',
+            '━━━━━━━━━━━━━━━',
+        ]
+        buttons = []
+        row = []
+        for item in packages:
+            mark = '✅' if item.get('available') else '❌'
+            is_m = bool(item.get('is_manual'))
+            mode_badge = '✋ دستی' if is_m else '🤖 خودکار'
+            lines.append(
+                f'{mark} {_md_safe(item.get("title"), 40)}'
+                f' · *{int(item["price"]):,}* ت · [{mode_badge}]'
+            )
+            short_title = str(item.get('title') or '').replace('Stars', '').replace('استارز', '').strip()
+            btn_text = f"{'✋ دستی' if is_m else '🤖 خودکار'}: {short_title}"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f'admx_startoggle_{item["id"]}'))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        buttons.extend([
+            [InlineKeyboardButton(f'⭐ لیست سفارش‌های دستی ({pending_manual})', callback_data='admx_manual_stars')],
+            [InlineKeyboardButton('✏️ تغییر سود استارز', callback_data='admi_starprofit'),
+             InlineKeyboardButton('🔄 بروزرسانی کاتالوگ', callback_data='admx_stars')],
+            [InlineKeyboardButton('💱 قیمت‌گذاری', callback_data='admx_pricing')],
+            _back('admx_shop'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+
+    elif data == 'admx_manual_stars':
+        orders = await asyncio.to_thread(list_manual_star_orders, 50)
+        lines = [
+            '⭐ *سفارش‌های استارز دستی*',
+            f'در انتظار واریز توسط شما: *{len(orders)}*',
+            '━━━━━━━━━━━━━━━',
+            'این سفارش‌ها توسط کاربر پرداخت شده و باید استارز را دستی به آیدی مقصد گیفت کنید.',
+            'روی هر سفارش بزنید تا آیدی مقصد، دکمه کپی و دکمه «انجام شد» باز شود.',
+            '━━━━━━━━━━━━━━━',
+        ]
+        if not orders:
+            lines.append('✅ در حال حاضر هیچ سفارش استارز دستی در انتظاری نیست.')
+        buttons = []
+        for row in orders[:20]:
+            oid = row[0]
+            tg_id = row[1]
+            total = int(row[2] or 0)
+            status = row[3]
+            target_un = str(row[6] or '—').strip().lstrip('@')
+            stars_amt = int(row[7] or 0)
+            created = str(row[5] or '')[:16]
+            lines.append(
+                f'• `#{oid}` · *{stars_amt:,}* ⭐ · @{_md_safe(target_un, 25)}\n'
+                f'  مبلغ: *{total:,}* ت · `{created}`'
+            )
+            buttons.append([
+                InlineKeyboardButton(
+                    f'⭐ #{oid} — @{target_un[:14]} ({stars_amt:,} ⭐)',
+                    callback_data=f'admx_orddetail_{oid}',
+                )
+            ])
+        if len(orders) > 20:
+            lines.append('… و موارد بیشتر')
+        buttons.extend([
+            [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_manual_stars'),
+             InlineKeyboardButton('⚙️ تنظیم بسته‌ها', callback_data='admx_stars')],
+            _back('admx_hub_orders'),
+        ])
+        await _edit(query, '\n'.join(lines), buttons, markdown=True)
+
+    elif data.startswith('admx_stardone_'):
+        order_id = int(data.rsplit('_', 1)[1])
+        ok, tg_id, star = await asyncio.to_thread(admin_complete_star_order, order_id)
+        if not ok:
+            await query.answer(str(star), show_alert=True)
+            return
+        if tg_id:
+            try:
+                user_msg = star_user_delivery_text(order_id)
+                if not user_msg:
+                    user_msg = (
+                        f"✅ سفارش #{order_id} تحویل شد.\n"
+                        f"⭐ استارز به حسابت واریز شد. از تنظیمات تلگرام → Stars چک کن."
+                    )
+                await ctx.bot.send_message(chat_id=int(tg_id), text=user_msg)
+            except Exception:
+                log.exception('failed to send star delivery text for order %s to user %s', order_id, tg_id)
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'user')
+        await asyncio.to_thread(mark_delivery_notified, order_id, 'admin')
+        target_un = star.get('target_username') if isinstance(star, dict) else ''
+        await asyncio.to_thread(
+            log_admin_action, update.effective_user.id,
+            'star_order_completed',
+            'order', order_id,
+            f'manual star delivered for @{target_un}',
+        )
+        await query.answer(f'سفارش #{order_id} با موفقیت تحویل شد و به کاربر پیام ارسال شد.', show_alert=True)
+        detail = await asyncio.to_thread(get_order_admin_detail, order_id)
+        if detail:
+            text, buttons = _order_admin_card(detail)
+            await _edit(query, text, buttons, markdown=True)
+        else:
+            await _edit(query, f'✅ سفارش #{order_id} با موفقیت تحویل شد.', [_back('admx_manual_stars')])
+        return
     elif data == 'admx_profit':
         current_fx = await asyncio.to_thread(
             profitability.get_usd_toman_rate, True

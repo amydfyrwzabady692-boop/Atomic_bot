@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS "StarPackages" (
     "Price" INTEGER NOT NULL CHECK ("Price" > 0),
     "IsAvailable" BOOLEAN NOT NULL DEFAULT true,
     "IsActive" BOOLEAN NOT NULL DEFAULT true,
+    "IsManual" BOOLEAN NOT NULL DEFAULT false,
     "SortOrder" INTEGER NOT NULL DEFAULT 0,
     "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -333,6 +334,7 @@ CREATE TABLE IF NOT EXISTS "StarOrders" (
     "UsdTomanRate" INTEGER,
     "G2OrderId" VARCHAR(50),
     "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+    "IsManual" BOOLEAN NOT NULL DEFAULT false,
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
     "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );

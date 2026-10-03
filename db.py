@@ -887,7 +887,7 @@ def list_star_packages():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
-            '"IsAvailable","IsActive","SortOrder" '
+            '"IsAvailable","IsActive","SortOrder",COALESCE("IsManual",false) '
             'FROM "StarPackages" WHERE "IsActive"=true '
             'ORDER BY "SortOrder","StarsAmount","Id"'
         )
@@ -900,9 +900,10 @@ def list_star_packages():
             'stars': int(row[3] or 0),
             'cost_usd': Decimal(str(row[4])),
             'price': int(row[5]),
-            'available': bool(row[6]),
+            'available': (bool(row[6]) or bool(row[9])) if bool(row[7]) else False,
             'active': bool(row[7]),
             'sort': int(row[8] or 0),
+            'is_manual': bool(row[9]),
         }
         for row in rows
     ]
@@ -916,12 +917,13 @@ def get_star_package(package_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
-            '"IsAvailable","IsActive" FROM "StarPackages" WHERE "Id"=%s',
+            '"IsAvailable","IsActive",COALESCE("IsManual",false) FROM "StarPackages" WHERE "Id"=%s',
             (package_id,),
         )
         row = cur.fetchone()
     if not row:
         return None
+    is_manual = bool(row[8])
     return {
         'id': row[0],
         'catalogue': row[1],
@@ -929,9 +931,11 @@ def get_star_package(package_id):
         'stars': int(row[3] or 0),
         'cost_usd': Decimal(str(row[4])),
         'price': int(row[5]),
-        'available': bool(row[6]) and bool(row[7]),
+        'available': (bool(row[6]) or is_manual) and bool(row[7]),
         'active': bool(row[7]),
+        'is_manual': is_manual,
     }
+
 
 
 def create_star_order_atomic(
@@ -948,11 +952,13 @@ def create_star_order_atomic(
     price = checked_amount(pkg['price'], label='قیمت استارز')
     if price != expected_price:
         raise ValueError('قیمت استارز تغییر کرده است؛ دوباره از فهرست انتخاب کن.')
-    available, _cost, _balance, error = g2bulk.can_fulfill_stars(
-        pkg['catalogue'], force=True
-    )
-    if not available:
-        raise ValueError(error or 'موجودی استارز کافی نیست.')
+    is_manual = bool(pkg.get('is_manual'))
+    if not is_manual:
+        available, _cost, _balance, error = g2bulk.can_fulfill_stars(
+            pkg['catalogue'], force=True
+        )
+        if not available:
+            raise ValueError(error or 'موجودی استارز کافی نیست.')
     title = pkg['title'] or _stars_title(pkg['stars'], pkg['catalogue'])
     with get_conn() as conn, conn.cursor() as cur:
         try:
@@ -971,13 +977,15 @@ def create_star_order_atomic(
                 'INSERT INTO "StarOrders" '
                 '("OrderId","OrderItemId","PackageId","CatalogueName","StarsAmount",'
                 '"TargetUsername","PlayerName","CostUsd","SaleToman","UsdTomanRate",'
-                '"G2Status") '
-                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,\'\')',
+                '"G2Status","IsManual") '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                 (
                     order_id, item_id, int(pkg['id']), pkg['catalogue'],
                     int(pkg['stars']), username, str(player_name or '')[:120],
                     str(pkg['cost_usd']), price,
                     int(get_setting('stars_usd_toman_rate', '0') or 0) or None,
+                    'MANUAL_PENDING' if is_manual else '',
+                    is_manual,
                 ),
             )
             conn.commit()
@@ -992,7 +1000,7 @@ def get_star_order(order_id):
         cur.execute(
             'SELECT "Id","OrderId","PackageId","CatalogueName","StarsAmount",'
             '"TargetUsername","PlayerName","CostUsd","SaleToman","UsdTomanRate",'
-            '"G2OrderId","G2Status" FROM "StarOrders" WHERE "OrderId"=%s',
+            '"G2OrderId","G2Status",COALESCE("IsManual",false) FROM "StarOrders" WHERE "OrderId"=%s',
             (int(order_id),),
         )
         row = cur.fetchone()
@@ -1011,6 +1019,7 @@ def get_star_order(order_id):
         'usd_toman_rate': row[9],
         'g2_order_id': row[10],
         'g2_status': str(row[11] or '').upper(),
+        'is_manual': bool(row[12]),
         'title': _stars_title(row[4], row[3]),
     }
 
@@ -1077,11 +1086,17 @@ def claim_star_submission(star_id):
 
 
 def _fulfill_star_order(order_id, star):
+    if star.get('is_manual'):
+        update_star_g2(star['id'], status='MANUAL_PENDING')
+        update_order_status(order_id, 'processing')
+        return True, 'manual_star'
+
     status = str(star.get('g2_status') or '').upper()
     username = str(star.get('target_username') or '').strip()
     if status == 'COMPLETED' and star.get('g2_order_id'):
         update_order_status(order_id, 'delivered')
         return True, 'delivered'
+
     if star.get('g2_order_id') and status in {'PENDING', 'PROCESSING', 'SUBMITTING'}:
         live = g2bulk.get_game_order_status(star['g2_order_id'])
         if live.get('ok'):
@@ -1186,6 +1201,90 @@ def _fulfill_star_order(order_id, star):
     if ok_refund:
         return False, f'refunded:{int(refunded)}'
     return False, result.get('error') or 'ثبت سفارش استارز ناموفق بود.'
+
+
+def toggle_star_package_manual(package_id):
+    """تغییر وضعیت انجام دستی/خودکار بسته استارز توسط ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "StarPackages" SET "IsManual"=NOT COALESCE("IsManual",false),"UpdatedAt"=now() '
+            'WHERE "Id"=%s RETURNING COALESCE("IsManual",false)',
+            (int(package_id),),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return bool(row[0]) if row else False
+
+
+def set_star_package_manual(package_id, is_manual=True):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "StarPackages" SET "IsManual"=%s,"UpdatedAt"=now() '
+            'WHERE "Id"=%s',
+            (bool(is_manual), int(package_id)),
+        )
+        conn.commit()
+
+
+def list_manual_star_orders(limit=50):
+    """لیست سفارش‌های استارز دستی در انتظار واریز ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT o."Id", o."TelegramId", o."TotalAmount", o."Status", '
+            'o."PaymentMethod", o."CreatedAt", s."TargetUsername", s."StarsAmount", '
+            's."CatalogueName", s."PlayerName", u."FirstName", u."TelegramUsername" '
+            'FROM "Orders" o '
+            'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
+            'LEFT JOIN "Users" u ON u."Id"=o."UserId" '
+            'WHERE (s."IsManual"=true OR s."G2Status"=\'MANUAL_PENDING\') '
+            'AND o."Status" IN (\'paid\', \'processing\') '
+            'ORDER BY o."Id" DESC LIMIT %s',
+            (max(1, min(int(limit), 100)),),
+        )
+        return cur.fetchall()
+
+
+def count_pending_manual_star_orders():
+    """تعداد سفارش‌های استارز دستی در انتظار واریز ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT COUNT(*) FROM "Orders" o '
+            'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
+            'WHERE (s."IsManual"=true OR s."G2Status"=\'MANUAL_PENDING\') '
+            'AND o."Status" IN (\'paid\', \'processing\')'
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def admin_complete_star_order(order_id):
+    """تکمیل دستی سفارش استارز توسط ادمین."""
+    order_id = int(order_id)
+    star = get_star_order(order_id)
+    if not star:
+        return False, None, 'سفارش استارز پیدا نشد.'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Status","TelegramId" FROM "Orders" WHERE "Id"=%s',
+            (order_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, None, 'سفارش پیدا نشد.'
+        status, tg_id = row[0], row[1]
+        if status not in ('paid', 'processing'):
+            return False, tg_id, f'وضعیت سفارش {status} است و قابل تحویل نیست.'
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'delivered\',"UpdatedAt"=now() WHERE "Id"=%s',
+            (order_id,),
+        )
+        cur.execute(
+            'UPDATE "StarOrders" SET "G2Status"=\'COMPLETED\',"UpdatedAt"=now() WHERE "OrderId"=%s',
+            (order_id,),
+        )
+        conn.commit()
+    return True, tg_id, star
+
 
 
 def normalize_telegram_username(raw):
@@ -1347,11 +1446,12 @@ def sync_star_packages(force=False):
             savepoint = f'star_pkg_{index}'
             cur.execute(f'SAVEPOINT {savepoint}')
             try:
+                is_manual_default = int(item['stars']) in (1500, 2500) or name in ('1.5K Stars', '2.5K Stars')
                 cur.execute(
                     '''INSERT INTO "StarPackages"
                        ("CatalogueName","Title","StarsAmount","CostUsd","Price",
-                        "IsAvailable","IsActive","SortOrder","UpdatedAt")
-                       VALUES (%s,%s,%s,%s,%s,true,true,%s,now())
+                        "IsAvailable","IsActive","SortOrder","IsManual","UpdatedAt")
+                       VALUES (%s,%s,%s,%s,%s,true,true,%s,%s,now())
                        ON CONFLICT ("CatalogueName") DO UPDATE SET
                          "Title"=EXCLUDED."Title",
                          "StarsAmount"=EXCLUDED."StarsAmount",
@@ -1361,7 +1461,7 @@ def sync_star_packages(force=False):
                          "IsActive"=true,
                          "SortOrder"=EXCLUDED."SortOrder",
                          "UpdatedAt"=now()''',
-                    (name, title, int(item['stars']), str(item['cost_usd']), sale, index),
+                    (name, title, int(item['stars']), str(item['cost_usd']), sale, index, is_manual_default),
                 )
                 cur.execute(f'RELEASE SAVEPOINT {savepoint}')
                 updated += 1
@@ -3818,6 +3918,9 @@ def ensure_admin_schema():
             "EmojiChar" VARCHAR(16) NOT NULL DEFAULT '',
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        '''ALTER TABLE "StarPackages" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
+        '''ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
+        '''UPDATE "StarPackages" SET "IsManual"=true WHERE "StarsAmount" IN (1500, 2500) OR "CatalogueName" IN ('1.5K Stars', '2.5K Stars')''',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -4608,6 +4711,7 @@ def get_order_admin_detail(order_id):
     gems = get_gem_infos_for_order(order_id)
     items = get_order_items(order_id)
     gift = get_gift_card_order(order_id)
+    star = get_star_order(order_id)
     attempts = list_payment_attempts_for_order(order_id, 8)
     parked = None
     authority = str(row[9] or '').strip()
@@ -4651,6 +4755,7 @@ def get_order_admin_detail(order_id):
         'items': items,
         'gems': gems,
         'gift': gift,
+        'star': star,
         'attempts': attempts,
         'parked': parked,
         'last_attempt_authority': last_attempt_authority,
@@ -5282,6 +5387,10 @@ def admin_operations_snapshot(low_stock_threshold=5):
         result[key] = int(result[key] or 0)
     result['low_stock_threshold'] = threshold
     result.setdefault('wallet_refunds_unseen', 0)
+    try:
+        result['manual_stars'] = count_pending_manual_star_orders()
+    except Exception:
+        result['manual_stars'] = 0
     return result
 
 
@@ -5295,8 +5404,10 @@ def ops_action_total(ops, extra=0):
         + int(ops.get('low_gem_stock') or 0)
         + int(ops.get('low_store_stock') or 0)
         + int(ops.get('wallet_refunds_unseen') or 0)
+        + int(ops.get('manual_stars') or 0)
         + int(extra or 0)
     )
+
 
 
 def list_wallet_refunded_orders(limit=20):

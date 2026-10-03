@@ -711,6 +711,7 @@ def admin_hub_orders_keyboard(counts=None):
     c = counts or {}
     cred = int(c.get('ready_creds') or 0)
     site_cred = int(c.get('site_ready_creds') or 0)
+    manual_stars = int(c.get('manual_stars') or 0)
     stuck = int(c.get('stuck') or 0)
     failed = int(c.get('failed_g2') or 0)
     receipts = int(c.get('receipts') or 0)
@@ -718,6 +719,9 @@ def admin_hub_orders_keyboard(counts=None):
     cred_label = f'🔐 جم با اطلاعات ربات ({cred})' if cred else '🔐 جم با اطلاعات ربات'
     site_cred_label = (
         f'🌐 جم با اطلاعات سایت ({site_cred})' if site_cred else '🌐 جم با اطلاعات سایت'
+    )
+    manual_stars_label = (
+        f'⭐ استارز دستی ({manual_stars})' if manual_stars else '⭐ استارز دستی'
     )
     stuck_label = f'⏳ گیرکرده ({stuck})' if stuck else '⏳ گیرکرده در پردازش'
     failed_label = f'❌ تحویل ناموفق G2B ({failed})' if failed else '❌ تحویل ناموفق G2B'
@@ -733,6 +737,7 @@ def admin_hub_orders_keyboard(counts=None):
         )],
         [InlineKeyboardButton(cred_label, callback_data='admx_credentials')],
         [InlineKeyboardButton(site_cred_label, callback_data='admx_sitecreds')],
+        [InlineKeyboardButton(manual_stars_label, callback_data='admx_manual_stars')],
         [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],
         [InlineKeyboardButton(failed_label, callback_data='adm_failed')],
         [InlineKeyboardButton(stuck_label, callback_data='admx_stuck')],
