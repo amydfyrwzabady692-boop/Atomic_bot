@@ -150,10 +150,12 @@ async def _show_home(update, ctx, via_message=False):
         ops['wallet_refunds_unseen'] = count_unseen_wallet_refunds()
     except Exception:
         ops['wallet_refunds_unseen'] = 0
+    manual_stars = int(ops.get('manual_stars') or 0)
     alerts = ops_action_total(ops, ready_creds)
     orders_action = (
         ops['pending_receipts'] + ops['stuck_processing']
         + ready_creds + int(s.get('failed_g2') or 0)
+        + manual_stars
     )
     text = (
         f"✦ *پنل ادمین Atomic*\n"
@@ -162,6 +164,7 @@ async def _show_home(update, ctx, via_message=False):
         f"📦 سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
         f"❌ تحویل ناموفق: *{s['failed_g2']:,}*\n"
         f"🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n"
+        f"⭐ استارز دستی در انتظار: *{manual_stars:,}*\n"
         f"💰 برگشت کیف‌پول دیده‌نشده: *{ops.get('wallet_refunds_unseen', 0):,}*\n"
         f"🎫 تیکت باز: *{s['open_tickets']:,}*\n"
         f"🏦 مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
@@ -175,6 +178,7 @@ async def _show_home(update, ctx, via_message=False):
         'ops_alerts': alerts,
         'orders_action': orders_action,
         'open_tickets': s['open_tickets'],
+        'manual_stars': manual_stars,
     })
     if via_message:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)

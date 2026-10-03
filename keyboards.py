@@ -673,10 +673,20 @@ def admin_home_keyboard(counts=None):
     ops_n = int(c.get('ops_alerts') or 0)
     orders_n = int(c.get('orders_action') or 0)
     tickets_n = int(c.get('open_tickets') or 0)
+    manual_stars = int(c.get('manual_stars') or 0)
     ops_label = f'🚨 مرکز عملیات ({ops_n})' if ops_n else '🚨 مرکز عملیات'
     orders_label = f'📦 سفارش‌ها ({orders_n})' if orders_n else '📦 سفارش‌ها'
     support_label = f'🎧 پشتیبانی ({tickets_n})' if tickets_n else '🎧 پشتیبانی'
+    manual_stars_label = (
+        f'⭐ سفارش‌های استارز دستی ({manual_stars})'
+        if manual_stars else
+        '⭐ استارز دستی'
+    )
     return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(manual_stars_label, callback_data='admx_manual_stars'),
+            InlineKeyboardButton('⚙️ تنظیم استارز', callback_data='admx_stars'),
+        ],
         [InlineKeyboardButton(ops_label, callback_data='admx_ops')],
         [InlineKeyboardButton(
             '🔎 استعلام سفارش', callback_data='admi_ordersearch'
@@ -820,7 +830,10 @@ def admin_shop_keyboard():
             InlineKeyboardButton('🏷 کد تخفیف', callback_data='admx_discount'),
         ],
         [InlineKeyboardButton('🎁 گیفت‌کارت G2B', callback_data='admx_giftcards')],
-        [InlineKeyboardButton('⭐ استارز تلگرام', callback_data='admx_stars')],
+        [
+            InlineKeyboardButton('⭐ سفارش‌های دستی استارز', callback_data='admx_manual_stars'),
+            InlineKeyboardButton('⭐ تنظیم استارز', callback_data='admx_stars'),
+        ],
         [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
     ])
 

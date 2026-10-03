@@ -1757,7 +1757,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_manual_stars'),
              InlineKeyboardButton('⚙️ تنظیم بسته‌ها', callback_data='admx_stars')],
-            _back('admx_hub_orders'),
+            [InlineKeyboardButton('📦 منوی سفارش‌ها', callback_data='admx_hub_orders'),
+             InlineKeyboardButton('🔙 منوی اصلی پنل', callback_data='adm_home')],
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
 
