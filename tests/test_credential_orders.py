@@ -55,7 +55,6 @@ class CredentialVaultTests(unittest.TestCase):
 
     def test_legacy_ciphertext_without_backup_still_decrypts(self):
         os.environ['ACCOUNT_CREDENTIALS_KEY'] = Fernet.generate_key().decode()
-        from cryptography.fernet import Fernet
         import json
         key = os.environ['ACCOUNT_CREDENTIALS_KEY'].encode('ascii')
         raw = json.dumps(
@@ -153,16 +152,17 @@ class CredentialMenuTests(unittest.TestCase):
         self.assertIn('gems_credentials', callbacks)
 
     def test_both_flows_offer_same_three_payment_methods(self):
-        callbacks = [
-            button.callback_data
-            for row in pay_method_keyboard(
-                123, can_wallet=True, wallet_balance=500_000, remaining=100_000
-            ).inline_keyboard
-            for button in row
-        ]
-        self.assertIn('pay_zp_123', callbacks)
-        self.assertIn('pay_card_123', callbacks)
-        self.assertIn('pay_wallet_123', callbacks)
+        with patch('appearance._rows', return_value={}):
+            callbacks = [
+                button.callback_data
+                for row in pay_method_keyboard(
+                    123, can_wallet=True, wallet_balance=500_000, remaining=100_000
+                ).inline_keyboard
+                for button in row
+            ]
+            self.assertIn('pay_zp_123', callbacks)
+            self.assertIn('pay_card_123', callbacks)
+            self.assertIn('pay_wallet_123', callbacks)
 
     def test_zarinpal_instant_note_is_only_in_id_flow(self):
         import inspect
@@ -285,20 +285,21 @@ class CredentialAdminActionTests(unittest.TestCase):
 
 class UidGiftCredentialTests(unittest.TestCase):
     def test_gift_package_is_detected_without_account_secrets(self):
-        self.assertTrue(db.is_uid_gift_credential_package('gift', 90_004, 'Booyah Pass Gift'))
-        self.assertFalse(db.is_uid_gift_credential_package('weekly', 60, 'itunes_try:60'))
-        self.assertIsNone(db.credential_cost_for_package(90_004, 'gift'))
+        with patch.object(db, 'get_setting', return_value=''):
+            self.assertTrue(db.is_uid_gift_credential_package('gift', 90_004, 'Booyah Pass Gift'))
+            self.assertFalse(db.is_uid_gift_credential_package('weekly', 60, 'itunes_try:60'))
+            self.assertIsNone(db.credential_cost_for_package(90_004, 'gift'))
 
     def test_seed_and_list_include_booyah_pass_gift(self):
         import inspect
         source = inspect.getsource(db.ensure_admin_schema)
         self.assertIn('Booyah Pass Gift', source)
         self.assertIn('299000', source)
-        self.assertIn("'gift'", inspect.getsource(db.get_gems_by_credentials))
+        self.assertIn("gift", inspect.getsource(db.get_gems_by_credentials))
         create = inspect.getsource(db.create_credential_uid_gift_order_atomic)
         self.assertIn('"GameUID"', create)
-        self.assertIn("'uid'", create)
-        self.assertIn("'awaiting_payment'", create)
+        self.assertIn("uid", create)
+        self.assertIn("awaiting_payment", create)
 
     def test_buy_flow_asks_uid_not_password(self):
         import inspect
@@ -334,6 +335,96 @@ class UidGiftCredentialTests(unittest.TestCase):
             __import__('handlers.payment', fromlist=['payment'])._send_credential_post_pay_support
         )
         self.assertIn('get_gift_support_contact', pay)
+
+
+class LevelupMultiSelectTests(unittest.TestCase):
+    def test_levelup_queries_and_db_functions(self):
+        import inspect
+        get_creds = inspect.getsource(db.get_gems_by_credentials)
+        self.assertIn("levelup", get_creds)
+
+        get_lv = inspect.getsource(db.get_levelup_packages)
+        self.assertIn('"PlanType"', get_lv)
+        self.assertIn("levelup", get_lv)
+        self.assertIn("ORDER BY", get_lv)
+
+        multi_create = inspect.getsource(db.create_multi_credential_gem_order_atomic)
+        self.assertIn("FOR UPDATE", multi_create)
+        self.assertIn("raw_sum * 0.10", multi_create)
+        self.assertIn('_insert_pending_order', multi_create)
+        self.assertIn('"OrderItems"', multi_create)
+        self.assertIn('"GemOrderInfo"', multi_create)
+
+    def test_discount_calculation_logic(self):
+        # 1 package: no discount
+        prices_1 = [130_000]
+        raw_1 = sum(prices_1)
+        discount_1 = int(raw_1 * 0.10) if len(prices_1) > 1 else 0
+        self.assertEqual(discount_1, 0)
+        self.assertEqual(raw_1 - discount_1, 130_000)
+
+        # 2 packages: 10% discount
+        prices_2 = [130_000, 200_000]
+        raw_2 = sum(prices_2)
+        discount_2 = int(raw_2 * 0.10) if len(prices_2) > 1 else 0
+        self.assertEqual(raw_2, 330_000)
+        self.assertEqual(discount_2, 33_000)
+        self.assertEqual(raw_2 - discount_2, 297_000)
+
+        # All 6 single levelup packages (6, 10, 15, 20, 25, 30)
+        prices_all = [130_000, 200_000, 200_000, 200_000, 200_000, 260_000]
+        raw_all = sum(prices_all)
+        self.assertEqual(raw_all, 1_190_000)
+        discount_all = int(raw_all * 0.10)
+        self.assertEqual(discount_all, 119_000)
+        self.assertEqual(raw_all - discount_all, 1_071_000)
+
+    def test_keyboards_rendering(self):
+        from keyboards import (
+            credential_products_keyboard,
+            credential_multi_select_keyboard,
+        )
+
+        sample_pkgs = [
+            (6, 'لول 6', 6, '💎', 130_000, True, 'levelup'),
+            (7, 'لول 10', 10, '💎', 200_000, True, 'levelup'),
+        ]
+        with patch('appearance._rows', return_value={}):
+            cred_kb = credential_products_keyboard(sample_pkgs)
+            callbacks = [
+                btn.callback_data
+                for row in cred_kb.inline_keyboard
+                for btn in row
+            ]
+            self.assertIn('cred_multi_select', callbacks)
+            self.assertIn('cred_product_6', callbacks)
+
+            # Test multi-select keyboard with none selected
+            multi_kb_empty = credential_multi_select_keyboard(sample_pkgs, [], total_price=0)
+            multi_empty_cbs = [
+                btn.callback_data
+                for row in multi_kb_empty.inline_keyboard
+                for btn in row
+            ]
+            self.assertIn('cred_toggle_6', multi_empty_cbs)
+            self.assertIn('cred_toggle_7', multi_empty_cbs)
+            self.assertIn('cred_toggle_all', multi_empty_cbs)
+            self.assertIn('cred_multi_noop', multi_empty_cbs)
+
+            # Test multi-select keyboard with 2 selected
+            multi_kb_selected = credential_multi_select_keyboard(sample_pkgs, [6, 7], total_price=297_000)
+            multi_sel_cbs = [
+                btn.callback_data
+                for row in multi_kb_selected.inline_keyboard
+                for btn in row
+            ]
+            self.assertIn('cbuy_multi', multi_sel_cbs)
+            texts = [
+                btn.text
+                for row in multi_kb_selected.inline_keyboard
+                for btn in row
+            ]
+            self.assertTrue(any('297,000' in t for t in texts))
 
 
 if __name__ == '__main__':

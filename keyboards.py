@@ -298,6 +298,13 @@ def freefire_products_keyboard():
 
 def credential_products_keyboard(products):
     rows = []
+    has_levelup = any(len(p) > 6 and p[6] == 'levelup' for p in products)
+    if has_levelup:
+        rows.append([InlineKeyboardButton(
+            '🛒 انتخاب و خرید چند پک با هم (۱۰٪ تخفیف)',
+            callback_data='cred_multi_select',
+        )])
+
     for p in products:
         key = f'c.{p[0]}'
         title = appearance.user_label(key, p[1])
@@ -307,6 +314,33 @@ def credential_products_keyboard(products):
             appearance.icon_for(key, f'g.{p[0]}', 'b.gems.cr'),
         )])
     rows.append([InlineKeyboardButton('🔙 روش‌های خرید', callback_data='gems')])
+    return InlineKeyboardMarkup(rows)
+
+
+def credential_multi_select_keyboard(levelup_pkgs, selected_ids, total_price=0):
+    rows = []
+    selected_set = set(selected_ids or [])
+    for p in levelup_pkgs:
+        pid = p[0]
+        title = appearance.user_label(f'c.{pid}', p[1])
+        check = '✅' if pid in selected_set else '⬜️'
+        btn_text = f'{check} {title} • {_fmt(p[4])} تومان'
+        rows.append([InlineKeyboardButton(btn_text, callback_data=f'cred_toggle_{pid}')])
+
+    all_pids = {p[0] for p in levelup_pkgs}
+    all_selected = bool(all_pids and all_pids.issubset(selected_set))
+    toggle_all_text = '❌ لغو انتخاب همه' if all_selected else '✨ انتخاب همه پک‌ها'
+    rows.append([InlineKeyboardButton(toggle_all_text, callback_data='cred_toggle_all')])
+
+    if selected_ids:
+        rows.append([InlineKeyboardButton(
+            f'✅ ادامه و ثبت اطلاعات ({_fmt(total_price)} تومان)',
+            callback_data='cbuy_multi',
+        )])
+    else:
+        rows.append([InlineKeyboardButton('👆 لطفاً حداقل یک پک را انتخاب کنید', callback_data='cred_multi_noop')])
+
+    rows.append([InlineKeyboardButton('🔙 بازگشت به لیست محصولات', callback_data='gems_credentials')])
     return InlineKeyboardMarkup(rows)
 
 

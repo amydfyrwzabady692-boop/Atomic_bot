@@ -177,13 +177,26 @@ def is_uid_gift_credential_package(plan_type=None, amount=None, catalogue=None):
 
 
 def get_gems_by_credentials():
-    """Active weekly/monthly/gift packages fulfilled by support, not G2Bulk auto."""
+    """Active weekly/monthly/gift/levelup packages fulfilled by support, not G2Bulk auto."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             f'SELECT {_GEM_COLS} FROM "GemPackages" '
             'WHERE "IsActive"=true AND "IsAvailable"=true '
             'AND "PurchaseType"=\'by_credentials\' '
-            'AND "PlanType" IN (\'weekly\',\'monthly\',\'gift\') '
+            'AND "PlanType" IN (\'weekly\',\'monthly\',\'gift\',\'levelup\') '
+            'ORDER BY "SortOrder","Id"'
+        )
+        return cur.fetchall()
+
+
+def get_levelup_packages():
+    """Active levelup packages for multi-selection."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            f'SELECT {_GEM_COLS} FROM "GemPackages" '
+            'WHERE "IsActive"=true AND "IsAvailable"=true '
+            'AND "PurchaseType"=\'by_credentials\' '
+            'AND "PlanType"=\'levelup\' '
             'ORDER BY "SortOrder","Id"'
         )
         return cur.fetchall()
@@ -357,7 +370,7 @@ def create_credential_gem_order_atomic(
                 'SELECT "Title","Price","Stock" FROM "GemPackages" '
                 'WHERE "Id"=%s AND "IsActive"=true AND "IsAvailable"=true '
                 'AND "PurchaseType"=\'by_credentials\' '
-                'AND "PlanType" IN (\'weekly\',\'monthly\') FOR UPDATE',
+                'AND "PlanType" IN (\'weekly\',\'monthly\',\'levelup\') FOR UPDATE',
                 (int(gem_package_id),),
             )
             package = cur.fetchone()
@@ -403,6 +416,108 @@ def create_credential_gem_order_atomic(
             )
             conn.commit()
             return order_id, str(title), total
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def create_multi_credential_gem_order_atomic(
+    user_db_id, package_ids, expected_price, *, telegram_id='',
+    full_name='', login_method='', credential_ciphertext='', two_factor_enabled=False,
+):
+    """Create a multi-pack credential order with 10% discount if more than 1 pack."""
+    expected_price = checked_amount(expected_price, label='قیمت مورد تأیید')
+    if not package_ids or not isinstance(package_ids, (list, tuple)):
+        raise ValueError('هیچ پکی انتخاب نشده است.')
+    package_ids = [int(pid) for pid in package_ids]
+    if len(package_ids) > 10:
+        raise ValueError('حداکثر ۱۰ پک می‌توانید همزمان انتخاب کنید.')
+    login_method = str(login_method or '').strip().lower()
+    if login_method not in ('google', 'facebook', 'vk'):
+        raise ValueError('روش ورود نامعتبر است.')
+    credential_ciphertext = str(credential_ciphertext or '').strip()
+    if not credential_ciphertext or len(credential_ciphertext) > 10_000:
+        raise ValueError('اطلاعات رمزگذاری‌شده نامعتبر است.')
+
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            packages = []
+            for pid in sorted(package_ids):
+                cur.execute(
+                    'SELECT "Id","Title","Price","Stock" FROM "GemPackages" '
+                    'WHERE "Id"=%s AND "IsActive"=true AND "IsAvailable"=true '
+                    'AND "PurchaseType"=\'by_credentials\' '
+                    'AND "PlanType" IN (\'weekly\',\'monthly\',\'levelup\') FOR UPDATE',
+                    (pid,),
+                )
+                pkg = cur.fetchone()
+                if not pkg:
+                    raise ValueError(f'پک با شناسه {pid} دیگر فعال یا موجود نیست.')
+                packages.append({
+                    'id': pkg[0],
+                    'title': str(pkg[1]),
+                    'price': checked_amount(pkg[2], label='قیمت محصول'),
+                    'stock': int(pkg[3] or 0),
+                })
+
+            raw_sum = sum(p['price'] for p in packages)
+            discount = int(raw_sum * 0.10) if len(packages) > 1 else 0
+            total = checked_amount(raw_sum - discount, label='مبلغ کل')
+
+            if total != expected_price:
+                raise ValueError('قیمت یا تخفیف تغییر کرده است؛ لطفاً دوباره انتخاب کنید.')
+
+            for p in packages:
+                if p['stock'] < 1:
+                    raise ValueError(f'ظرفیت محصول {p["title"]} کافی نیست.')
+                cur.execute(
+                    'UPDATE "GemPackages" SET "Stock"="Stock"-1 '
+                    'WHERE "Id"=%s AND "Stock">=1',
+                    (p['id'],),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError(f'ظرفیت محصول {p["title"]} کافی نیست.')
+
+            order_title = ' + '.join(p['title'] for p in packages)
+            if discount > 0:
+                order_title += ' (با ۱۰٪ تخفیف)'
+            if len(order_title) > 250:
+                order_title = f'{len(packages)} پک لول‌آپ انتخابی (با ۱۰٪ تخفیف)'
+
+            order_id = _insert_pending_order(
+                cur, user_db_id, total, telegram_id=telegram_id,
+                full_name=full_name, payment_method='pending',
+            )
+
+            first_item_id = None
+            for p in packages:
+                item_price = int(p['price'] * 0.90) if len(packages) > 1 else p['price']
+                cur.execute(
+                    'INSERT INTO "OrderItems" '
+                    '("OrderId","ProductId","ProductName","Price","Quantity") '
+                    'VALUES (%s,NULL,%s,%s,1) RETURNING "Id"',
+                    (order_id, p['title'], item_price),
+                )
+                iid = cur.fetchone()[0]
+                if first_item_id is None:
+                    first_item_id = iid
+
+            cur.execute(
+                'INSERT INTO "GemOrderInfo" '
+                '("OrderId","OrderItemId","GemPackageId","PurchaseType",'
+                '"TelegramId","LoginMethod","CredentialCiphertext",'
+                '"CredentialStatus","CredentialTwoFactorEnabled",'
+                '"CredentialUpdatedAt","G2BulkStatus","AdminNote") '
+                'VALUES (%s,%s,%s,\'by_credentials\',%s,%s,%s,\'awaiting_payment\','
+                '%s,now(),\'MANUAL_RESERVED\',%s)',
+                (
+                    order_id, first_item_id, packages[0]['id'], str(telegram_id),
+                    login_method, credential_ciphertext, bool(two_factor_enabled),
+                    order_title[:500],
+                ),
+            )
+            conn.commit()
+            return order_id, order_title, total
         except Exception:
             conn.rollback()
             raise

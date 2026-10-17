@@ -11,12 +11,14 @@ from credential_vault import (
 )
 from db import (
     create_credential_gem_order_atomic, create_credential_uid_gift_order_atomic,
-    get_gem, get_gems_by_credentials, get_or_create_user, get_wallet_balance,
+    create_multi_credential_gem_order_atomic,
+    get_gem, get_gems_by_credentials, get_levelup_packages, get_or_create_user, get_wallet_balance,
     is_uid_gift_credential_package,
 )
 from keyboards import (
     credential_backup_keyboard, credential_cancel_keyboard,
     credential_confirm_keyboard, credential_method_keyboard,
+    credential_multi_select_keyboard,
     credential_products_keyboard, freefire_products_keyboard, main_menu,
     pay_method_keyboard,
 )
@@ -217,11 +219,16 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
             ])
         )
         return
-    plan = 'هفتگی' if product[6] == 'weekly' else 'ماهانه'
+    if product[6] == 'levelup':
+        plan = 'لول‌آپ فری‌فایر'
+    elif product[6] == 'weekly':
+        plan = 'هفتگی'
+    else:
+        plan = 'ماهانه'
     text = (
         f'🔐 *{markdown_safe(title, 120)}*\n'
         '━━━━━━━━━━━━━━━\n'
-        f'📅 دوره: *{plan}*\n'
+        f'📅 نوع بسته: *{plan}*\n'
         f'💰 قیمت هر عدد: *{int(product[4]):,} تومان*\n'
         '⏳ تحویل: دستی پس از بررسی اطلاعات توسط ادمین\n\n'
         'مراحل بعدی:\n'
@@ -235,12 +242,146 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         'بعد از تحویل حتماً رمز اکانت را عوض کن.'
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    buttons = [
+        [InlineKeyboardButton('✅ ادامه و ثبت اطلاعات', callback_data=f'cbuy_{product_id}')],
+    ]
+    if product[6] == 'levelup':
+        buttons.append([InlineKeyboardButton('🛒 انتخاب چند پک با هم (۱۰٪ تخفیف)', callback_data='cred_multi_select')])
+    buttons.append([InlineKeyboardButton('🔙 بازگشت', callback_data='gems_credentials')])
     await query.edit_message_text(
-        text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton('✅ ادامه و ثبت اطلاعات', callback_data=f'cbuy_{product_id}')],
-            [InlineKeyboardButton('🔙 بازگشت', callback_data='gems_credentials')],
-        ])
+        text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+
+async def credential_multi_select_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    levelup_pkgs = await asyncio.to_thread(get_levelup_packages)
+    single_levels = [p for p in levelup_pkgs if p[2] < 100]
+
+    selected_ids = ctx.user_data.get('selected_levelup_ids', [])
+    selected_pkgs = [p for p in single_levels if p[0] in selected_ids]
+    raw_sum = sum(int(p[4]) for p in selected_pkgs)
+    discount = int(raw_sum * 0.10) if len(selected_pkgs) > 1 else 0
+    total = max(0, raw_sum - discount)
+
+    count = len(selected_pkgs)
+    text = (
+        '🎯 *انتخاب همزمان پک‌های لول‌آپ (Free Fire)*\n'
+        '━━━━━━━━━━━━━━━\n'
+        'روی هر پک کلیک کن تا انتخاب یا حذف شود.\n'
+        '🔥 *تخفیف ویژه:* با خرید بیش از ۱ پک، *۱۰٪ تخفیف* روی کل مبلغ اعمال می‌شود!\n\n'
+        f'📦 تعداد انتخاب‌شده: *{count}* پک\n'
+        f'💵 مجموع قیمت خام: *{raw_sum:,} تومان*\n'
+    )
+    if discount > 0:
+        text += f'🎁 تخفیف ۱۰٪ (بیشتر از ۱ پک): *{discount:,}- تومان*\n'
+    text += f'💰 *مبلغ نهایی: {total:,} تومان*\n\n'
+    if count == 0:
+        text += '👈 از دکمه‌های زیر پک‌های مورد نظرتان را انتخاب کنید:'
+    elif count == 1:
+        text += '💡 یک پک دیگر انتخاب کنید تا ۱۰٪ تخفیف بگیرید!'
+    else:
+        text += f'✅ ۱۰٪ تخفیف روی هر {count} پک اعمال شد. برای ادامه، دکمه تایید را بزنید.'
+
+    kb = credential_multi_select_keyboard(single_levels, selected_ids, total)
+    if query:
+        try:
+            await query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
+        except Exception:
+            pass
+    else:
+        await update.effective_chat.send_message(text, parse_mode='Markdown', reply_markup=kb)
+
+
+async def credential_multi_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    levelup_pkgs = await asyncio.to_thread(get_levelup_packages)
+    single_levels = [p for p in levelup_pkgs if p[2] < 100]
+    single_ids = [p[0] for p in single_levels]
+
+    selected = set(ctx.user_data.get('selected_levelup_ids', []))
+    if data == 'cred_toggle_all':
+        if set(single_ids).issubset(selected):
+            selected.clear()
+            await query.answer('انتخاب همه لغو شد.')
+        else:
+            selected = set(single_ids)
+            await query.answer('همه پک‌ها انتخاب شدند (۱۰٪ تخفیف اعمال شد).')
+    elif data.startswith('cred_toggle_'):
+        try:
+            pid = int(data.rsplit('_', 1)[1])
+            if pid in selected:
+                selected.remove(pid)
+                await query.answer('پک حذف شد.')
+            else:
+                selected.add(pid)
+                await query.answer('پک اضافه شد ✅')
+        except (ValueError, IndexError):
+            await query.answer()
+    else:
+        await query.answer()
+
+    ctx.user_data['selected_levelup_ids'] = list(selected)
+    await credential_multi_select_menu(update, ctx)
+
+
+async def credential_multi_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    selected_ids = ctx.user_data.get('selected_levelup_ids', [])
+    if not selected_ids:
+        await query.answer('لطفاً حداقل یک پک انتخاب کنید.', alert=True)
+        return ConversationHandler.END
+
+    if not is_configured():
+        await query.edit_message_text(
+            '❌ بخش ثبت اطلاعات اکانت موقتاً در دسترس نیست. با پشتیبانی تماس بگیر.'
+        )
+        return ConversationHandler.END
+
+    levelup_pkgs = await asyncio.to_thread(get_levelup_packages)
+    selected_pkgs = [p for p in levelup_pkgs if p[0] in selected_ids]
+    if not selected_pkgs:
+        await query.edit_message_text('❌ پک‌های انتخاب‌شده یافت نشدند.')
+        return ConversationHandler.END
+
+    raw_sum = sum(int(p[4]) for p in selected_pkgs)
+    discount = int(raw_sum * 0.10) if len(selected_pkgs) > 1 else 0
+    total = max(0, raw_sum - discount)
+    title = ' + '.join(str(p[1]) for p in selected_pkgs)
+
+    ctx.user_data['credential_buy'] = {
+        'is_multi': True,
+        'package_ids': [p[0] for p in selected_pkgs],
+        'packages': [{'id': p[0], 'title': str(p[1]), 'price': int(p[4])} for p in selected_pkgs],
+        'raw_total': raw_sum,
+        'discount': discount,
+        'price': total,
+        'title': title,
+        'quantity': 1,
+        'uid_gift': False,
+    }
+
+    text = (
+        '🔐 *روش ورود به اکانت را انتخاب کن*\n'
+        '━━━━━━━━━━━━━━━\n'
+        f'📦 سفارش: *{len(selected_pkgs)} پک لول‌آپ*\n'
+        f'💰 مبلغ نهایی: *{total:,} تومان*'
+    )
+    if discount > 0:
+        text += f' (شامل *{discount:,}* تومان تخفیف ۱۰٪)'
+    text += '\n\nاکانت فری‌فایر با کدام حساب ذخیره/متصل شده است؟'
+
+    await query.edit_message_text(
+        text,
+        parse_mode='Markdown',
+        reply_markup=credential_method_keyboard(),
+    )
+    return CRED_METHOD
 
 
 async def credential_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -449,22 +590,48 @@ async def _show_confirm(update, ctx, *, via_callback=False):
     backup_line = (
         'ثبت شد ✅' if has_backup else 'نیاز به راهنمایی / ارسال نشده 🆘'
     )
-    qty = int(info.get('quantity') or 1)
-    unit = int(info.get('unit_price') or 0)
-    unit_line = f'قیمت هر عدد: {unit:,} تومان\n' if unit else ''
-    text = (
-        f'✅ *بازبینی اطلاعات*\n'
-        f'━━━━━━━━━━━━━━━\n'
-        f'محصول: {markdown_safe(info["title"], 120)}\n'
-        f'تعداد: *{qty}* عدد\n'
-        f'{unit_line}'
-        f'روش ورود: {method_label}\n'
-        f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
-        f'رمز: ثبت شد ✅\n'
-        f'کد بک‌آپ: {backup_line}\n'
-        f'جمع کل: *{info["price"]:,} تومان*\n\n'
-        f'با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.\n'
-    )
+    if info.get('is_multi'):
+        pkgs = info.get('packages', [])
+        lines = [
+            '✅ *بازبینی اطلاعات سفارش چندتایی*',
+            '━━━━━━━━━━━━━━━',
+            '📦 *پک‌های انتخابی:*',
+        ]
+        for p in pkgs:
+            lines.append(f'• {markdown_safe(p["title"], 80)} — *{p["price"]:,} تومان*')
+        lines.append('')
+        raw = int(info.get('raw_total') or 0)
+        disc = int(info.get('discount') or 0)
+        final = int(info.get('price') or 0)
+        lines.append(f'💵 جمع مبالغ: *{raw:,} تومان*')
+        if disc > 0:
+            lines.append(f'🎁 تخفیف ۱۰٪ (بیشتر از ۱ پک): *{disc:,}- تومان*')
+        lines.append(f'💰 *مبلغ نهایی قابل پرداخت: {final:,} تومان*')
+        lines.append('')
+        lines.append(f'روش ورود: {method_label}')
+        lines.append(f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`')
+        lines.append('رمز: ثبت شد ✅')
+        lines.append(f'کد بک‌آپ: {backup_line}')
+        lines.append('')
+        lines.append('با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.')
+        text = '\n'.join(lines)
+    else:
+        qty = int(info.get('quantity') or 1)
+        unit = int(info.get('unit_price') or 0)
+        unit_line = f'قیمت هر عدد: {unit:,} تومان\n' if unit else ''
+        text = (
+            f'✅ *بازبینی اطلاعات*\n'
+            f'━━━━━━━━━━━━━━━\n'
+            f'محصول: {markdown_safe(info["title"], 120)}\n'
+            f'تعداد: *{qty}* عدد\n'
+            f'{unit_line}'
+            f'روش ورود: {method_label}\n'
+            f'شناسه: `{markdown_safe(mask_identifier(info["identifier"]), 100)}`\n'
+            f'رمز: ثبت شد ✅\n'
+            f'کد بک‌آپ: {backup_line}\n'
+            f'جمع کل: *{info["price"]:,} تومان*\n\n'
+            f'با تأیید، سفارش ساخته می‌شود و صفحه پرداخت باز می‌شود.\n'
+        )
     if not has_backup:
         text += (
             '🆘 بک‌آپ نفرستادی / نیاز به راهنمایی زدی.\n'
@@ -545,16 +712,21 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             '❌ اطلاعات ناقص است. دوباره از اول ثبت کن.'
         )
         return ConversationHandler.END
-    current = await asyncio.to_thread(get_gem, info['pk'])
-    if not current or current[7] != 'by_credentials':
-        _clear_secrets(info)
-        ctx.user_data.pop('credential_buy', None)
-        await query.edit_message_text('❌ محصول دیگر فعال نیست.')
-        return ConversationHandler.END
+    if not info.get('is_multi'):
+        current = await asyncio.to_thread(get_gem, info['pk'])
+        if not current or current[7] != 'by_credentials':
+            _clear_secrets(info)
+            ctx.user_data.pop('credential_buy', None)
+            await query.edit_message_text('❌ محصول دیگر فعال نیست.')
+            return ConversationHandler.END
     try:
-        qty = int(info.get('quantity') or 1)
-        unit = checked_amount(current[4], label='قیمت محصول')
-        price = checked_amount(unit * qty, label='مبلغ کل')
+        if info.get('is_multi'):
+            qty = 1
+            price = int(info.get('price') or 0)
+        else:
+            qty = int(info.get('quantity') or 1)
+            unit = checked_amount(current[4], label='قیمت محصول')
+            price = checked_amount(unit * qty, label='مبلغ کل')
         user = update.effective_user
         full_name = f'{user.first_name or ""} {user.last_name or ""}'.strip() or 'کاربر تلگرام'
 
@@ -566,6 +738,18 @@ async def credential_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 order_id, title, saved_price = create_credential_uid_gift_order_atomic(
                     db_id, info['pk'], price, telegram_id=user.id,
                     full_name=full_name, game_uid=info['game_uid'], quantity=qty,
+                )
+            elif info.get('is_multi'):
+                ciphertext = encrypt_credentials(
+                    info['identifier'],
+                    info['password'],
+                    backup_code=info.get('backup_code') or '',
+                )
+                two_factor = bool(info.get('two_factor') or info.get('backup_code'))
+                order_id, title, saved_price = create_multi_credential_gem_order_atomic(
+                    db_id, info['package_ids'], price, telegram_id=user.id, full_name=full_name,
+                    login_method=info['method'], credential_ciphertext=ciphertext,
+                    two_factor_enabled=two_factor,
                 )
             else:
                 ciphertext = encrypt_credentials(
@@ -636,7 +820,10 @@ async def credential_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def credential_conversation_handler():
     return ConversationHandler(
-        entry_points=[CallbackQueryHandler(credential_buy_start, pattern=r'^cbuy_\d+$')],
+        entry_points=[
+            CallbackQueryHandler(credential_buy_start, pattern=r'^cbuy_\d+$'),
+            CallbackQueryHandler(credential_multi_buy_start, pattern=r'^cbuy_multi$'),
+        ],
         states={
             CRED_QUANTITY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, credential_quantity),

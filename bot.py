@@ -31,7 +31,8 @@ from handlers.start import start_handler, help_handler, home_callback, myid_hand
 from handlers.store import store_menu, show_category, show_product
 from handlers.gems import gems_by_id_menu, show_gem, gem_conversation_handler
 from handlers.gem_credentials import (
-    credential_conversation_handler, credential_products_menu,
+    credential_conversation_handler, credential_multi_select_menu,
+    credential_multi_toggle, credential_products_menu,
     freefire_products_menu, show_credential_product,
 )
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
@@ -941,6 +942,16 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(
         show_credential_product, pattern=r'^cred_product_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        credential_multi_select_menu, pattern=r'^cred_multi_select$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        credential_multi_toggle, pattern=r'^cred_toggle_(?:\d+|all)$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        lambda u, c: u.callback_query.answer('لطفاً حداقل یک پک انتخاب کنید.', alert=True),
+        pattern=r'^cred_multi_noop$'
     ))
     app.add_handler(CallbackQueryHandler(show_gem, pattern=r'^gem_\d+$'))
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
