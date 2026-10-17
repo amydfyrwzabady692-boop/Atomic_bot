@@ -75,6 +75,16 @@ def _post(url, payload):
         return {'_transport_error': True}
 
 
+def make_pay_url(authority):
+    base = (
+        os.getenv('PAYMENT_CALLBACK_BASE')
+        or os.getenv('BOT_DOMAIN', 'https://botatomic.atomicshop.ir')
+    ).strip().rstrip('/')
+    if not base.startswith('http'):
+        base = f"https://{base}"
+    return f"{base}/pay/{authority}"
+
+
 def request_payment(amount_toman, description, callback_url, mobile=''):
     """خروجی: (authority, pay_url, error_message)"""
     merchant = _merchant()
@@ -118,7 +128,7 @@ def request_payment(amount_toman, description, callback_url, mobile=''):
     data = res.get('data') or {}
     errors = res.get('errors')
     if data.get('code') == 100 and data.get('authority'):
-        return data['authority'], _start_base() + data['authority'], None
+        return data['authority'], make_pay_url(data['authority']), None
 
     # پیام خطای خوانا از زرین‌پال
     msg = None

@@ -228,8 +228,50 @@ def create_web_app(bot_app):
                 {'success': False, 'message': 'callback failed'}, status=500
             )
 
+    async def start_pay(request):
+        authority = request.match_info.get('authority', '') or request.rel_url.query.get('authority', '')
+        authority = str(authority or '').strip()
+        if not authority or len(authority) > 100 or not authority.isalnum():
+            return web.Response(text='شناسه پرداخت نامعتبر است.', status=400, content_type='text/html')
+        from payments import _start_base
+        zarin_url = _start_base() + authority
+        html = f"""<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="unsafe-url">
+    <title>اتومیک شاپ - در حال اتصال به درگاه پرداخت</title>
+    <style>
+        body {{ font-family: Tahoma, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }}
+        .card {{ background: #1e293b; border-radius: 16px; padding: 32px 24px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }}
+        .spinner {{ width: 44px; height: 44px; border: 4px solid #334155; border-top-color: #38bdf8; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        .btn {{ display: block; background: #0284c7; color: #fff; padding: 14px; border-radius: 12px; text-decoration: none; font-weight: bold; margin-top: 20px; font-size: 16px; }}
+        .notice {{ margin-top: 18px; font-size: 13px; color: #f59e0b; background: rgba(245,158,11,0.1); padding: 10px; border-radius: 8px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner"></div>
+        <h2 style="margin:0 0 8px 0;font-size:20px;">در حال اتصال به درگاه زرین‌پال...</h2>
+        <p style="color:#94a3b8;font-size:14px;margin:0 0 16px 0;">لطفاً چند لحظه صبر کنید.</p>
+        <a class="btn" href="{zarin_url}" referrerpolicy="unsafe-url">ورود به درگاه پرداخت</a>
+        <div class="notice">⚠️ در صورت روشن بودن فیلترشکن، آن را خاموش کنید.</div>
+    </div>
+    <script>
+        setTimeout(function() {{
+            window.location.replace("{zarin_url}");
+        }}, 300);
+    </script>
+</body>
+</html>"""
+        return web.Response(text=html, content_type='text/html')
+
     app.router.add_get('/health', health)
     app.router.add_get('/ready', ready)
+    app.router.add_get('/pay/{authority}', start_pay)
+    app.router.add_get('/payment/start/{authority}', start_pay)
     app.router.add_get('/payment/callback', payment_callback)
     app.router.add_get('/payment/wallet-callback', wallet_callback)
     # بعضی کلاینت‌ها POST هم می‌زنند
