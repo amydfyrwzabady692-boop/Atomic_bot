@@ -1031,6 +1031,10 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
         )
         return
+    # کارت‌به‌کارت فقط از کارتِ احرازشده؛ شمارهٔ کارتِ فروشگاه تا آن موقع نشان داده نمی‌شود.
+    from handlers.card_verify import card_gate
+    if not await card_gate(query, update.effective_user.id, f'pay_card_{order_id}'):
+        return
     available, _availability_error, _cost, _balance = await asyncio.to_thread(
         _delivery_preflight, order_id
     )
@@ -1291,6 +1295,10 @@ async def _finalize_card(update, ctx, receipt_msg=None, via_query=None):
             caption = _receipt_admin_caption(
                 order_id, pending, user, receipt_text=receipt_text
             )
+            from handlers.card_verify import payer_cards_line
+            payer_line = await payer_cards_line(user.id)
+            if payer_line:
+                caption = f"{caption}\n\n{escape(payer_line)}"[:1024]
             notices = []
             for aid in recipients:
                 try:

@@ -136,3 +136,55 @@ def fetch_site_receipts():
 
 def fetch_site_receipt(pk):
     return _site_request(f'/internal/bot/site-receipts/{int(pk)}/')
+
+
+# ── صف اعلان‌های سایت ────────────────────────────────────────────────
+# سرور سایت در ایران است و به api.telegram.org نمی‌رسد. رسید، احراز کارت و
+# سفارش جمِ پرداخت‌شده در صفِ سایت می‌مانند و ربات (این‌جا، خارج از ایران)
+# برشان می‌دارد، می‌فرستد و تحویل را تایید می‌کند.
+
+
+def fetch_site_outbox(limit=10):
+    data = _site_request('/internal/bot/outbox/', query={'limit': int(limit)}, timeout=20)
+    if not data.get('ok'):
+        data.setdefault('items', [])
+    return data
+
+
+def ack_site_outbox(item_id, notices):
+    return _site_request(
+        f'/internal/bot/outbox/{int(item_id)}/ack/',
+        method='POST',
+        payload={'notices': list(notices or [])},
+        timeout=20,
+    )
+
+
+def fetch_site_photo(url, *, max_bytes=10 * 1024 * 1024, timeout=25):
+    """بایت‌های عکسِ امضاشده از سایت؛ تلگرام خودش به سرور ایران نمی‌رسد."""
+    if not url or not str(url).startswith(('https://', 'http://')):
+        return None
+    req = urllib.request.Request(url, headers={'User-Agent': 'AtomicBot/1.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = resp.read(max_bytes + 1)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        log.warning('Site photo download failed: %s', exc)
+        return None
+    if len(data) > max_bytes:
+        log.warning('Site photo too large; sending without it')
+        return None
+    return data
+
+
+def call_site_card_review(card_id, action, admin_tg, admin_name):
+    """تایید/رد احراز کارت بانکیِ سایت."""
+    return _site_request(
+        f'/internal/bot/card-verify/{int(card_id)}/review/',
+        method='POST',
+        payload={
+            'action': action,
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+        },
+    )

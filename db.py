@@ -4040,6 +4040,23 @@ def ensure_admin_schema():
         '''ALTER TABLE "StarPackages" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
         '''ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
         '''UPDATE "StarPackages" SET "IsManual"=true WHERE "StarsAmount" IN (1500, 2500) OR "CatalogueName" IN ('1.5K Stars', '2.5K Stars')''',
+        # احراز کارت بانکی: کارت‌به‌کارت فقط از کارتِ تاییدشده.
+        '''CREATE TABLE IF NOT EXISTS "CardVerifications" (
+            "Id" SERIAL PRIMARY KEY,
+            "TelegramId" VARCHAR(64) NOT NULL,
+            "CardNumber" VARCHAR(16) NOT NULL,
+            "HolderName" VARCHAR(120) NOT NULL DEFAULT '',
+            "Phone" VARCHAR(20) NOT NULL DEFAULT '',
+            "PhotoFileId" VARCHAR(255) NOT NULL DEFAULT '',
+            "Status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+            "RejectReason" VARCHAR(255) NOT NULL DEFAULT '',
+            "ResumeCallback" VARCHAR(64) NOT NULL DEFAULT '',
+            "ReviewedBy" VARCHAR(120) NOT NULL DEFAULT '',
+            "ReviewedAt" TIMESTAMPTZ,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE ("TelegramId", "CardNumber")
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_card_verifications_number ON "CardVerifications" ("CardNumber")',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -7218,3 +7235,101 @@ def admin_reject_credential_info(order_id, admin_note=''):
         )
         conn.commit()
         return True, row[1], 'needs_info'
+
+
+
+# ─── Bank card verification (one-time, before card-to-card) ────────────────
+# هر کارت یک‌بار با عکس و شمارهٔ موبایلِ خودِ حساب تلگرام ثبت و تایید می‌شود.
+# کارت‌به‌کارت فقط از کارتِ تاییدشده؛ بدون این، کارتِ دزدی پول می‌ریخت و
+# حسابِ بانکیِ فروشگاه با شکایتِ صاحب کارت مسدود می‌شد.
+
+def card_kyc_state(telegram_id) -> str:
+    """approved | pending | rejected | none"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Status" FROM "CardVerifications" WHERE "TelegramId"=%s',
+            (str(telegram_id),),
+        )
+        states = {row[0] for row in cur.fetchall()}
+    for state in ('approved', 'pending', 'rejected'):
+        if state in states:
+            return state
+    return 'none'
+
+
+def approved_cards(telegram_id):
+    """[(Id, CardNumber, HolderName)] — جدیدترین اول."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "CardNumber", "HolderName" FROM "CardVerifications" '
+            'WHERE "TelegramId"=%s AND "Status"=\'approved\' '
+            'ORDER BY "ReviewedAt" DESC NULLS LAST, "Id" DESC',
+            (str(telegram_id),),
+        )
+        return cur.fetchall()
+
+
+def card_owned_by_other(telegram_id, card_number) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT 1 FROM "CardVerifications" WHERE "CardNumber"=%s AND "TelegramId"<>%s '
+            'AND "Status" IN (\'pending\', \'approved\') LIMIT 1',
+            (card_number, str(telegram_id)),
+        )
+        return cur.fetchone() is not None
+
+
+def submit_card_verification(telegram_id, card_number, holder_name, phone, photo_file_id,
+                             resume_callback=''):
+    """ثبت یا ارسالِ دوبارهٔ کارتِ ردشده. خروجی: (Id, Status)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "CardVerifications" ("TelegramId", "CardNumber", "HolderName", '
+            '"Phone", "PhotoFileId", "Status", "ResumeCallback") '
+            'VALUES (%s,%s,%s,%s,%s,\'pending\',%s) '
+            'ON CONFLICT ("TelegramId", "CardNumber") DO UPDATE SET '
+            '"HolderName"=EXCLUDED."HolderName", "Phone"=EXCLUDED."Phone", '
+            '"PhotoFileId"=EXCLUDED."PhotoFileId", "ResumeCallback"=EXCLUDED."ResumeCallback", '
+            '"Status"=CASE WHEN "CardVerifications"."Status"=\'approved\' THEN \'approved\' '
+            'ELSE \'pending\' END, "RejectReason"=\'\', '
+            '"CreatedAt"=CASE WHEN "CardVerifications"."Status"=\'approved\' '
+            'THEN "CardVerifications"."CreatedAt" ELSE now() END '
+            'RETURNING "Id", "Status"',
+            (str(telegram_id), card_number, (holder_name or '')[:120], (phone or '')[:20],
+             (photo_file_id or '')[:255], (resume_callback or '')[:64]),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return int(row[0]), row[1]
+
+
+def get_card_verification(card_id):
+    """(Id, TelegramId, CardNumber, HolderName, Phone, PhotoFileId, Status, ResumeCallback, ReviewedBy)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "TelegramId", "CardNumber", "HolderName", "Phone", "PhotoFileId", '
+            '"Status", "ResumeCallback", "ReviewedBy" FROM "CardVerifications" WHERE "Id"=%s',
+            (int(card_id),),
+        )
+        return cur.fetchone()
+
+
+def review_card_verification(card_id, *, approve, reviewer='', reason=''):
+    """فقط یک‌بار از pending خارج می‌شود. خروجی: True اگر همین فراخوان تصمیم گرفت."""
+    status = 'approved' if approve else 'rejected'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "CardVerifications" SET "Status"=%s, "RejectReason"=%s, '
+            '"ReviewedBy"=%s, "ReviewedAt"=now() '
+            'WHERE "Id"=%s AND "Status"=\'pending\' RETURNING "TelegramId", "CardNumber"',
+            (status, (reason or '')[:255], (reviewer or '')[:120], int(card_id)),
+        )
+        row = cur.fetchone()
+        if row and approve:
+            # همان ستون‌هایی که فهرست «کاربران کارت‌دار» پنل ادمین می‌خواند.
+            cur.execute(
+                'UPDATE "Users" SET "CardVerified"=true, "CardNumber"=%s WHERE "TelegramId"=%s',
+                (row[1], row[0]),
+            )
+        conn.commit()
+        return row is not None

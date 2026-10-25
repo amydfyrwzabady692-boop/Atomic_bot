@@ -79,6 +79,8 @@ from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
 )
 from handlers.site_panel import site_panel_router
+from handlers.site_outbox import site_card_review, site_outbox_loop
+from handlers.card_verify import card_verify_conversation_handler, cverify_review
 from handlers import game_events
 from handlers.referral import (
     ADMIN_ROUTER_PATTERN as REFERRAL_ADMIN_PATTERN,
@@ -277,13 +279,17 @@ async def post_init(app):
     app.bot_data['_price_sync_task'] = asyncio.create_task(
         _price_sync_loop(app), name='gem-price-sync'
     )
+    # رسید، احراز کارت و سفارش جمِ سایت: سرور سایت به تلگرام نمی‌رسد.
+    app.bot_data['_site_outbox_task'] = asyncio.create_task(
+        site_outbox_loop(app), name='site-outbox'
+    )
     _log_startup_checks()
 
 
 async def post_shutdown(app):
     for key in (
         '_g2_reconcile_task', '_payment_expiry_task', '_admin_alert_task',
-        '_price_sync_task',
+        '_price_sync_task', '_site_outbox_task',
     ):
         task = app.bot_data.pop(key, None)
         if not task:
@@ -925,6 +931,7 @@ def main():
     app.add_handler(wallet_conversation_handler())
     app.add_handler(support_conversation_handler())
     app.add_handler(kyc_conversation_handler())
+    app.add_handler(card_verify_conversation_handler())
     app.add_handler(admin_conversation_handler())
     app.add_handler(admin_extended_conversation_handler())
     app.add_handler(premium_admin_conversation_handler())
@@ -982,6 +989,8 @@ def main():
     app.add_handler(CallbackQueryHandler(
         site_review_back, pattern=r'^site_review_back_\d+$'
     ))
+    app.add_handler(CallbackQueryHandler(site_card_review, pattern=r'^site_card_(?:ok|no)_\d+$'))
+    app.add_handler(CallbackQueryHandler(cverify_review, pattern=r'^cverify_(?:ok|no)_\d+$'))
     app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+$'))
 

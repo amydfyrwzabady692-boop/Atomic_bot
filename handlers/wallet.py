@@ -280,6 +280,10 @@ async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not get_bool_setting('card_transfer_enabled', True):
         await query.edit_message_text("❌ کارت‌به‌کارت موقتاً غیرفعال است.")
         return
+    # کارت‌به‌کارت فقط از کارتِ احرازشده — پیش از ساختن تراکنش.
+    from handlers.card_verify import card_gate
+    if not await card_gate(query, user.id, f'wpay_card_{amount}'):
+        return
     card_number = get_setting('card_number', CARD_NUMBER)
     card_holder = get_setting('card_holder', CARD_HOLDER)
     card_bank = get_setting('card_bank', CARD_BANK)
@@ -498,6 +502,10 @@ async def wallet_card_receipt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"کاربر: {user.full_name} ({uname})\n"
         f"تلگرام: {user.id}"
     )
+    from handlers.card_verify import payer_cards_line
+    payer_line = await payer_cards_line(user.id)
+    if payer_line:
+        caption = f"{caption}\n\n{payer_line}"[:1024]
     file_id = (update.message.photo[-1].file_id if update.message.photo else
                update.message.document.file_id if update.message.document else '')
     try:
