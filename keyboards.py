@@ -536,14 +536,22 @@ def gem_confirm_keyboard():
     ])
 
 
+def _is_zp_enabled():
+    try:
+        from db import get_bool_setting
+        return get_bool_setting('zarinpal_enabled', False)
+    except Exception:
+        return False
+
+
 def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=None):
     """همیشه دکمه کیف پول را نشان بده (حتی با موجودی صفر) تا کاربر بداند این روش هست."""
     bal = int(wallet_balance or 0)
     rem = int(remaining) if remaining is not None else None
-    rows = [
-        [_ibtn('b.pay.zp', '💳 زرین‌پال', f'pay_zp_{order_id}')],
-        [_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'pay_card_{order_id}')],
-    ]
+    rows = []
+    if _is_zp_enabled():
+        rows.append([_ibtn('b.pay.zp', '💳 زرین‌پال', f'pay_zp_{order_id}')])
+    rows.append([_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'pay_card_{order_id}')])
     if can_wallet and (rem is None or rem > 0):
         if bal <= 0:
             label = f'{appearance.user_label("b.pay.wal", "💰 کیف پول")} (موجودی صفر)'
@@ -561,11 +569,12 @@ def pay_method_keyboard(order_id, can_wallet=True, wallet_balance=0, remaining=N
 
 
 def wallet_charge_method_keyboard(amount):
-    return InlineKeyboardMarkup([
-        [_ibtn('b.pay.zp', '💳 درگاه زرین‌پال', f'wpay_zp_{amount}')],
-        [_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'wpay_card_{amount}')],
-        [InlineKeyboardButton('بازگشت', callback_data='wallet')],
-    ])
+    rows = []
+    if _is_zp_enabled():
+        rows.append([_ibtn('b.pay.zp', '💳 درگاه زرین‌پال', f'wpay_zp_{amount}')])
+    rows.append([_ibtn('b.pay.card', '🏧 کارت‌به‌کارت', f'wpay_card_{amount}')])
+    rows.append([InlineKeyboardButton('بازگشت', callback_data='wallet')])
+    return InlineKeyboardMarkup(rows)
 
 
 def wallet_card_pay_keyboard(tx_key):
