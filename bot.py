@@ -79,7 +79,7 @@ from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
 )
 from handlers.site_panel import site_panel_router
-from handlers.site_outbox import site_card_review, site_outbox_loop
+from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
@@ -919,6 +919,7 @@ def main():
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
     app.add_handler(CommandHandler('track', track_command))
+    app.add_handler(CommandHandler('sitestatus', site_status_command))
     app.add_handler(CommandHandler('invite', referral_menu))
     app.add_handler(CommandHandler('admin', admin_cmd))
     app.add_handler(CommandHandler('order', admin_order_cmd))

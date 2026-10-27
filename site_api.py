@@ -197,3 +197,8 @@ def fetch_site_order(code, telegram_id):
         query={'code': str(code or '').strip().upper(), 'tg': str(telegram_id or '')},
         timeout=20,
     )
+
+
+def fetch_site_ping():
+    """وضعیت صف‌ها و بک‌لاگ بررسی‌ها در سایت."""
+    return _site_request('/internal/bot/ping/', timeout=15)

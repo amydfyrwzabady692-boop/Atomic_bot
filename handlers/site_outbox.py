@@ -10,13 +10,16 @@ import asyncio
 import io
 import logging
 import os
+import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from admin_notify import admin_ids, credential_admin_ids, is_admin
 from review_broadcast import admin_display_name, broadcast_reviewed, remember_notices, review_footer
-from site_api import ack_site_outbox, call_site_card_review, fetch_site_outbox, fetch_site_photo
+from site_api import (
+    ack_site_outbox, call_site_card_review, fetch_site_outbox, fetch_site_photo, fetch_site_ping,
+)
 
 log = logging.getLogger(__name__)
 
@@ -91,13 +94,79 @@ async def _send_one(bot, chat_id, item, photo, markup):
     return None, None, permanent
 
 
+# ── سلامت ارتباط ─────────────────────────────────────────────────────
+# اگر ربات چند دقیقه به سایت نرسد، رسید و سفارش جم به هیچ ادمینی نمی‌رسد و
+# کسی هم نمی‌فهمد. یک‌بار هشدار، و یک‌بار خبرِ برقراری دوباره.
+LINK_ALERT_AFTER = 10 * 60
+REMIND_EVERY = 60 * 60
+BACKLOG_MINUTES = 15
+PING_EVERY = 5 * 60
+
+LINK = {'last_ok': None, 'first_fail': None, 'last_error': '', 'alerted': False,
+        'last_reminder': 0.0, 'last_ping': 0.0}
+
+
+async def _tell_admins(bot, text):
+    for aid in admin_ids():
+        try:
+            await bot.send_message(chat_id=aid, text=text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning('link alert failed admin=%s: %s', aid, exc)
+
+
+async def _link_ok(bot, now):
+    if LINK['alerted']:
+        down = int((now - (LINK['first_fail'] or now)) // 60)
+        await _tell_admins(bot, f'✅ ارتباط ربات با سایت دوباره برقرار شد (حدود {down} دقیقه قطع بود).\n'
+                                'رسیدها و سفارش‌های جاافتاده همین حالا فرستاده می‌شوند.')
+    LINK.update(last_ok=now, first_fail=None, last_error='', alerted=False)
+
+
+async def _link_failed(bot, now, error):
+    LINK['last_error'] = str(error or '')[:200]
+    if LINK['first_fail'] is None:
+        LINK['first_fail'] = now
+    if not LINK['alerted'] and now - LINK['first_fail'] >= LINK_ALERT_AFTER:
+        LINK['alerted'] = True
+        await _tell_admins(bot, (
+            '⚠️ ربات بیش از ۱۰ دقیقه است به سایت نمی‌رسد.\n'
+            f'خطا: {LINK["last_error"] or "نامشخص"}\n\n'
+            'تا وقتی وصل نشود رسیدهای سایت و سفارش‌های جم به تلگرام نمی‌آیند — '
+            'در پنل سایت (بخش رسیدها) ببین. SITE_API_URL و BOT_INTERNAL_SECRET را '
+            'روی هر دو سرور چک کن.'))
+
+
+async def _remind_backlog(bot, now):
+    """رسید یا احراز کارتی که بیش از ۱۵ دقیقه منتظر مانده — ساعتی یک یادآوری."""
+    if now - LINK['last_ping'] < PING_EVERY:
+        return
+    LINK['last_ping'] = now
+    data = await asyncio.to_thread(fetch_site_ping)
+    if not data.get('ok') or now - LINK['last_reminder'] < REMIND_EVERY:
+        return
+    parts = []
+    if (data.get('receipt_oldest_minutes') or 0) >= BACKLOG_MINUTES:
+        parts.append(f'🧾 {data.get("pending_receipts")} رسید سایت منتظر بررسی '
+                     f'(قدیمی‌ترین: {data["receipt_oldest_minutes"]} دقیقه)')
+    if (data.get('card_oldest_minutes') or 0) >= BACKLOG_MINUTES:
+        parts.append(f'💳 {data.get("pending_cards")} احراز کارت منتظر بررسی '
+                     f'(قدیمی‌ترین: {data["card_oldest_minutes"]} دقیقه)')
+    if parts:
+        LINK['last_reminder'] = now
+        await _tell_admins(bot, '⏰ یادآوری\n' + '\n'.join(parts) +
+                           '\n\nخریدار منتظر است؛ از پیام‌های بالا یا پنل سایت بررسی کن.')
+
+
 async def deliver_site_outbox(bot):
     """یک دورِ برداشت و ارسال. تعداد تحویل‌شده‌ها را برمی‌گرداند."""
     data = await asyncio.to_thread(fetch_site_outbox, 10)
+    now = time.time()
     if not data.get('ok'):
-        if data.get('error') not in ('missing_secret',):
-            log.debug('site outbox unavailable: %s', data.get('error'))
+        if data.get('error') != 'missing_secret':
+            log.warning('site outbox unavailable: %s', data.get('error'))
+            await _link_failed(bot, now, data.get('error'))
         return 0
+    await _link_ok(bot, now)
     delivered = 0
     for item in data.get('items') or []:
         markup = _markup(item.get('reply_markup'))
@@ -132,6 +201,8 @@ async def site_outbox_loop(app):
     while True:
         try:
             await deliver_site_outbox(app.bot)
+            if LINK['last_ok'] and LINK['first_fail'] is None:
+                await _remind_backlog(app.bot, time.time())
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — حلقه نباید بمیرد
@@ -176,3 +247,32 @@ async def site_card_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text=footer, reply_markup=None)
     except Exception:  # noqa: BLE001 — همان پیام قبلاً ویرایش شده
         pass
+
+
+
+async def site_status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """‎/sitestatus‎ — فقط ادمین: ارتباط با سایت و صف‌ها."""
+    if not is_admin(update.effective_user.id):
+        return
+    data = await asyncio.to_thread(fetch_site_ping)
+    now = time.time()
+    if LINK['last_ok']:
+        last = f'{int((now - LINK["last_ok"]) // 60)} دقیقه پیش' if now - LINK['last_ok'] >= 60 else 'همین حالا'
+    else:
+        last = 'هنوز نه'
+    lines = ['🔌 وضعیت ارتباط با سایت', '━━━━━━━━━━━━━━━',
+             f'آخرین برداشت موفق از صف: {last}']
+    if data.get('ok'):
+        lines += [
+            '✅ سایت در دسترس است.',
+            f'اعلانِ در صف: {data.get("outbox_waiting", 0)}',
+            f'رسید منتظر بررسی: {data.get("pending_receipts", 0)}',
+            f'احراز کارت منتظر بررسی: {data.get("pending_cards", 0)}',
+        ]
+    else:
+        lines += ['❌ سایت جواب نمی‌دهد.', f'خطا: {data.get("error") or LINK["last_error"] or "نامشخص"}']
+        if data.get('error') == 'forbidden':
+            lines.append('رمز BOT_INTERNAL_SECRET دو سرور یکی نیست، یا IP ربات در BOT_ALLOWED_IPS سایت نیست.')
+        elif data.get('error') == 'missing_secret':
+            lines.append('BOT_INTERNAL_SECRET روی سرور ربات تنظیم نشده.')
+    await update.message.reply_text('\n'.join(lines))

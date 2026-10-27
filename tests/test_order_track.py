@@ -151,3 +151,71 @@ class BuyerNoticeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LinkHealthTests(unittest.TestCase):
+    def setUp(self):
+        site_outbox.LINK.update(last_ok=None, first_fail=None, last_error='', alerted=False,
+                                last_reminder=0.0, last_ping=0.0)
+
+    def _deliver(self, bot, result, now):
+        with patch.object(site_outbox, 'fetch_site_outbox', return_value=result), \
+                patch.object(site_outbox, 'admin_ids', return_value=[1]), \
+                patch.object(site_outbox.time, 'time', return_value=now):
+            run(site_outbox.deliver_site_outbox(bot))
+
+    def test_admins_hear_once_after_ten_minutes_and_again_on_recovery(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        down = {'ok': False, 'error': 'timed out'}
+        self._deliver(bot, down, 1000.0)
+        self._deliver(bot, down, 1000.0 + 9 * 60)
+        self.assertEqual(bot.send_message.call_count, 0)
+        self._deliver(bot, down, 1000.0 + 11 * 60)
+        self._deliver(bot, down, 1000.0 + 30 * 60)
+        self.assertEqual(bot.send_message.call_count, 1)
+        self.assertIn('timed out', bot.send_message.call_args.kwargs['text'])
+        self._deliver(bot, {'ok': True, 'items': []}, 1000.0 + 31 * 60)
+        self.assertEqual(bot.send_message.call_count, 2)
+        self.assertIn('دوباره برقرار شد', bot.send_message.call_args.kwargs['text'])
+
+    def test_an_unconfigured_secret_does_not_alarm(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        for minute in (0, 20, 40):
+            self._deliver(bot, {'ok': False, 'error': 'missing_secret'}, 1000.0 + minute * 60)
+        bot.send_message.assert_not_called()
+
+    def test_backlog_reminder_is_hourly(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        ping = {'ok': True, 'pending_receipts': 2, 'receipt_oldest_minutes': 25,
+                'pending_cards': 0, 'card_oldest_minutes': None}
+        with patch.object(site_outbox, 'fetch_site_ping', return_value=ping), \
+                patch.object(site_outbox, 'admin_ids', return_value=[1]):
+            run(site_outbox._remind_backlog(bot, 10_000.0))
+            run(site_outbox._remind_backlog(bot, 10_000.0 + 10 * 60))
+            self.assertEqual(bot.send_message.call_count, 1)
+            run(site_outbox._remind_backlog(bot, 10_000.0 + 61 * 60))
+        self.assertEqual(bot.send_message.call_count, 2)
+        self.assertIn('25 دقیقه', bot.send_message.call_args.kwargs['text'])
+
+    def test_no_reminder_when_nothing_waits_long(self):
+        bot = SimpleNamespace(send_message=AsyncMock())
+        ping = {'ok': True, 'pending_receipts': 1, 'receipt_oldest_minutes': 3,
+                'pending_cards': 1, 'card_oldest_minutes': 2}
+        with patch.object(site_outbox, 'fetch_site_ping', return_value=ping):
+            run(site_outbox._remind_backlog(bot, 10_000.0))
+        bot.send_message.assert_not_called()
+
+    def test_status_command_is_admin_only(self):
+        update = _update('/sitestatus')
+        with patch.object(site_outbox, 'is_admin', return_value=False), \
+                patch.object(site_outbox, 'fetch_site_ping') as ping:
+            run(site_outbox.site_status_command(update, SimpleNamespace()))
+        ping.assert_not_called()
+        update.message.reply_text.assert_not_called()
+
+    def test_status_command_explains_a_wrong_secret(self):
+        update = _update('/sitestatus')
+        with patch.object(site_outbox, 'is_admin', return_value=True), \
+                patch.object(site_outbox, 'fetch_site_ping', return_value={'ok': False, 'error': 'forbidden'}):
+            run(site_outbox.site_status_command(update, SimpleNamespace()))
+        self.assertIn('BOT_INTERNAL_SECRET', update.message.reply_text.call_args.args[0])
