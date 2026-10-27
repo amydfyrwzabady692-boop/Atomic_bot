@@ -54,7 +54,7 @@ def _site_request(path, *, method='GET', payload=None, query=None, timeout=25):
     if query:
         url = f'{url}?{urllib.parse.urlencode(query)}'
     body = json.dumps(payload).encode('utf-8') if payload is not None else None
-    headers = {'X-Bot-Secret': secret}
+    headers = {'X-Bot-Secret': secret, 'User-Agent': 'AtomicBot/1.0'}
     if body is not None:
         headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
