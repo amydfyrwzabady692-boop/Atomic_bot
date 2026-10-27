@@ -727,6 +727,11 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # درگاه فقط با کارتِ احرازشده، و زرین‌پال فقط از همان کارت پرداخت می‌پذیرد.
+    from handlers.card_verify import card_gate
+    if not await card_gate(query, update.effective_user.id, f'pay_zp_{order_id}'):
+        return
+
     # احراز برای بسته‌های ۱۱۸۸ و ۲۴۲۰ — فقط درگاه
     if order_requires_kyc(order_id) and not is_kyc_approved(update.effective_user.id):
         from handlers.kyc import prompt_kyc_for_order
@@ -789,12 +794,18 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     callback_url = f"{callback_base}/payment/callback?order={order_id}"
+    from db import approved_cards, bind_gateway_card
+    cards = await asyncio.to_thread(approved_cards, update.effective_user.id)
+    pay_card = cards[0][1]
     authority, pay_url, err = await asyncio.to_thread(
         request_payment,
         payable,
         f"Atomic Bot — سفارش #{order_id}",
         callback_url,
+        card_pan=pay_card,
     )
+    if authority:
+        await asyncio.to_thread(bind_gateway_card, authority, update.effective_user.id, pay_card)
     if not authority or not pay_url:
         log_payment_attempt(
             provider='zarinpal', event='request', status='failed',
@@ -848,6 +859,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"مبلغ کل: *{total:,}* تومان\n"
         f"{note}"
         f"مبلغ درگاه: *{payable:,}* تومان\n"
+        f"💳 فقط از کارت `{pay_card[:4]}-{pay_card[4:6]}**-****-{pay_card[12:]}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"*راهنما*\n"
         f"۱ · لینک را لمس کن و *کپی* کن\n"

@@ -202,3 +202,12 @@ def fetch_site_order(code, telegram_id):
 def fetch_site_ping():
     """وضعیت صف‌ها و بک‌لاگ بررسی‌ها در سایت."""
     return _site_request('/internal/bot/ping/', timeout=15)
+
+
+def fetch_site_verified_cards(phone, telegram_id):
+    """کارت‌های تاییدشدهٔ حسابِ سایت با همین شماره (احراز مشترک)."""
+    data = _site_request('/internal/bot/verified-cards/',
+                         query={'phone': str(phone or ''), 'tg': str(telegram_id or '')}, timeout=15)
+    if not data.get('ok'):
+        data.setdefault('cards', [])
+    return data

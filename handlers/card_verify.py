@@ -33,7 +33,7 @@ WAIT_PHONE, WAIT_NUMBER, WAIT_NAME, WAIT_PHOTO = range(4)
 
 _DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 # فقط callbackهایی که بعد از تایید برای ادامهٔ پرداخت برمی‌گردیم.
-_RESUME_RE = re.compile(r'^(?:pay_card_\d+|wpay_card_\d+)$')
+_RESUME_RE = re.compile(r'^(?:pay_card_\d+|wpay_card_\d+|pay_zp_\d+|wpay_zp_\d+)$')
 
 
 def normalize_card(raw) -> str:
@@ -155,11 +155,45 @@ async def cverify_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.pop('cverify', None)
         return ConversationHandler.END
     ctx.user_data.setdefault('cverify', {})['phone'] = phone
+
+    # احراز مشترک با سایت: همین شماره در سایت با کد پیامکی تایید شده و کارتش
+    # احراز شده؟ تلگرام هم تضمین کرده شماره مالِ همین حساب است — یک نفرند.
+    imported = await _import_site_cards(update.effective_user.id, phone)
+    if imported:
+        resume = (ctx.user_data.pop('cverify', None) or {}).get('resume', '')
+        cards = '\n'.join(f'• {masked_card(n)} — {h}' for n, h in imported)
+        await update.message.reply_text(
+            '✅ کارت‌های احرازشده‌ات در سایت اتومیک شاپ پیدا شد و این‌جا هم فعال شد:\n'
+            f'{cards}\n\nدیگر لازم نیست دوباره احراز کنی.', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text('حالا می‌توانی پرداخت کنی 👇', reply_markup=_resume_kb(resume))
+        return ConversationHandler.END
+
     await update.message.reply_text(
         f'✅ شماره {phone} ثبت شد.\n\n💳 *قدم ۲ از ۴ — شماره کارت*\n'
         'شمارهٔ ۱۶ رقمیِ کارتی که با آن واریز می‌کنی را بفرست.',
         parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
     return WAIT_NUMBER
+
+
+async def _import_site_cards(telegram_id, phone):
+    """[(شماره، نام)] کارت‌هایی که از سایت آمد و در ربات ثبت شد."""
+    try:
+        from db import import_site_verified_card
+        from site_api import fetch_site_verified_cards
+
+        data = await asyncio.to_thread(fetch_site_verified_cards, phone, telegram_id)
+        imported = []
+        for card in data.get('cards') or []:
+            number = normalize_card(card.get('number'))
+            if len(number) != 16 or not luhn_ok(number):
+                continue
+            holder = str(card.get('holder') or '')[:120]
+            if await asyncio.to_thread(import_site_verified_card, telegram_id, number, holder, phone):
+                imported.append((number, holder))
+        return imported
+    except Exception:  # noqa: BLE001 — سایت در دسترس نیست: احراز معمولی ادامه دارد
+        log.exception('site card lookup failed tg=%s', telegram_id)
+        return []
 
 
 async def cverify_number(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -257,7 +291,7 @@ async def cverify_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def _resume_kb(resume):
     rows = []
     if resume and _RESUME_RE.match(resume):
-        rows.append([InlineKeyboardButton('💳 ادامهٔ پرداخت کارت‌به‌کارت', callback_data=resume)])
+        rows.append([InlineKeyboardButton('💳 ادامهٔ پرداخت', callback_data=resume)])
     rows.append([InlineKeyboardButton('🏠 منوی اصلی', callback_data='home')])
     return InlineKeyboardMarkup(rows)
 

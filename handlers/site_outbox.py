@@ -207,6 +207,13 @@ async def site_outbox_loop(app):
             raise
         except Exception:  # noqa: BLE001 — حلقه نباید بمیرد
             log.exception('site outbox loop failed')
+        try:
+            from handlers.gateway_guard import notify_gateway_mismatches
+            await notify_gateway_mismatches(app.bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — حلقه نباید بمیرد
+            log.exception('gateway mismatch notices failed')
         await asyncio.sleep(OUTBOX_INTERVAL)
 
 

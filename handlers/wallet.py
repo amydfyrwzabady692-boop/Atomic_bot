@@ -191,18 +191,27 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not get_bool_setting('zarinpal_enabled', True):
         await query.edit_message_text("❌ درگاه زرین‌پال موقتاً غیرفعال است.")
         return
+    from handlers.card_verify import card_gate
+    if not await card_gate(query, user.id, f'wpay_zp_{amount}'):
+        return
     callback_base = get_setting('payment_callback_base', CALLBACK_BASE).rstrip('/')
     if not callback_base:
         await query.edit_message_text("❌ آدرس callback درگاه تنظیم نشده (`PAYMENT_CALLBACK_BASE`).")
         return
 
     callback_url = f"{callback_base}/payment/wallet-callback"
+    from db import approved_cards, bind_gateway_card
+    cards = await asyncio.to_thread(approved_cards, user.id)
+    pay_card = cards[0][1]
     authority, pay_url, err = await asyncio.to_thread(
         request_payment,
         amount,
         f"شارژ کیف پول Atomic Bot — {amount:,} تومان",
         callback_url,
+        card_pan=pay_card,
     )
+    if authority:
+        await asyncio.to_thread(bind_gateway_card, authority, user.id, pay_card)
     if not authority or not pay_url:
         log_payment_attempt(
             provider='zarinpal', event='wallet_request', status='failed',
@@ -239,6 +248,7 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"✦ *شارژ با زرین‌پال*\n"
         f"مبلغ: *{amount:,}* تومان\n"
+        f"💳 فقط از کارت `{pay_card[:4]}-{pay_card[4:6]}**-****-{pay_card[12:]}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"*راهنما*\n"
         f"۱ · لینک را لمس کن و *کپی* کن\n"

@@ -4057,6 +4057,19 @@ def ensure_admin_schema():
             UNIQUE ("TelegramId", "CardNumber")
         )''',
         'CREATE INDEX IF NOT EXISTS idx_card_verifications_number ON "CardVerifications" ("CardNumber")',
+        # هر لینک درگاه به کارتِ احرازشده‌ای که باید از آن پرداخت شود گره می‌خورد.
+        '''CREATE TABLE IF NOT EXISTS "GatewayCardBindings" (
+            "Authority" VARCHAR(100) PRIMARY KEY,
+            "TelegramId" VARCHAR(64) NOT NULL,
+            "CardNumber" VARCHAR(16) NOT NULL,
+            "Status" VARCHAR(20) NOT NULL DEFAULT 'bound',
+            "PaidCardPan" VARCHAR(32) NOT NULL DEFAULT '',
+            "RefId" VARCHAR(64) NOT NULL DEFAULT '',
+            "Amount" INTEGER NOT NULL DEFAULT 0,
+            "Reversed" BOOLEAN NOT NULL DEFAULT false,
+            "Notified" BOOLEAN NOT NULL DEFAULT false,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -7344,3 +7357,83 @@ def get_order_for_tracking(order_id):
             (int(order_id),),
         )
         return cur.fetchone()
+
+
+
+# ─── Gateway ↔ verified card ─────────────────────────────────────────────────
+
+def bind_gateway_card(authority, telegram_id, card_number):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "GatewayCardBindings" ("Authority", "TelegramId", "CardNumber") '
+            'VALUES (%s,%s,%s) ON CONFLICT ("Authority") DO NOTHING',
+            (str(authority)[:100], str(telegram_id), str(card_number)[:16]),
+        )
+        conn.commit()
+
+
+def get_gateway_card_binding(authority):
+    """(Authority, TelegramId, CardNumber, Status) یا None"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Authority", "TelegramId", "CardNumber", "Status" '
+            'FROM "GatewayCardBindings" WHERE "Authority"=%s',
+            (str(authority or '')[:100],),
+        )
+        return cur.fetchone()
+
+
+def mark_gateway_mismatch(authority, paid_card_pan, ref_id, amount, reversed_ok):
+    """True اگر همین فراخوان وضعیت را mismatch کرد (یک‌بار برای هر لینک)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "GatewayCardBindings" SET "Status"=\'mismatch\', "PaidCardPan"=%s, '
+            '"RefId"=%s, "Amount"=%s, "Reversed"=%s '
+            'WHERE "Authority"=%s AND "Status"=\'bound\' RETURNING 1',
+            (str(paid_card_pan or '')[:32], str(ref_id or '')[:64], int(amount or 0),
+             bool(reversed_ok), str(authority)[:100]),
+        )
+        changed = cur.fetchone() is not None
+        conn.commit()
+        return changed
+
+
+def list_unnotified_gateway_mismatches(limit=20):
+    """[(Authority, TelegramId, CardNumber, PaidCardPan, RefId, Amount, Reversed)]"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Authority", "TelegramId", "CardNumber", "PaidCardPan", "RefId", "Amount", '
+            '"Reversed" FROM "GatewayCardBindings" WHERE "Status"=\'mismatch\' '
+            'AND NOT "Notified" ORDER BY "CreatedAt" LIMIT %s',
+            (int(limit),),
+        )
+        return cur.fetchall()
+
+
+def mark_gateway_mismatch_notified(authority):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('UPDATE "GatewayCardBindings" SET "Notified"=true WHERE "Authority"=%s',
+                    (str(authority)[:100],))
+        conn.commit()
+
+
+def import_site_verified_card(telegram_id, card_number, holder_name, phone):
+    """کارتی که سایت برای همین شماره تایید کرده، در ربات هم تاییدشده ثبت می‌شود.
+
+    خروجی False یعنی کارت روی حساب تلگرامِ دیگری ثبت است و وارد نشد.
+    """
+    if card_owned_by_other(telegram_id, card_number):
+        return False
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "CardVerifications" ("TelegramId", "CardNumber", "HolderName", "Phone", '
+            '"Status", "ReviewedBy", "ReviewedAt") VALUES (%s,%s,%s,%s,\'approved\','
+            '\'احراز سایت\', now()) ON CONFLICT ("TelegramId", "CardNumber") DO UPDATE SET '
+            '"Status"=\'approved\', "ReviewedBy"=\'احراز سایت\', "ReviewedAt"=now(), '
+            '"HolderName"=EXCLUDED."HolderName", "Phone"=EXCLUDED."Phone"',
+            (str(telegram_id), card_number, (holder_name or '')[:120], (phone or '')[:20]),
+        )
+        cur.execute('UPDATE "Users" SET "CardVerified"=true, "CardNumber"=%s WHERE "TelegramId"=%s',
+                    (card_number, str(telegram_id)))
+        conn.commit()
+        return True
