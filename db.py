@@ -7333,3 +7333,14 @@ def review_card_verification(card_id, *, approve, reviewer='', reason=''):
             )
         conn.commit()
         return row is not None
+
+
+def get_order_for_tracking(order_id):
+    """(Id, UserId, TelegramId, TotalAmount, Status, PaymentMethod, CreatedAt, WalletPaid)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "UserId", "TelegramId", "TotalAmount", "Status", "PaymentMethod", '
+            '"CreatedAt", COALESCE("WalletPaid", 0) FROM "Orders" WHERE "Id"=%s',
+            (int(order_id),),
+        )
+        return cur.fetchone()

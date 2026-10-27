@@ -81,6 +81,7 @@ from handlers.site_receipts import (
 from handlers.site_panel import site_panel_router
 from handlers.site_outbox import site_card_review, site_outbox_loop
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
+from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
 from handlers.referral import (
     ADMIN_ROUTER_PATTERN as REFERRAL_ADMIN_PATTERN,
@@ -184,6 +185,11 @@ async def text_router(update, ctx):
 
     # اگر ادمین در حالت پاسخ/جستجو نیست، منوی عادی
     action = appearance.menu_action(message.text)
+    if action:
+        # دکمهٔ منو همیشه برنده است، حتی اگر منتظر کد پیگیری بودیم.
+        ctx.user_data.pop('await_track', None)
+    elif await track_text(update, ctx):
+        return
     handler = MENU_ACTIONS.get(action) if action else None
     if handler:
         await handler(update, ctx)
@@ -912,6 +918,7 @@ def main():
     app.add_handler(CommandHandler('start', start_handler))
     app.add_handler(CommandHandler('help', help_handler))
     app.add_handler(CommandHandler('myid', myid_handler))
+    app.add_handler(CommandHandler('track', track_command))
     app.add_handler(CommandHandler('invite', referral_menu))
     app.add_handler(CommandHandler('admin', admin_cmd))
     app.add_handler(CommandHandler('order', admin_order_cmd))
@@ -1016,6 +1023,7 @@ def main():
     app.add_handler(CallbackQueryHandler(sens_mobile_menu, pattern='^sens_mobile$'))
     app.add_handler(CallbackQueryHandler(sens_buy, pattern=r'^sens_buy_\d+$'))
     app.add_handler(CallbackQueryHandler(my_orders, pattern='^my_orders$'))
+    app.add_handler(CallbackQueryHandler(track_button, pattern='^track_order$'))
     app.add_handler(CallbackQueryHandler(my_account, pattern='^my_account$'))
 
     # پنل ادمین

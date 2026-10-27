@@ -71,9 +71,12 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status_fa = STATUS_FA.get(o[2], o[2])
             lines.append(f"🔹 سفارش #{o[0]} • {o[1]:,} ت • {status_fa}")
         text = "\n".join(lines)
+    text += "\n\n🔎 برای پیگیری، شمارهٔ سفارش یا کد سفارش سایت (AS…) را بفرست."
 
+    from handlers.order_track import track_keyboard
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=None)
+        await update.callback_query.edit_message_text(text, parse_mode='Markdown',
+                                                      reply_markup=track_keyboard())
     else:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=track_keyboard())

@@ -188,3 +188,12 @@ def call_site_card_review(card_id, action, admin_tg, admin_name):
             'admin_name': str(admin_name or ''),
         },
     )
+
+
+def fetch_site_order(code, telegram_id):
+    """وضعیتِ سفارش سایت با کد پیگیری (AS…)."""
+    return _site_request(
+        '/internal/bot/order-track/',
+        query={'code': str(code or '').strip().upper(), 'tg': str(telegram_id or '')},
+        timeout=20,
+    )

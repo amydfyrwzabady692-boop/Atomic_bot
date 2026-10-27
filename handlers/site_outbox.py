@@ -43,14 +43,32 @@ def _markup(raw):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
-def _recipients(audience):
+def _recipients(item):
+    audience = item.get('audience')
+    if audience == 'user':
+        # پیامِ خریدار: فقط به خودش، هرگز به ادمین‌ها.
+        try:
+            return [int(item.get('chat_id'))]
+        except (TypeError, ValueError):
+            return []
     ids = credential_admin_ids() if audience == 'credential' else []
     return ids or admin_ids()
 
 
+# خریداری که ربات را بلاک کرده یا هرگز استارت نزده: تلاش دوباره بی‌فایده است.
+_PERMANENT_ERRORS = ('Forbidden', 'chat not found', 'user is deactivated',
+                     'bot was blocked', 'bot can\'t initiate')
+
+
+def _is_permanent(exc) -> bool:
+    text = f'{type(exc).__name__}: {exc}'
+    return any(marker.lower() in text.lower() for marker in _PERMANENT_ERRORS)
+
+
 async def _send_one(bot, chat_id, item, photo, markup):
-    """(message_id یا None, file_id عکس برای ارسال‌های بعدی)."""
+    """(message_id یا None, file_id عکس برای ارسال‌های بعدی, خطای دائمی؟)."""
     text = str(item.get('text') or '')
+    permanent = False
     for parse_mode in ('HTML', None):
         try:
             if photo is not None:
@@ -59,15 +77,18 @@ async def _send_one(bot, chat_id, item, photo, markup):
                                            caption=text[:_CAPTION_LIMIT],
                                            parse_mode=parse_mode, reply_markup=markup)
                 file_id = msg.photo[-1].file_id if msg.photo else None
-                return msg.message_id, file_id
+                return msg.message_id, file_id, False
             msg = await bot.send_message(chat_id=chat_id, text=text[:_TEXT_LIMIT],
                                          parse_mode=parse_mode, reply_markup=markup,
                                          disable_web_page_preview=True)
-            return msg.message_id, None
+            return msg.message_id, None, False
         except Exception as exc:  # noqa: BLE001 — HTML خراب یا چتِ بسته
             log.warning('site outbox send failed chat=%s id=%s mode=%s: %s',
                         chat_id, item.get('id'), parse_mode, exc)
-    return None, None
+            if _is_permanent(exc):
+                permanent = True
+                break
+    return None, None, permanent
 
 
 async def deliver_site_outbox(bot):
@@ -84,19 +105,24 @@ async def deliver_site_outbox(bot):
         if item.get('photo_url'):
             photo = await asyncio.to_thread(fetch_site_photo, item['photo_url'])
         notices = []
-        for chat_id in _recipients(item.get('audience')):
-            mid, file_id = await _send_one(bot, chat_id, item, photo, markup)
+        for chat_id in _recipients(item):
+            mid, file_id, permanent = await _send_one(bot, chat_id, item, photo, markup)
             if mid:
                 notices.append({'chat_id': int(chat_id), 'message_id': int(mid)})
                 if file_id:
                     photo = file_id  # بقیهٔ ادمین‌ها: بدون آپلود دوباره
+            elif permanent and item.get('audience') == 'user':
+                # خریدار ربات را بلاک کرده: «تحویل‌شده» با message_id صفر، تا سایت
+                # هر دو دقیقه تا یک هفته دوباره نفرستدش.
+                log.info('buyer chat %s unreachable; dropping notice %s', chat_id, item.get('id'))
+                notices.append({'chat_id': int(chat_id), 'message_id': 0})
         kind, _, ref = str(item.get('ref') or '').partition(':')
-        if notices and ref.isdigit():
+        if notices and ref.isdigit() and item.get('audience') != 'user':
             remember_notices('site' if kind == 'receipt' else f'site_{kind}', int(ref), notices)
         result = await asyncio.to_thread(ack_site_outbox, item['id'], notices)
         if not result.get('ok'):
             log.warning('site outbox ack failed id=%s: %s', item.get('id'), result.get('error'))
-        if notices:
+        if any(n['message_id'] for n in notices):
             delivered += 1
     return delivered
 
