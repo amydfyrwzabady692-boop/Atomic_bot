@@ -81,6 +81,7 @@ from handlers.site_receipts import (
 from handlers.site_panel import site_panel_router
 from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
+from handlers.identity import identity_admin_handlers, identity_conversation_handler
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
 from handlers.referral import (
@@ -485,7 +486,11 @@ async def _payment_expiry_loop(app):
                             success, delivery = await asyncio.to_thread(
                                 fulfill_order, order_id
                             )
-                            if telegram_id:
+                            if success and delivery == 'kyc_hold':
+                                from handlers.identity import announce_identity_hold
+                                await announce_identity_hold(app.bot, order_id,
+                                                             tg_id=telegram_id)
+                            elif telegram_id:
                                 text = (
                                     f'✅ پرداخت سفارش #{order_id} در بررسی نهایی '
                                     f'تأیید شد. وضعیت تحویل: {delivery}'
@@ -936,6 +941,7 @@ def main():
     app.add_handler(stars_conversation_handler())
     app.add_handler(credential_conversation_handler())
     app.add_handler(payment_conversation_handler())
+    app.add_handler(identity_conversation_handler())
     app.add_handler(wallet_conversation_handler())
     app.add_handler(support_conversation_handler())
     app.add_handler(kyc_conversation_handler())
@@ -999,6 +1005,8 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(site_card_review, pattern=r'^site_card_(?:ok|no)_\d+$'))
     app.add_handler(CallbackQueryHandler(cverify_review, pattern=r'^cverify_(?:ok|no)_\d+$'))
+    for handler in identity_admin_handlers():
+        app.add_handler(handler)
     app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+$'))
 

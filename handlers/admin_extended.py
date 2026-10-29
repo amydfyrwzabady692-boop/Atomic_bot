@@ -267,6 +267,7 @@ _DIGIT_TRANS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '012345
 _ORDER_STATUS_FA = {
     'pending': 'در انتظار پرداخت',
     'processing': 'در حال تحویل',
+    'kyc_hold': 'منتظر احراز هویت',
     'paid': 'پرداخت‌شده',
     'delivered': 'تحویل‌شده',
     'completed': 'تکمیل',
@@ -1167,7 +1168,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         sales = get_setting('sales_enabled', '1') != '0'
         payments = get_setting('payments_enabled', '1') != '0'
         alerts_enabled = get_setting('admin_alerts_enabled', '1') != '0'
-        extra = ready_creds + site['site_ready_creds'] + site['site_receipts']
+        from db import count_identity_queue
+        idv_pending, idv_held = await asyncio.to_thread(count_identity_queue)
+        extra = ready_creds + site['site_ready_creds'] + site['site_receipts'] + idv_pending
         alert_total = ops_action_total(ops, extra)
         unseen_refunds = ops.get('wallet_refunds_unseen', 0)
         text = (
@@ -1183,6 +1186,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'🔐 جم با اطلاعات ربات: *{ready_creds:,}*\n'
             f'🌐 جم با اطلاعات سایت: *{site["site_ready_creds"]:,}*\n'
             f'🎧 تیکت باز: *{ops["open_tickets"]:,}*\n'
+            f'🪪 احراز هویت منتظر: *{idv_pending:,}* · سفارش منتظر احراز: *{idv_held:,}*\n'
             f'📦 موجودی کم: *{ops["low_gem_stock"] + ops["low_store_stock"]:,}*\n'
             f'💰 برگشت کیف پول دیده‌نشده: *{unseen_refunds:,}*\n\n'
             f'فروش امروز: *{ops["sales_today_amount"]:,} تومان* '
@@ -1196,6 +1200,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )],
             [InlineKeyboardButton(
                 f'⏳ گیرکرده‌ها ({ops["stuck_processing"]})', callback_data='admx_stuck'
+            ), InlineKeyboardButton(
+                f'🪪 احراز هویت ({idv_pending}/{idv_held})', callback_data='idva_home'
             )],
             [InlineKeyboardButton(
                 f'🔐 جم ربات ({ready_creds})', callback_data='admx_credentials'

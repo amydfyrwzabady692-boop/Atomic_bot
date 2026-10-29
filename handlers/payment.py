@@ -20,7 +20,7 @@ from keyboards import (
 )
 from db import (
     get_order, fulfill_order, get_or_create_user,
-    order_requires_kyc, is_kyc_approved, get_order_items, get_gem_infos_for_order,
+    get_order_items, get_gem_infos_for_order, terms_accepted,
     get_order_payable, apply_wallet_to_order, get_wallet_balance,
     get_setting, get_bool_setting, save_payment_receipt,
     validate_order_financials, order_belongs_to, bind_order_authority,
@@ -537,6 +537,13 @@ async def _handle_fulfill_result(
     """پیام‌های کاربر/ادمین برای نتیجه تحویل بعد از پرداخت موفق."""
     from db import mark_delivery_notified
 
+    if success and status == 'kyc_hold':
+        # پول رسیده؛ تحویل تا تایید احراز هویت صبر می‌کند (handlers/identity.py).
+        from handlers.identity import announce_identity_hold
+
+        await announce_identity_hold(bot, order_id, tg_id=tg_id, edit_message=edit_message)
+        return 'kyc_hold'
+
     refunded = _parse_refunded_amount(status)
     gift_text = None
     if success and status in ('delivered', 'processing', 'paid', 'manual_star'):
@@ -727,15 +734,10 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # درگاه فقط با کارتِ احرازشده، و زرین‌پال فقط از همان کارت پرداخت می‌پذیرد.
-    from handlers.card_verify import card_gate
-    if not await card_gate(query, update.effective_user.id, f'pay_zp_{order_id}'):
-        return
-
-    # احراز برای بسته‌های ۱۱۸۸ و ۲۴۲۰ — فقط درگاه
-    if order_requires_kyc(order_id) and not is_kyc_approved(update.effective_user.id):
-        from handlers.kyc import prompt_kyc_for_order
-        await prompt_kyc_for_order(query, update.effective_user, order_id)
+    # پیش از پرداخت فقط «بازگشت وجه نداریم»؛ احراز هویت بعد از پرداخت و فقط
+    # بالای سقف (db.claim_identity_hold).
+    from handlers.identity import terms_gate
+    if not await terms_gate(query, update.effective_user.id, order_id):
         return
 
     valid, _net_total, payable, financial_error = validate_order_financials(order_id)
@@ -794,9 +796,10 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     callback_url = f"{callback_base}/payment/callback?order={order_id}"
+    # صاحبِ کارتِ احرازشده فقط از همان کارت؛ بقیه از هر کارتی.
     from db import approved_cards, bind_gateway_card
     cards = await asyncio.to_thread(approved_cards, update.effective_user.id)
-    pay_card = cards[0][1]
+    pay_card = cards[0][1] if cards else ''
     authority, pay_url, err = await asyncio.to_thread(
         request_payment,
         payable,
@@ -804,7 +807,7 @@ async def start_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         callback_url,
         card_pan=pay_card,
     )
-    if authority:
+    if authority and pay_card:
         await asyncio.to_thread(bind_gateway_card, authority, update.effective_user.id, pay_card)
     if not authority or not pay_url:
         log_payment_attempt(
@@ -1043,9 +1046,9 @@ async def start_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=_order_pay_keyboard(order_id, ctx.user_data.get('db_id')),
         )
         return
-    # کارت‌به‌کارت فقط از کارتِ احرازشده؛ شمارهٔ کارتِ فروشگاه تا آن موقع نشان داده نمی‌شود.
-    from handlers.card_verify import card_gate
-    if not await card_gate(query, update.effective_user.id, f'pay_card_{order_id}'):
+    # احراز کارت پیش از پرداخت دیگر لازم نیست؛ فقط قوانین یک‌بار.
+    from handlers.identity import terms_gate
+    if not await terms_gate(query, update.effective_user.id, order_id):
         return
     available, _availability_error, _cost, _balance = await asyncio.to_thread(
         _delivery_preflight, order_id
@@ -1142,6 +1145,11 @@ async def pay_wallet(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # اگر سفارش مال کاربر دیگری است، اجازه نده
     if int(order[1]) != int(db_id):
         await query.answer("این سفارش متعلق به شما نیست.", show_alert=True)
+        return
+    if not await asyncio.to_thread(terms_accepted, user.id):
+        await query.answer()
+        from handlers.identity import terms_gate
+        await terms_gate(query, user.id, order_id)
         return
 
     bal = int(get_wallet_balance(db_id) or 0)
@@ -1457,7 +1465,14 @@ async def admin_approve(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     success, status = await fulfill_order_async(order_id)
     tg_id = order[6]
     refunded = _parse_refunded_amount(status)
-    if success and status == 'sense_manual':
+    if success and status == 'kyc_hold':
+        await _edit_review_message(
+            query,
+            f"✅ رسید سفارش #{order_id} تایید شد؛ سفارش تا احراز هویت خریدار تحویل نمی‌شود.",
+        )
+        from handlers.identity import announce_identity_hold
+        await announce_identity_hold(ctx.bot, order_id, tg_id=tg_id)
+    elif success and status == 'sense_manual':
         await _notify_sense_sale(ctx.bot, order_id)
         await _edit_review_message(
             query,

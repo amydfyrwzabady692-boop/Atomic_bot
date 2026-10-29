@@ -358,12 +358,6 @@ async def gem_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if info.get('auto_deliver'):
         text += f"{ID_ZARINPAL_INSTANT_NOTE}\n"
-    if info.get('amount') in (1188, 2420):
-        text += (
-            "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-            "🔐 زرین‌پال برای این بسته نیاز به احراز یک‌باره دارد.\n"
-            "کارت‌به‌کارت بدون احراز است.\n"
-        )
     text += "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\nروش را انتخاب کن:"
     await query.edit_message_text(
         text,

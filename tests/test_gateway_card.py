@@ -1,4 +1,7 @@
-"""درگاه ربات: فقط با کارتِ احرازشده و فقط از همان کارت؛ و احراز مشترک با سایت."""
+"""درگاه ربات: برای همه باز؛ صاحبِ کارتِ احرازشده فقط از همان کارت.
+
+احراز هویتِ بعد از پرداخت و احراز مشترک با سایت در tests/test_identity.py است.
+"""
 import asyncio
 import pathlib
 import unittest
@@ -68,52 +71,18 @@ class VerifyTests(unittest.TestCase):
 
 
 class GateWiringTests(unittest.TestCase):
-    def test_both_gateway_entry_points_check_the_card_first(self):
+    def test_only_verified_cards_are_pinned(self):
         payment = (ROOT / 'handlers' / 'payment.py').read_text(encoding='utf-8')
         wallet = (ROOT / 'handlers' / 'wallet.py').read_text(encoding='utf-8')
-        self.assertLess(payment.index("f'pay_zp_{order_id}'"), payment.index('card_pan=pay_card'))
-        self.assertLess(wallet.index("f'wpay_zp_{amount}'"), wallet.index('card_pan=pay_card'))
-        self.assertIn('bind_gateway_card, authority', payment)
-        self.assertIn('bind_gateway_card, authority', wallet)
+        for source in (payment, wallet):
+            self.assertIn("pay_card = cards[0][1] if cards else ''", source)
+            self.assertIn('card_pan=pay_card', source)
+            self.assertIn('if authority and pay_card:', source)
 
     def test_approval_can_resume_a_gateway_payment(self):
         self.assertTrue(card_verify._RESUME_RE.match('pay_zp_12'))
         self.assertTrue(card_verify._RESUME_RE.match('wpay_zp_50000'))
         self.assertFalse(card_verify._RESUME_RE.match('admx_anything'))
-
-
-class SharedVerificationTests(unittest.TestCase):
-    def _update(self):
-        message = SimpleNamespace(
-            contact=SimpleNamespace(user_id=42, phone_number='+989125550000'), reply_text=AsyncMock())
-        return SimpleNamespace(message=message, effective_user=SimpleNamespace(id=42))
-
-    def test_cards_verified_on_the_site_are_accepted(self):
-        update = self._update()
-        ctx = SimpleNamespace(user_data={'cverify': {'resume': 'pay_zp_7'}})
-        site = {'ok': True, 'cards': [{'number': CARD, 'holder': 'علی رضایی'}]}
-        with patch('site_api.fetch_site_verified_cards', return_value=site) as fetch, \
-                patch('db.import_site_verified_card', return_value=True) as imp:
-            state = run(card_verify.cverify_phone(update, ctx))
-        fetch.assert_called_once_with('09125550000', 42)
-        imp.assert_called_once_with(42, CARD, 'علی رضایی', '09125550000')
-        self.assertEqual(state, card_verify.ConversationHandler.END)
-        markup = update.message.reply_text.call_args.kwargs['reply_markup']
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'pay_zp_7')
-
-    def test_no_site_cards_continues_the_normal_steps(self):
-        update = self._update()
-        ctx = SimpleNamespace(user_data={'cverify': {}})
-        with patch('site_api.fetch_site_verified_cards', return_value={'ok': True, 'cards': []}):
-            state = run(card_verify.cverify_phone(update, ctx))
-        self.assertEqual(state, card_verify.WAIT_NUMBER)
-
-    def test_a_site_outage_does_not_block_verification(self):
-        update = self._update()
-        ctx = SimpleNamespace(user_data={'cverify': {}})
-        with patch('site_api.fetch_site_verified_cards', side_effect=OSError('down')):
-            state = run(card_verify.cverify_phone(update, ctx))
-        self.assertEqual(state, card_verify.WAIT_NUMBER)
 
 
 class MismatchNoticeTests(unittest.TestCase):

@@ -29,6 +29,7 @@ _BOT_STATUS = {
     'pending': ('⏳', 'در انتظار پرداخت/تایید'),
     'paid': ('✅', 'پرداخت شد'),
     'processing': ('🔄', 'در حال انجام'),
+    'kyc_hold': ('🪪', 'پرداخت شد؛ منتظر احراز هویت'),
     'delivered': ('🎉', 'تحویل شد'),
     'completed': ('🎉', 'تکمیل شد'),
     'canceled': ('❌', 'لغو شد'),
@@ -149,6 +150,10 @@ def format_bot_order(row, items, gem_infos) -> str:
     for info in (gem_infos or [])[:3]:
         if info[2]:
             lines.append(f"🎮 آیدی بازی: <code>{escape(str(info[2]))}</code>")
+    if str(status or '').lower() == 'kyc_hold':
+        lines.append('')
+        lines.append('🪪 پولت رسیده و موجودی برایت کنار گذاشته شده؛ بعد از احراز هویت '
+                     'سفارش خودکار تحویل می‌شود. برای شروع: /kyc')
     return '\n'.join(lines)
 
 

@@ -2913,6 +2913,10 @@ def fulfill_order(order_id):
                     return False, 'اثبات پرداخت با مانده سفارش تطابق ندارد.'
             else:
                 return False, 'روش پرداخت تأییدشده معتبر نیست.'
+            # احراز هویت بعد از پرداخت: بالای سقفِ چندروزه، تا تایید مدارک
+            # هیچ قلمی تحویل نمی‌شود (پول رسیده و سفارش «kyc_hold» می‌ماند).
+            if claim_identity_hold(order_id):
+                return True, 'kyc_hold'
             update_order_status(order_id, 'processing')
 
             infos = get_gem_infos_for_order(order_id)
@@ -4070,6 +4074,30 @@ def ensure_admin_schema():
             "Notified" BOOLEAN NOT NULL DEFAULT false,
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
+        # احراز هویت بعد از پرداخت: بالای سقفِ چندروزه، سفارش «kyc_hold» می‌ماند
+        # تا کارت بانکی، کارت ملی و سلفی با کارت ملی تایید شود.
+        '''CREATE TABLE IF NOT EXISTS "IdentityVerifications" (
+            "Id" SERIAL PRIMARY KEY,
+            "TelegramId" VARCHAR(64) NOT NULL UNIQUE,
+            "CardNumber" VARCHAR(16) NOT NULL DEFAULT '',
+            "Phone" VARCHAR(20) NOT NULL DEFAULT '',
+            "CardPhotoFileId" VARCHAR(255) NOT NULL DEFAULT '',
+            "NationalCardFileId" VARCHAR(255) NOT NULL DEFAULT '',
+            "SelfieFileId" VARCHAR(255) NOT NULL DEFAULT '',
+            "Status" VARCHAR(20) NOT NULL DEFAULT 'pending',
+            "Source" VARCHAR(20) NOT NULL DEFAULT 'bot',
+            "RejectReason" VARCHAR(255) NOT NULL DEFAULT '',
+            "ReviewedBy" VARCHAR(120) NOT NULL DEFAULT '',
+            "ReviewedAt" TIMESTAMPTZ,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_identity_verifications_card ON "IdentityVerifications" ("CardNumber")',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycHoldAt" TIMESTAMPTZ',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycReleasedAt" TIMESTAMPTZ',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycHoldNotifiedAt" TIMESTAMPTZ',
+        """CREATE INDEX IF NOT EXISTS idx_orders_kyc_hold
+           ON "Orders" ("TelegramId") WHERE "Status"='kyc_hold'""",
+        'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TermsAcceptedVersion" INTEGER NOT NULL DEFAULT 0',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -7016,7 +7044,9 @@ def get_active_ticket_for_user(user_db_id, category=None):
 
 
 # ─── KYC (احراز برای بسته‌های گران — فقط درگاه) ────────────────────────────────
-KYC_REQUIRED_AMOUNTS = (1188, 2420)
+# احرازِ پیش از پرداختِ بسته‌های بزرگ جای خودش را به احراز هویتِ بعد از پرداخت
+# (claim_identity_hold) داده است؛ احرازهای تاییدشدهٔ قبلی هنوز معتبرند.
+KYC_REQUIRED_AMOUNTS = ()
 
 
 def get_order_gem_amount(order_id):
@@ -7437,3 +7467,314 @@ def import_site_verified_card(telegram_id, card_number, holder_name, phone):
                     (card_number, str(telegram_id)))
         conn.commit()
         return True
+
+
+# ─── احراز هویت بعد از پرداخت ───────────────────────────────────────────────
+# پیش از پرداخت هیچ مدرکی خواسته نمی‌شود. اگر جمع خریدهای پرداخت‌شدهٔ یک
+# خریدارِ احرازنشده در چند روز اخیر (با همین سفارش) به سقف برسد، سفارش
+# «kyc_hold» می‌ماند و تحویل نمی‌شود تا شماره و عکس کارت بانکی، عکس کارت ملی و
+# سلفی با کارت ملی را بفرستد و ادمین تایید کند. همان قاعدهٔ سایت
+# (account/identity.py). وضعیتِ جدا یعنی حلقهٔ پیگیری تحویل، هشدارِ سفارشِ
+# گیرکرده و ریفاندِ خودکار سراغش نمی‌روند.
+
+# اگر متن قوانین یا قاعدهٔ احراز عوض شد، این عدد را بالا ببر تا همه دوباره بپذیرند.
+TERMS_VERSION = 1
+_IDENTITY_LOCK_NS = 41829
+# سفارش‌هایی که پولشان رسیده و برنگشته — «خرید» در قاعدهٔ سقف.
+_IDENTITY_SPENT_STATUSES = ['processing', 'paid', 'delivered', 'completed', 'kyc_hold']
+
+
+def identity_threshold_toman():
+    raw = get_setting('identity_threshold_toman', '') or os.getenv('IDENTITY_THRESHOLD_TOMAN', '')
+    try:
+        return max(0, int(str(raw or '1000000').replace(',', '').strip()))
+    except ValueError:
+        return 1_000_000
+
+
+def identity_window_days():
+    raw = get_setting('identity_window_days', '') or os.getenv('IDENTITY_WINDOW_DAYS', '')
+    try:
+        return max(1, int(str(raw or '4').strip()))
+    except ValueError:
+        return 4
+
+
+def _identity_approved_cur(cur, tg):
+    cur.execute('SELECT 1 FROM "IdentityVerifications" WHERE "TelegramId"=%s '
+                'AND "Status"=\'approved\'', (tg,))
+    if cur.fetchone():
+        return True
+    # احرازِ قدیمیِ درگاه (کارت ملی + کارت بانکی + دست‌نوشته) هم احراز است.
+    cur.execute('SELECT 1 FROM "Users" WHERE "TelegramId"=%s AND "KycStatus"=\'approved\' LIMIT 1',
+                (tg,))
+    return cur.fetchone() is not None
+
+
+def _identity_spent_cur(cur, tg, days, exclude_order_id=None):
+    cur.execute(
+        'SELECT COALESCE(SUM("TotalAmount"-COALESCE("DiscountAmount",0)),0) FROM "Orders" '
+        'WHERE "TelegramId"=%s AND "PaymentVerifiedAt" IS NOT NULL AND "Status"=ANY(%s) '
+        'AND "CreatedAt">=now()-make_interval(days => %s) AND "Id"<>%s',
+        (tg, _IDENTITY_SPENT_STATUSES, int(days), int(exclude_order_id or 0)),
+    )
+    return int(cur.fetchone()[0] or 0)
+
+
+def identity_state(telegram_id) -> str:
+    """approved | pending | rejected | none"""
+    tg = str(telegram_id)
+    with get_conn() as conn, conn.cursor() as cur:
+        if _identity_approved_cur(cur, tg):
+            return 'approved'
+        cur.execute('SELECT "Status" FROM "IdentityVerifications" WHERE "TelegramId"=%s', (tg,))
+        row = cur.fetchone()
+    return row[0] if row and row[0] in ('pending', 'rejected') else 'none'
+
+
+def is_identity_verified(telegram_id) -> bool:
+    return identity_state(telegram_id) == 'approved'
+
+
+def identity_recent_spend(telegram_id, *, exclude_order_id=None):
+    days = identity_window_days()
+    with get_conn() as conn, conn.cursor() as cur:
+        return _identity_spent_cur(cur, str(telegram_id), days, exclude_order_id)
+
+
+def claim_identity_hold(order_id) -> bool:
+    """سفارشِ پرداخت‌شده تا احراز هویت صبر کند؟ True یعنی حالا «kyc_hold» است.
+
+    تصمیم زیر قفلِ همان خریدار است تا دو پرداختِ هم‌زمان هر کدام جمعِ دیگری را
+    ببینند. سفارشی که یک‌بار آزاد شده (KycReleasedAt) دوباره نگه داشته نمی‌شود.
+    """
+    threshold = identity_threshold_toman()
+    days = identity_window_days()
+    with get_conn() as conn, conn.cursor() as cur:
+        try:
+            row, net_total, _payable = _locked_order_financials(cur, order_id)
+        except ValueError:
+            conn.rollback()
+            return False
+        tg, status = str(row[2] or '').strip(), row[6]
+        if status == 'kyc_hold':
+            conn.rollback()
+            return True
+        cur.execute('SELECT "KycReleasedAt" FROM "Orders" WHERE "Id"=%s', (int(order_id),))
+        if cur.fetchone()[0] is not None or not tg:
+            conn.rollback()
+            return False
+        cur.execute('SELECT pg_advisory_xact_lock(%s, hashtext(%s))', (_IDENTITY_LOCK_NS, tg))
+        if _identity_approved_cur(cur, tg):
+            conn.rollback()
+            return False
+        spent = _identity_spent_cur(cur, tg, days, exclude_order_id=order_id)
+        if spent + int(net_total or 0) < threshold:
+            conn.rollback()
+            return False
+        cur.execute('UPDATE "Orders" SET "Status"=\'kyc_hold\', "KycHoldAt"=now() WHERE "Id"=%s',
+                    (int(order_id),))
+        conn.commit()
+        _LOG.warning('order %s held for identity verification (tg=%s, spent=%s, order=%s)',
+                     order_id, tg, spent, net_total)
+        return True
+
+
+def claim_identity_hold_notice(order_id) -> bool:
+    """فقط یک‌بار برای هر سفارش: «منتظر احراز هویت» به خریدار و ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('UPDATE "Orders" SET "KycHoldNotifiedAt"=now() WHERE "Id"=%s '
+                    'AND "Status"=\'kyc_hold\' AND "KycHoldNotifiedAt" IS NULL RETURNING 1',
+                    (int(order_id),))
+        claimed = cur.fetchone() is not None
+        conn.commit()
+        return claimed
+
+
+def list_identity_held_orders(telegram_id=None, limit=50):
+    """[(Id, TelegramId, TotalAmount, DiscountAmount, PaymentMethod, KycHoldAt)]"""
+    sql = ('SELECT "Id","TelegramId","TotalAmount",COALESCE("DiscountAmount",0),'
+           '"PaymentMethod","KycHoldAt" FROM "Orders" WHERE "Status"=\'kyc_hold\'')
+    params = []
+    if telegram_id is not None:
+        sql += ' AND "TelegramId"=%s'
+        params.append(str(telegram_id))
+    sql += ' ORDER BY "KycHoldAt" NULLS LAST, "Id" LIMIT %s'
+    params.append(int(limit))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchall()
+
+
+def release_identity_holds(telegram_id):
+    """سفارش‌های منتظرِ این خریدار به صف تحویل برمی‌گردند. خروجی: [order_id]."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'processing\', "KycHoldAt"=NULL, "KycReleasedAt"=now() '
+            'WHERE "TelegramId"=%s AND "Status"=\'kyc_hold\' RETURNING "Id"',
+            (str(telegram_id),),
+        )
+        ids = sorted(int(row[0]) for row in cur.fetchall())
+        conn.commit()
+        return ids
+
+
+def release_identity_hold_order(order_id) -> bool:
+    """آزادکردنِ یک سفارش بدون احراز — فقط به دستور ادمین."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "Orders" SET "Status"=\'processing\', "KycHoldAt"=NULL, "KycReleasedAt"=now() '
+            'WHERE "Id"=%s AND "Status"=\'kyc_hold\' RETURNING 1',
+            (int(order_id),),
+        )
+        freed = cur.fetchone() is not None
+        conn.commit()
+        return freed
+
+
+def identity_card_owned_by_other(telegram_id, card_number) -> bool:
+    """یک کارت، یک صاحب: کارتِ احرازشده یا در صفِ حسابِ تلگرامِ دیگر."""
+    if card_owned_by_other(telegram_id, card_number):
+        return True
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT 1 FROM "IdentityVerifications" WHERE "CardNumber"=%s AND "TelegramId"<>%s '
+            'AND "Status" IN (\'pending\', \'approved\') LIMIT 1',
+            (card_number, str(telegram_id)),
+        )
+        return cur.fetchone() is not None
+
+
+def submit_identity_verification(telegram_id, card_number, phone, card_file_id,
+                                 national_file_id, selfie_file_id):
+    """ثبت یا جایگزینیِ مدارک. خروجی: (Id, Status) — تاییدشده تایید می‌ماند."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone",'
+            '"CardPhotoFileId","NationalCardFileId","SelfieFileId","Status","Source") '
+            'VALUES (%s,%s,%s,%s,%s,%s,\'pending\',\'bot\') '
+            'ON CONFLICT ("TelegramId") DO UPDATE SET '
+            '"CardNumber"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' '
+            'THEN "IdentityVerifications"."CardNumber" ELSE EXCLUDED."CardNumber" END, '
+            '"Phone"=EXCLUDED."Phone", '
+            '"CardPhotoFileId"=EXCLUDED."CardPhotoFileId", '
+            '"NationalCardFileId"=EXCLUDED."NationalCardFileId", '
+            '"SelfieFileId"=EXCLUDED."SelfieFileId", "Source"=\'bot\', '
+            '"Status"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' THEN \'approved\' '
+            'ELSE \'pending\' END, "RejectReason"=\'\', '
+            '"CreatedAt"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' '
+            'THEN "IdentityVerifications"."CreatedAt" ELSE now() END '
+            'RETURNING "Id","Status"',
+            (str(telegram_id), str(card_number)[:16], (phone or '')[:20], (card_file_id or '')[:255],
+             (national_file_id or '')[:255], (selfie_file_id or '')[:255]),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return int(row[0]), row[1]
+
+
+def get_identity_verification(verification_id):
+    """(Id, TelegramId, CardNumber, Phone, CardPhotoFileId, NationalCardFileId,
+    SelfieFileId, Status, Source, RejectReason, ReviewedBy, ReviewedAt, CreatedAt)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","TelegramId","CardNumber","Phone","CardPhotoFileId","NationalCardFileId",'
+            '"SelfieFileId","Status","Source","RejectReason","ReviewedBy","ReviewedAt","CreatedAt" '
+            'FROM "IdentityVerifications" WHERE "Id"=%s',
+            (int(verification_id),),
+        )
+        return cur.fetchone()
+
+
+def list_pending_identity_verifications(limit=20):
+    """[(Id, TelegramId, CardNumber, Phone, CreatedAt)] — قدیمی‌ترین اول."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","TelegramId","CardNumber","Phone","CreatedAt" FROM "IdentityVerifications" '
+            'WHERE "Status"=\'pending\' ORDER BY "CreatedAt" LIMIT %s',
+            (int(limit),),
+        )
+        return cur.fetchall()
+
+
+def count_identity_queue():
+    """(مدارکِ منتظرِ بررسی، سفارشِ منتظرِ احراز)"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT COUNT(*) FROM "IdentityVerifications" WHERE "Status"=\'pending\'')
+        pending = int(cur.fetchone()[0] or 0)
+        cur.execute('SELECT COUNT(*) FROM "Orders" WHERE "Status"=\'kyc_hold\'')
+        held = int(cur.fetchone()[0] or 0)
+        return pending, held
+
+
+def review_identity_verification(verification_id, *, approve, reviewer='', reason=''):
+    """فقط یک‌بار از pending خارج می‌شود. خروجی: (TelegramId, CardNumber) یا None.
+
+    با تایید، کارتِ همین مدارک «احرازشده» هم ثبت می‌شود (درگاه برای صاحبش به
+    همین کارت محدود می‌ماند) و KycStatus قدیمی هم تایید می‌شود.
+    """
+    status = 'approved' if approve else 'rejected'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "IdentityVerifications" SET "Status"=%s, "RejectReason"=%s, "ReviewedBy"=%s, '
+            '"ReviewedAt"=now() WHERE "Id"=%s AND "Status"=\'pending\' '
+            'RETURNING "TelegramId","CardNumber","Phone"',
+            (status, (reason or '')[:255], (reviewer or '')[:120], int(verification_id)),
+        )
+        row = cur.fetchone()
+        if row and approve:
+            tg, number, phone = row
+            if number:
+                cur.execute(
+                    'INSERT INTO "CardVerifications" ("TelegramId","CardNumber","HolderName","Phone",'
+                    '"Status","ReviewedBy","ReviewedAt") VALUES (%s,%s,\'احراز هویت\',%s,\'approved\','
+                    '%s,now()) ON CONFLICT ("TelegramId","CardNumber") DO UPDATE SET '
+                    '"Status"=\'approved\', "ReviewedBy"=EXCLUDED."ReviewedBy", "ReviewedAt"=now()',
+                    (tg, number, (phone or '')[:20], (reviewer or '')[:120]),
+                )
+                cur.execute('UPDATE "Users" SET "CardVerified"=true, "CardNumber"=%s '
+                            'WHERE "TelegramId"=%s', (number, tg))
+            cur.execute('UPDATE "Users" SET "KycStatus"=\'approved\', "KycVerifiedAt"=now(), '
+                        '"KycRejectReason"=\'\' WHERE "TelegramId"=%s', (tg,))
+        conn.commit()
+        return (row[0], row[1]) if row else None
+
+
+def import_site_identity(telegram_id, card_number, phone):
+    """احرازِ تاییدشدهٔ سایت برای همین شماره، در ربات هم تاییدشده ثبت می‌شود.
+
+    خروجی False یعنی کارت روی حساب تلگرامِ دیگری است و وارد نشد.
+    """
+    number = ''.join(ch for ch in str(card_number or '') if ch.isdigit())[:16]
+    if number and identity_card_owned_by_other(telegram_id, number):
+        return False
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone","Status",'
+            '"Source","ReviewedBy","ReviewedAt") VALUES (%s,%s,%s,\'approved\',\'site\','
+            '\'احراز سایت\',now()) ON CONFLICT ("TelegramId") DO UPDATE SET '
+            '"Status"=\'approved\', "Source"=\'site\', "ReviewedBy"=\'احراز سایت\', '
+            '"ReviewedAt"=now(), "CardNumber"=EXCLUDED."CardNumber", "Phone"=EXCLUDED."Phone"',
+            (str(telegram_id), number, (phone or '')[:20]),
+        )
+        cur.execute('UPDATE "Users" SET "KycStatus"=\'approved\', "KycVerifiedAt"=now() '
+                    'WHERE "TelegramId"=%s', (str(telegram_id),))
+        conn.commit()
+    if number:
+        import_site_verified_card(telegram_id, number, 'احراز سایت', phone)
+    return True
+
+
+def terms_accepted(telegram_id) -> bool:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT COALESCE("TermsAcceptedVersion",0) FROM "Users" WHERE "TelegramId"=%s',
+                    (str(telegram_id),))
+        row = cur.fetchone()
+    return bool(row and int(row[0] or 0) >= TERMS_VERSION)
+
+
+def accept_terms(telegram_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('UPDATE "Users" SET "TermsAcceptedVersion"=%s WHERE "TelegramId"=%s',
+                    (TERMS_VERSION, str(telegram_id)))
+        conn.commit()

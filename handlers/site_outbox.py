@@ -12,7 +12,7 @@ import logging
 import os
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import ContextTypes
 
 from admin_notify import admin_ids, credential_admin_ids, is_admin
@@ -94,6 +94,24 @@ async def _send_one(bot, chat_id, item, photo, markup):
     return None, None, permanent
 
 
+async def _send_album(bot, chat_id, item, album, markup):
+    """مدارک احراز هویت: آلبومِ سه عکس، بعد متن و دکمه‌ها (آلبوم دکمه نمی‌گیرد).
+
+    album بایت‌ها یا file_idهاست. خروجی: (message_id متن، file_idها برای ادمینِ
+    بعدی، خطای دائمی؟).
+    """
+    try:
+        sent = await bot.send_media_group(
+            chat_id=chat_id, media=[InputMediaPhoto(media=photo) for photo in album])
+        album = [msg.photo[-1].file_id for msg in sent if msg.photo] or album
+    except Exception as exc:  # noqa: BLE001 — متن و دکمه‌ها بدون عکس هم برسند
+        log.warning('site outbox album failed chat=%s id=%s: %s', chat_id, item.get('id'), exc)
+        if _is_permanent(exc):
+            return None, album, True
+    mid, _file_id, permanent = await _send_one(bot, chat_id, item, None, markup)
+    return mid, album, permanent
+
+
 # ── سلامت ارتباط ─────────────────────────────────────────────────────
 # اگر ربات چند دقیقه به سایت نرسد، رسید و سفارش جم به هیچ ادمینی نمی‌رسد و
 # کسی هم نمی‌فهمد. یک‌بار هشدار، و یک‌بار خبرِ برقراری دوباره.
@@ -151,6 +169,10 @@ async def _remind_backlog(bot, now):
     if (data.get('card_oldest_minutes') or 0) >= BACKLOG_MINUTES:
         parts.append(f'💳 {data.get("pending_cards")} احراز کارت منتظر بررسی '
                      f'(قدیمی‌ترین: {data["card_oldest_minutes"]} دقیقه)')
+    if (data.get('identity_oldest_minutes') or 0) >= BACKLOG_MINUTES:
+        parts.append(f'🪪 {data.get("pending_identities")} احراز هویتِ سایت منتظر بررسی '
+                     f'(قدیمی‌ترین: {data["identity_oldest_minutes"]} دقیقه؛ '
+                     f'{data.get("kyc_held_orders") or 0} سفارش پرداخت‌شده منتظر است)')
     if parts:
         LINK['last_reminder'] = now
         await _tell_admins(bot, '⏰ یادآوری\n' + '\n'.join(parts) +
@@ -170,12 +192,23 @@ async def deliver_site_outbox(bot):
     delivered = 0
     for item in data.get('items') or []:
         markup = _markup(item.get('reply_markup'))
+        album = []
+        for url in (item.get('photo_urls') or [])[:10]:
+            raw = await asyncio.to_thread(fetch_site_photo, url)
+            if raw:
+                album.append(raw)
         photo = None
-        if item.get('photo_url'):
-            photo = await asyncio.to_thread(fetch_site_photo, item['photo_url'])
+        if len(album) < 2:
+            album = []
+            if item.get('photo_url'):
+                photo = await asyncio.to_thread(fetch_site_photo, item['photo_url'])
         notices = []
         for chat_id in _recipients(item):
-            mid, file_id, permanent = await _send_one(bot, chat_id, item, photo, markup)
+            if album:
+                mid, album, permanent = await _send_album(bot, chat_id, item, album, markup)
+                file_id = None
+            else:
+                mid, file_id, permanent = await _send_one(bot, chat_id, item, photo, markup)
             if mid:
                 notices.append({'chat_id': int(chat_id), 'message_id': int(mid)})
                 if file_id:
@@ -275,6 +308,8 @@ async def site_status_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'اعلانِ در صف: {data.get("outbox_waiting", 0)}',
             f'رسید منتظر بررسی: {data.get("pending_receipts", 0)}',
             f'احراز کارت منتظر بررسی: {data.get("pending_cards", 0)}',
+            f'احراز هویت منتظر بررسی: {data.get("pending_identities", 0)}',
+            f'سفارش منتظر احراز هویت: {data.get("kyc_held_orders", 0)}',
         ]
     else:
         lines += ['❌ سایت جواب نمی‌دهد.', f'خطا: {data.get("error") or LINK["last_error"] or "نامشخص"}']

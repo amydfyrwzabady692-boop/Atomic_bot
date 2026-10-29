@@ -211,3 +211,26 @@ def fetch_site_verified_cards(phone, telegram_id):
     if not data.get('ok'):
         data.setdefault('cards', [])
     return data
+
+
+def fetch_site_identity(phone, telegram_id):
+    """احراز هویتِ تاییدشدهٔ حسابِ سایت با همین شماره (احراز مشترک)."""
+    data = _site_request('/internal/bot/identity/by-phone/',
+                         query={'phone': str(phone or ''), 'tg': str(telegram_id or '')}, timeout=15)
+    if not data.get('ok'):
+        data['approved'] = False
+    return data
+
+
+def call_site_identity_review(verification_id, action, admin_tg, admin_name, note=''):
+    """تایید/رد احراز هویتِ سایت؛ تایید سفارش‌های منتظرِ خریدار را آزاد می‌کند."""
+    return _site_request(
+        f'/internal/bot/identity/{int(verification_id)}/review/',
+        method='POST',
+        payload={
+            'action': action,
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+            'note': str(note or '')[:255],
+        },
+    )

@@ -191,18 +191,17 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not get_bool_setting('zarinpal_enabled', True):
         await query.edit_message_text("❌ درگاه زرین‌پال موقتاً غیرفعال است.")
         return
-    from handlers.card_verify import card_gate
-    if not await card_gate(query, user.id, f'wpay_zp_{amount}'):
-        return
     callback_base = get_setting('payment_callback_base', CALLBACK_BASE).rstrip('/')
     if not callback_base:
         await query.edit_message_text("❌ آدرس callback درگاه تنظیم نشده (`PAYMENT_CALLBACK_BASE`).")
         return
 
     callback_url = f"{callback_base}/payment/wallet-callback"
+    # صاحبِ کارتِ احرازشده فقط از همان کارت؛ بقیه از هر کارتی. احراز هویت سرِ
+    # خرید است، نه شارژ (db.claim_identity_hold).
     from db import approved_cards, bind_gateway_card
     cards = await asyncio.to_thread(approved_cards, user.id)
-    pay_card = cards[0][1]
+    pay_card = cards[0][1] if cards else ''
     authority, pay_url, err = await asyncio.to_thread(
         request_payment,
         amount,
@@ -210,7 +209,7 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         callback_url,
         card_pan=pay_card,
     )
-    if authority:
+    if authority and pay_card:
         await asyncio.to_thread(bind_gateway_card, authority, user.id, pay_card)
     if not authority or not pay_url:
         log_payment_attempt(
@@ -248,8 +247,9 @@ async def wallet_pay_zarinpal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"✦ *شارژ با زرین‌پال*\n"
         f"مبلغ: *{amount:,}* تومان\n"
-        f"💳 فقط از کارت `{pay_card[:4]}-{pay_card[4:6]}**-****-{pay_card[12:]}`\n"
-        f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
+        + (f"💳 فقط از کارت `{pay_card[:4]}-{pay_card[4:6]}**-****-{pay_card[12:]}`\n"
+           if pay_card else "")
+        + f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
         f"*راهنما*\n"
         f"۱ · لینک را لمس کن و *کپی* کن\n"
         f"۲ · *VPN را خاموش* کن\n"
@@ -289,10 +289,6 @@ async def wallet_pay_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not get_bool_setting('card_transfer_enabled', True):
         await query.edit_message_text("❌ کارت‌به‌کارت موقتاً غیرفعال است.")
-        return
-    # کارت‌به‌کارت فقط از کارتِ احرازشده — پیش از ساختن تراکنش.
-    from handlers.card_verify import card_gate
-    if not await card_gate(query, user.id, f'wpay_card_{amount}'):
         return
     card_number = get_setting('card_number', CARD_NUMBER)
     card_holder = get_setting('card_holder', CARD_HOLDER)

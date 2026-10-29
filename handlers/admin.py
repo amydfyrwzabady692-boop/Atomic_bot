@@ -770,7 +770,10 @@ async def admin_retry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             refunded = int(str(status).split(':', 1)[1])
         except (TypeError, ValueError):
             refunded = 0
-    if success and status == 'delivered':
+    if success and status == 'kyc_hold':
+        msg = (f"⏸ سفارش #{order_id} منتظر احراز هویت خریدار است و تا تایید مدارک تحویل "
+               "نمی‌شود.\nبرای آزادسازی بدون احراز: پنل ← مرکز عملیات ← احراز هویت.")
+    elif success and status == 'delivered':
         msg = f"✅ سفارش #{order_id} تحویل شد."
         if tg:
             try:

@@ -1,4 +1,8 @@
-"""احراز کارت پیش از کارت‌به‌کارت، و تحویل صف اعلان‌های سایت."""
+"""ابزارهای کارت بانکی، دکمه‌های قدیمیِ «احراز کارت»، و تحویل صف اعلان‌های سایت.
+
+احراز کارتِ پیش از پرداخت برداشته شد؛ احراز هویتِ بعد از پرداخت در
+tests/test_identity.py است.
+"""
 import asyncio
 import pathlib
 import unittest
@@ -31,63 +35,22 @@ class CardNumberTests(unittest.TestCase):
         self.assertEqual(card_verify.masked_card('6037990000000006'), '6037-99**-****-0006')
 
 
-class GateTests(unittest.TestCase):
-    def test_approved_card_passes(self):
-        query = SimpleNamespace(edit_message_text=AsyncMock())
-        with patch.object(card_verify, 'approved_cards', return_value=[(1, '6037990000000006', 'x')]):
-            self.assertTrue(run(card_verify.card_gate(query, 5, 'pay_card_1')))
-        query.edit_message_text.assert_not_called()
-
-    def test_no_card_shows_the_verification_prompt_not_the_shop_card(self):
-        query = SimpleNamespace(edit_message_text=AsyncMock())
-        with patch.object(card_verify, 'approved_cards', return_value=[]), \
-                patch.object(card_verify, 'card_kyc_state', return_value='none'):
-            self.assertFalse(run(card_verify.card_gate(query, 5, 'pay_card_1')))
-        text = query.edit_message_text.call_args.args[0]
-        self.assertIn('احراز کارت', text)
+class LegacyButtonTests(unittest.TestCase):
+    def test_old_verify_buttons_lead_to_identity_verification(self):
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        update = SimpleNamespace(callback_query=query)
+        with patch('handlers.identity.identity_threshold_toman', return_value=1_000_000), \
+                patch('handlers.identity.identity_window_days', return_value=4):
+            run(card_verify.cverify_start(update, SimpleNamespace(user_data={})))
+        self.assertIn('لازم نیست', query.edit_message_text.call_args.args[0])
         markup = query.edit_message_text.call_args.kwargs['reply_markup']
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'cverify_go_pay_card_1')
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'idv_start')
 
-    def test_pending_card_offers_a_recheck(self):
-        query = SimpleNamespace(edit_message_text=AsyncMock())
-        with patch.object(card_verify, 'approved_cards', return_value=[]), \
-                patch.object(card_verify, 'card_kyc_state', return_value='pending'):
-            run(card_verify.card_gate(query, 5, 'wpay_card_50000'))
-        markup = query.edit_message_text.call_args.kwargs['reply_markup']
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'wpay_card_50000')
-
-
-class ContactTests(unittest.TestCase):
-    def _update(self, contact_user_id):
-        message = SimpleNamespace(
-            contact=SimpleNamespace(user_id=contact_user_id, phone_number='+989121234567'),
-            reply_text=AsyncMock())
-        return SimpleNamespace(message=message, effective_user=SimpleNamespace(id=42))
-
-    def test_someone_elses_contact_is_refused(self):
-        update = self._update(contact_user_id=99)
-        ctx = SimpleNamespace(user_data={'cverify': {}})
-        state = run(card_verify.cverify_phone(update, ctx))
-        self.assertEqual(state, card_verify.WAIT_PHONE)
-        self.assertNotIn('phone', ctx.user_data['cverify'])
-
-    def test_own_contact_moves_on(self):
-        update = self._update(contact_user_id=42)
-        ctx = SimpleNamespace(user_data={'cverify': {}})
-        state = run(card_verify.cverify_phone(update, ctx))
-        self.assertEqual(state, card_verify.WAIT_NUMBER)
-        self.assertEqual(ctx.user_data['cverify']['phone'], '09121234567')
-
-
-class CardOnAnotherAccountTests(unittest.TestCase):
-    def test_is_refused(self):
-        message = SimpleNamespace(text='6037990000000006', reply_text=AsyncMock())
-        update = SimpleNamespace(message=message, effective_user=SimpleNamespace(id=42))
-        ctx = SimpleNamespace(user_data={'cverify': {'phone': '09121234567'}})
-        with patch.object(card_verify, 'card_owned_by_other', return_value=True):
-            state = run(card_verify.cverify_number(update, ctx))
-        self.assertEqual(state, card_verify.ConversationHandler.END)
-        self.assertNotIn('cverify', ctx.user_data)
+    def test_receipt_caption_without_a_verified_card_is_informational(self):
+        with patch.object(card_verify, 'approved_cards', return_value=[]):
+            line = run(card_verify.payer_cards_line(5))
+        self.assertIn('احراز هویت', line)
+        self.assertNotIn('تایید نکن', line)
 
 
 class OutboxDeliveryTests(unittest.TestCase):
@@ -154,14 +117,13 @@ class WiringTests(unittest.TestCase):
         self.assertIn('site_outbox_loop(app)', src)
         self.assertIn("'_site_outbox_task'", src)
 
-    def test_card_to_card_entry_points_are_gated(self):
+    def test_card_to_card_needs_no_card_verification_first(self):
         payment = (ROOT / 'handlers' / 'payment.py').read_text(encoding='utf-8')
         wallet = (ROOT / 'handlers' / 'wallet.py').read_text(encoding='utf-8')
-        self.assertIn("card_gate(query, update.effective_user.id, f'pay_card_{order_id}')", payment)
-        self.assertIn("card_gate(query, user.id, f'wpay_card_{amount}')", wallet)
-        # دروازه پیش از نشان‌دادن شمارهٔ کارتِ فروشگاه است.
-        self.assertLess(payment.index("f'pay_card_{order_id}'"), payment.index("get_setting('card_number'"))
-        self.assertLess(wallet.index("f'wpay_card_{amount}'"), wallet.index("create_wallet_card_charge(db_id, amount)"))
+        self.assertNotIn('card_gate(', payment + wallet)
+        # پیش از نشان‌دادن شمارهٔ کارتِ فروشگاه، فقط قوانین (یک‌بار).
+        self.assertLess(payment.index("terms_gate(query, update.effective_user.id, order_id)"),
+                        payment.index("get_setting('card_number'"))
 
 
 if __name__ == '__main__':

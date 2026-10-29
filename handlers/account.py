@@ -24,6 +24,11 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     username = markdown_safe(f"@{tg_user.username}" if tg_user.username else "—", 64)
     balance = await asyncio.to_thread(get_wallet_balance, db_id)
+    from db import identity_state
+
+    identity = await asyncio.to_thread(identity_state, tg_user.id)
+    identity_fa = {'approved': '✅ تایید شده', 'pending': '⏳ در صف بررسی',
+                   'rejected': '❌ رد شده؛ دوباره بفرست'}.get(identity, 'انجام نشده (فقط بالای سقف خرید لازم است)')
 
     text = (
         f"{appearance.user_label('t.account.hdr', appearance.DEFAULTS['t.account.hdr'])}\n"
@@ -31,7 +36,8 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"نام: {name}\n"
         f"آیدی: *{username}*\n"
         f"شناسه عددی: `{tg_user.id}`\n"
-        f"کیف پول: *{balance:,}* تومان"
+        f"کیف پول: *{balance:,}* تومان\n"
+        f"احراز هویت: {identity_fa}"
     )
     if update.callback_query:
         await update.callback_query.answer()
@@ -40,6 +46,12 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
+    if identity in ('none', 'rejected'):
+        from handlers.identity import start_keyboard
+
+        await update.effective_message.reply_text(
+            '🪪 احراز هویت یک‌بار است و بعدش خریدهای بالای سقف هم بدون انتظار تحویل می‌شوند.',
+            reply_markup=start_keyboard())
 
 
 async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -61,6 +73,7 @@ async def my_orders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'paid': '✅ پرداخت شده',
             'delivered': '🎉 تحویل شده',
             'processing': '🔄 در حال پردازش',
+            'kyc_hold': '🪪 منتظر احراز هویت',
             'completed': '🎉 تکمیل شده',
             'canceled': '❌ لغو شده',
             'cancelled': '❌ لغو شده',
