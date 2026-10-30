@@ -9,6 +9,7 @@ import asyncio
 import pathlib
 import random
 import unittest
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -410,7 +411,22 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([m.media for m in media], ['F1', 'F2', 'F3'])
         caption = bot.send_message.call_args.kwargs['text']
         self.assertIn('سفارش منتظر: 1', caption)
+        self.assertIn('کارت ملی کنار دست‌نوشته', caption)
+        self.assertIn(f'تاریخی از {identity.note_date(identity._tehran_day() - timedelta(days=3))} '
+                      f'تا {identity.note_date()}', caption)
         self.assertEqual(remember.call_args.args[:2], ('bot_idv', 5))
+
+    def test_the_card_photo_step_asks_for_the_note(self):
+        identity._SAMPLE_IDS.clear()
+        ctx = SimpleNamespace(user_data={'idv': {'phone': '09125550000', 'number': CARD}}, bot=None)
+        update = self._update(photo=[SimpleNamespace(file_id='F1')])
+        self.assertEqual(run(identity.idv_card_photo(update, ctx)), identity.WAIT_NATIONAL)
+        self.assertEqual(ctx.user_data['idv']['card'], 'F1')
+        kwargs = update.message.reply_photo.call_args.kwargs
+        self.assertTrue(kwargs['photo'].name.endswith('national_note.png'))
+        self.assertIn('کارت ملی کنار دست‌نوشته', kwargs['caption'])
+        self.assertIn(f'تاریخ: {identity.note_date()} — امضا و اثر انگشت', kwargs['caption'])
+        self.assertEqual(kwargs['parse_mode'], 'Markdown')
 
     def test_a_menu_button_leaves_the_flow(self):
         ctx = SimpleNamespace(user_data={'idv': {'phone': '0912'}}, bot=None)
@@ -418,6 +434,64 @@ class ConversationTests(unittest.TestCase):
             state = run(identity.idv_number(self._update(text='💰 کیف پول'), ctx))
         self.assertEqual(state, identity.ConversationHandler.END)
         self.assertNotIn('idv', ctx.user_data)
+
+
+def legacy_markdown_ok(text):
+    """همان چیزی که parse_mode='Markdown' تلگرام بی‌خطا می‌خواند (بدون لینک و کد)."""
+    bare = text.replace('\\[', '')
+    return text.count('*') % 2 == 0 and '_' not in text and '`' not in text and '[' not in bare
+
+
+class NoteTests(unittest.TestCase):
+    """دست‌نوشته کنار کارت ملی — همان متن و همان بازهٔ تاریخِ سایت."""
+
+    def test_the_text_is_the_sites_with_the_shamsi_date(self):
+        first, second = identity.note_lines(date(2026, 10, 30))
+        self.assertEqual(first, 'اینجانب [نام و نام خانوادگی] این مدارک را فقط برای احراز '
+                                'هویت در اتومیک شاپ می‌فرستم.')
+        self.assertEqual(second, 'تاریخ: ۱۴۰۵/۰۸/۰۸ — امضا و اثر انگشت')
+        self.assertEqual(identity.note_date(date(2026, 3, 21)), '۱۴۰۵/۰۱/۰۱')
+        self.assertEqual(identity.note_date(date(2026, 3, 20)), '۱۴۰۴/۱۲/۲۹')
+
+    def test_today_is_tehran_today(self):
+        # ۲۲:۰۰ گرینویچ، ساعت ۱:۳۰ بامدادِ روزِ بعد در تهران است.
+        late = datetime(2026, 10, 30, 22, 0, tzinfo=timezone.utc)
+        self.assertEqual(identity._tehran_day(late), date(2026, 10, 31))
+        early = datetime(2026, 10, 30, 20, 0, tzinfo=timezone.utc)
+        self.assertEqual(identity._tehran_day(early), date(2026, 10, 30))
+
+    def test_the_caption_is_safe_markdown_and_fits(self):
+        text = identity.national_caption(date(2026, 10, 30))
+        self.assertTrue(legacy_markdown_ok(text), text)
+        self.assertLessEqual(len(text), 1024)
+        self.assertIn('\\[نام و نام خانوادگی]', text)
+        self.assertIn('تاریخ: ۱۴۰۵/۰۸/۰۸ — امضا و اثر انگشت', text)
+        self.assertIn('امضا کن و اثر انگشتت را بزن', text)
+
+    def test_every_step_text_mentions_the_note(self):
+        with patch.object(identity, 'identity_threshold_toman', return_value=1_000_000), \
+                patch.object(identity, 'identity_window_days', return_value=4):
+            intro = identity._intro_text()
+            terms = identity.terms_text()
+            hold = identity.hold_user_text(7, 'none')
+        self.assertIn('۳. کارت ملی کنار یک دست‌نوشتهٔ کوتاه با امضا و اثر انگشت', intro)
+        self.assertTrue(legacy_markdown_ok(intro), intro)
+        self.assertIn('کارت ملی کنار یک دست‌نوشتهٔ امضاشده', terms)
+        self.assertIn('کارت ملی کنار یک دست‌نوشتهٔ کوتاهِ امضاشده', hold)
+
+    def test_the_reviewer_gets_the_accepted_date_range(self):
+        sent = datetime(2026, 10, 30, 5, 30, tzinfo=timezone.utc)  # ۹ صبح تهران
+        user = SimpleNamespace(id=42, username='buyer', full_name='علی رضایی')
+        text = identity.admin_caption(5, user, CARD, '09125550000', [], False, sent_at=sent)
+        self.assertIn('عکس‌ها به ترتیب: کارت بانکی، کارت ملی کنار دست‌نوشته، سلفی با کارت ملی.', text)
+        self.assertIn('امضا، اثر انگشت و تاریخی از ۱۴۰۵/۰۸/۰۵ تا ۱۴۰۵/۰۸/۰۸', text)
+
+    def test_a_missing_note_is_a_rejection_reason(self):
+        self.assertIn('note', identity.REJECT_REASONS)
+        markup = identity.reasons_keyboard(5)
+        data = [row[0].callback_data for row in markup.inline_keyboard]
+        self.assertIn('idv_rj_5_note', data)
+        self.assertTrue(identity._REVIEW_RE.match('site_idv_rj_5_note'))
 
 
 class SiteAlbumTests(unittest.TestCase):
@@ -482,7 +556,7 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn('kyc_hold', source)
 
     def test_the_sample_photos_ship_with_the_bot(self):
-        for name in ('bank_card', 'national_card', 'selfie'):
+        for name in ('bank_card', 'national_note', 'selfie'):
             data = (ROOT / 'assets' / 'identity_samples' / f'{name}.png').read_bytes()
             self.assertEqual(data[:8], b'\x89PNG\r\n\x1a\n')
             self.assertGreater(int.from_bytes(data[16:20], 'big'), 600)  # پهنا از IHDR

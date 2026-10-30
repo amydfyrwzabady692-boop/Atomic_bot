@@ -3,7 +3,8 @@
 پیش از پرداخت: فقط پذیرفتنِ «بازگشت وجه نداریم» (یک‌بار برای هر نسخهٔ قوانین).
 بعد از پرداخت: اگر جمع خریدهای پرداخت‌شدهٔ چند روز اخیرِ خریدارِ احرازنشده
 به سقف برسد، سفارش «kyc_hold» می‌ماند (db.claim_identity_hold) تا خریدار شماره
-و عکس کارت بانکی، عکس کارت ملی و سلفی با کارت ملی را بفرستد و ادمین تایید کند.
+و عکس کارت بانکی، عکس کارت ملی کنار یک دست‌نوشتهٔ کوتاه (با تاریخ، امضا و اثر
+انگشت) و سلفی با کارت ملی را بفرستد و ادمین تایید کند.
 با تایید، سفارش‌های منتظر خودکار تحویل می‌شوند.
 
 احراز سایت و ربات مشترک است: بعد از اشتراکِ شماره، اگر حسابِ سایت با همین شماره
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from telegram import (
@@ -49,6 +51,7 @@ WAIT_PHONE, WAIT_NUMBER, WAIT_CARD, WAIT_NATIONAL, WAIT_SELFIE = range(5)
 REJECT_REASONS = {
     'blur': 'عکس‌ها تار یا ناخوانا است',
     'name': 'نام کارت بانکی با کارت ملی یکی نیست',
+    'note': 'دست‌نوشته ناقص است (متن، تاریخ، امضا یا اثر انگشت)',
     'selfie': 'در سلفی صورت یا کارت ملی واضح نیست',
     'card': 'شمارهٔ کارت با عکس کارت یکی نیست',
     'other': 'مدارک ناقص یا نامعتبر است',
@@ -72,6 +75,48 @@ def rule_text() -> str:
             'تکمیل می‌شود.')
 
 
+# دست‌نوشته‌ای که با تاریخِ چند روز پیش‌تر نوشته شده هنوز پذیرفته است (مثل سایت).
+NOTE_MAX_AGE_DAYS = 3
+_TEHRAN_OFFSET = timezone(timedelta(hours=3, minutes=30))  # ایران از ۱۴۰۱ ساعت تابستانی ندارد
+
+
+def _tehran_day(moment=None):
+    moment = moment or datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+
+        return moment.astimezone(ZoneInfo('Asia/Tehran')).date()
+    except Exception:  # noqa: BLE001 — بدون tzdata
+        return moment.astimezone(_TEHRAN_OFFSET).date()
+
+
+def note_date(day=None) -> str:
+    """تاریخ شمسیِ یک روز (پیش‌فرض امروزِ تهران)، مثل ۱۴۰۵/۰۸/۰۸."""
+    from handlers.order_track import to_jalali
+
+    day = day or _tehran_day()
+    jy, jm, jd = to_jalali(day.year, day.month, day.day)
+    return fa(f'{jy}/{jm:02d}/{jd:02d}')
+
+
+def note_lines(day=None):
+    """متنی که خریدار روی کاغذ می‌نویسد و کنار کارت ملی عکس می‌گیرد — همان سایت."""
+    return (
+        'اینجانب [نام و نام خانوادگی] این مدارک را فقط برای احراز هویت در اتومیک شاپ می‌فرستم.',
+        f'تاریخ: {note_date(day)} — امضا و اثر انگشت',
+    )
+
+
+def review_checklist(sent_at=None):
+    """آنچه بررسی‌کننده باید در عکس‌ها ببیند؛ بازهٔ تاریخ از زمانِ ارسال مدارک."""
+    sent = _tehran_day(sent_at)
+    oldest, newest = note_date(sent - timedelta(days=NOTE_MAX_AGE_DAYS)), note_date(sent)
+    return [
+        'نام کارت بانکی، کارت ملی و دست‌نوشته یکی باشد و چهرهٔ سلفی همان عکس کارت ملی.',
+        f'دست‌نوشته: متن احراز، امضا، اثر انگشت و تاریخی از {oldest} تا {newest}.',
+    ]
+
+
 def _masked(number) -> str:
     number = str(number or '')
     return f'{number[:4]}-{number[4:6]}**-****-{number[12:]}' if len(number) == 16 else number
@@ -92,7 +137,8 @@ def terms_text() -> str:
         '• *بازگشت وجه نداریم:* جم، شارژ، گیفت کارت و اکانت کالای دیجیتال‌اند و بعد از '
         'تحویل پس گرفته نمی‌شوند. از آیدی، بسته و مبلغ مطمئن شو.\n'
         '• فقط اگر تحویل از طرف ما انجام نشود، مبلغ به کیف پولت برمی‌گردد.\n'
-        f'• {rule_text()} احراز یک‌بار است: کارت بانکی، کارت ملی و یک سلفی با کارت ملی.\n\n'
+        f'• {rule_text()} احراز یک‌بار است: کارت بانکی، کارت ملی کنار یک دست‌نوشتهٔ '
+        'امضاشده، و یک سلفی با کارت ملی.\n\n'
         'اگر قبول داری، دکمهٔ زیر را بزن.'
     )
 
@@ -149,7 +195,8 @@ def hold_user_text(order_id, state) -> str:
     if state == 'pending':
         return head + '⏳ مدارکت در صف بررسی است؛ بعد از تایید، سفارش خودکار تحویل می‌شود.'
     return head + ('برای تکمیل خرید یک‌بار احراز هویت کن: شماره و عکس کارت بانکی، عکس کارت '
-                   'ملی، و یک سلفی که کارت ملی را کنار صورتت گرفته‌ای.\n'
+                   'ملی کنار یک دست‌نوشتهٔ کوتاهِ امضاشده، و یک سلفی که کارت ملی را کنار '
+                   'صورتت گرفته‌ای.\n'
                    'پولت محفوظ است و موجودی سفارش برایت کنار گذاشته شده.')
 
 
@@ -214,8 +261,9 @@ def _intro_text() -> str:
         'چهار چیز لازم است:\n'
         '۱. شمارهٔ موبایلِ همین حساب تلگرام\n'
         '۲. شماره و عکس کارت بانکی (CVV2 و تاریخ انقضا را بپوشان)\n'
-        '۳. عکس کارت ملی\n'
+        '۳. کارت ملی کنار یک دست‌نوشتهٔ کوتاه با امضا و اثر انگشت\n'
         '۴. سلفی با کارت ملی کنار صورتت\n\n'
+        '✍️ کاغذ و خودکار (و استامپ برای اثر انگشت) دم دستت باشد.\n'
         '🔒 مدارک فقط برای مدیران فروشگاه فرستاده می‌شود.\n\n'
         '📱 *قدم ۱ از ۴* — دکمهٔ «اشتراک شماره» پایین صفحه را بزن.'
     )
@@ -353,9 +401,22 @@ CARD_CAPTION = ('📷 *عکس روی کارت بانکی* — مثل نمونه\
                 '✓ شماره و نام صاحب کارت کامل و خوانا باشد.\n'
                 '✓ CVV2 و تاریخ انقضا را با انگشت یا کاغذ بپوشان؛ لازمشان نداریم.\n'
                 'عکس را *به‌صورت عکس* بفرست، نه فایل.')
-NATIONAL_CAPTION = ('🪪 *قدم ۳ از ۴ — عکس کارت ملی* — مثل نمونه\n'
-                    '✓ کارت کامل و بدون برش؛ نام، شماره ملی و عکس خوانا.\n'
-                    '✓ نام روی کارت ملی باید با نام صاحب کارت بانکی یکی باشد.')
+
+
+def national_caption(day=None) -> str:
+    """قدمِ کارت ملی کنار دست‌نوشته، با تاریخِ امروز در متن."""
+    # Markdownِ قدیمی «[» را شروعِ لینک می‌داند.
+    first, second = (line.replace('[', '\\[') for line in note_lines(day))
+    return ('🪪 *قدم ۳ از ۴ — کارت ملی کنار دست‌نوشته* — مثل نمونه\n'
+            'این دو خط را با خودکار روی کاغذ بنویس، امضا کن و اثر انگشتت را بزن:\n\n'
+            f'«{first}\n{second}»\n\n'
+            '✓ جای \\[نام و نام خانوادگی] نامت را دقیقاً مثل کارت ملی بنویس؛ تاریخ، همان امروز.\n'
+            '✓ دست‌نویس باشد، نه تایپ یا چاپ. اثر انگشت با استامپ (یا انگشتی که با ماژیک '
+            'رنگ کرده‌ای).\n'
+            '✓ کارت ملی را کنار کاغذ بگذار؛ هر دو کامل و خوانا در یک عکس.\n'
+            '✓ نام روی کارت ملی همان نام صاحب کارت بانکی باشد.')
+
+
 SELFIE_CAPTION = ('🤳 *قدم ۴ از ۴ — سلفی با کارت ملی* — مثل نمونه\n'
                   '✓ کارت ملی را کنار صورتت بگیر؛ صورت کامل و کارت خوانا در یک عکس.\n'
                   '✓ نور کافی، بدون ماسک و عینک آفتابی، بدون فیلتر.')
@@ -405,7 +466,7 @@ async def idv_card_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not file_id:
         return WAIT_CARD
     ctx.user_data.setdefault('idv', {})['card'] = file_id
-    await _send_sample(update.message, 'national_card', NATIONAL_CAPTION)
+    await _send_sample(update.message, 'national_note', national_caption())
     return WAIT_NATIONAL
 
 
@@ -436,7 +497,8 @@ def reasons_keyboard(verification_id, prefix='idv'):
     return InlineKeyboardMarkup(rows)
 
 
-def admin_caption(verification_id, user, number, phone, held, other_account) -> str:
+def admin_caption(verification_id, user, number, phone, held, other_account,
+                  sent_at=None) -> str:
     uname = f'@{user.username}' if getattr(user, 'username', None) else '—'
     held_total = sum(max(0, int(row[2] or 0) - int(row[3] or 0)) for row in held)
     lines = [
@@ -450,9 +512,9 @@ def admin_caption(verification_id, user, number, phone, held, other_account) -> 
         lines.append(f'⏸ سفارش منتظر: {len(held)} (جمع {held_total:,} تومان)')
     if other_account:
         lines.append('⚠️ این کارت روی حساب دیگری هم ثبت شده است.')
-    lines += ['', 'عکس‌ها به ترتیب: کارت بانکی، کارت ملی، سلفی با کارت ملی.',
-              'نام روی کارت بانکی و کارت ملی و چهرهٔ سلفی باید یکی باشند. با تایید، '
-              'سفارش‌های منتظرِ این خریدار خودکار تحویل می‌شوند.']
+    lines += ['', 'عکس‌ها به ترتیب: کارت بانکی، کارت ملی کنار دست‌نوشته، سلفی با کارت ملی.']
+    lines += [f'✓ {line}' for line in review_checklist(sent_at)]
+    lines.append('با تایید، سفارش‌های منتظرِ این خریدار خودکار تحویل می‌شوند.')
     return '\n'.join(lines)
 
 
@@ -703,7 +765,7 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             username = None
             full_name = ''
 
-        caption = admin_caption(pk, _Who, row[2], row[3], held, other)
+        caption = admin_caption(pk, _Who, row[2], row[3], held, other, sent_at=row[12])
         await send_for_review(ctx.bot, pk, caption, [row[4], row[5], row[6]],
                               recipients=[update.effective_user.id])
     elif kind == 'order':
