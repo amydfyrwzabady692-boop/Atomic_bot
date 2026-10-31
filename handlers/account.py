@@ -24,11 +24,15 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     username = markdown_safe(f"@{tg_user.username}" if tg_user.username else "—", 64)
     balance = await asyncio.to_thread(get_wallet_balance, db_id)
-    from db import identity_state
+    from db import identity_state, list_identity_held_orders
 
     identity = await asyncio.to_thread(identity_state, tg_user.id)
-    identity_fa = {'approved': '✅ تایید شده', 'pending': '⏳ در صف بررسی',
-                   'rejected': '❌ رد شده؛ دوباره بفرست'}.get(identity, 'انجام نشده (فقط بالای سقف خرید لازم است)')
+    # احراز هویت فقط وقتی دیده می‌شود که لازم است یا انجام شده؛ قاعده گفته نمی‌شود.
+    held = len(await asyncio.to_thread(list_identity_held_orders, tg_user.id, 20))
+    identity_fa = {'approved': '✅ تایید شده', 'pending': '⏳ در صف بررسی'}.get(identity)
+    if not identity_fa and held:
+        identity_fa = ('❌ رد شده؛ دوباره بفرست' if identity == 'rejected'
+                       else '⚠️ لازم برای تحویل سفارش منتظر')
 
     text = (
         f"{appearance.user_label('t.account.hdr', appearance.DEFAULTS['t.account.hdr'])}\n"
@@ -36,8 +40,8 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"نام: {name}\n"
         f"آیدی: *{username}*\n"
         f"شناسه عددی: `{tg_user.id}`\n"
-        f"کیف پول: *{balance:,}* تومان\n"
-        f"احراز هویت: {identity_fa}"
+        f"کیف پول: *{balance:,}* تومان"
+        + (f"\nاحراز هویت: {identity_fa}" if identity_fa else '')
     )
     if update.callback_query:
         await update.callback_query.answer()
@@ -46,11 +50,11 @@ async def my_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text(text, parse_mode='Markdown', reply_markup=main_menu())
-    if identity in ('none', 'rejected'):
-        from handlers.identity import start_keyboard
+    if identity in ('none', 'rejected') and held:
+        from handlers.identity import fa, start_keyboard
 
         await update.effective_message.reply_text(
-            '🪪 احراز هویت یک‌بار است و بعدش خریدهای بالای سقف هم بدون انتظار تحویل می‌شوند.',
+            f'🪪 {fa(held)} سفارش منتظر احراز هویت توست؛ بعد از تایید مدارک خودکار تحویل می‌شود.',
             reply_markup=start_keyboard())
 
 

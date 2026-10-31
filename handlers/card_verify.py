@@ -76,18 +76,12 @@ async def payer_cards_line(telegram_id) -> str:
 
 
 async def cverify_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """«احراز کارت»ِ پیام‌های قدیمی: حالا احراز هویتِ کامل، و فقط بعد از پرداخت."""
-    from handlers.identity import rule_text
-
+    """«احراز کارت»ِ پیام‌های قدیمی: دیگر لازم نیست (قاعدهٔ احراز گفته نمی‌شود)."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        'احراز کارت جداگانه دیگر لازم نیست؛ کارت‌به‌کارت و درگاه بدون آن باز است.\n'
-        f'{rule_text()}\n'
-        'احراز یک‌بار است: کارت بانکی، کارت ملی کنار یک دست‌نوشتهٔ امضاشده، و یک سلفی '
-        'با کارت ملی.',
+        'احراز کارت جداگانه دیگر لازم نیست؛ کارت‌به‌کارت و درگاه بدون آن باز است.',
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton('🪪 احراز هویت', callback_data='idv_start')],
             [InlineKeyboardButton('🏠 منوی اصلی', callback_data='home')],
         ]))
 
@@ -144,10 +138,7 @@ async def cverify_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await ctx.bot.send_message(
                 chat_id=int(tg),
-                text=(f'❌ کارت {masked_card(number)} تایید نشد.\n'
-                      'عکس واضح‌تری بفرست و نام را دقیقاً مثل روی کارت بنویس.'),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                    '🪪 احراز هویت', callback_data='idv_start')]]))
+                text=f'❌ کارت {masked_card(number)} تایید نشد.')
     except Exception as exc:  # noqa: BLE001 — کاربر ربات را بسته
         log.warning('card verification result not delivered tg=%s: %s', tg, exc)
 

@@ -19,6 +19,8 @@ from handlers import identity, site_outbox
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CARD = '6037990000000006'
 OTHER_CARD = '6219860000000001'
+# نشانه‌های قاعده (سقف و بازهٔ تست‌ها): هیچ‌کدام نباید به خریدار برسد.
+RULE_MARKS = ('۱٬۰۰۰٬۰۰۰', '1,000,000', '۴ روز', 'جمع خریدهایت', 'سقف')
 
 
 def run(coro):
@@ -193,7 +195,7 @@ class HoldRuleDbTests(unittest.TestCase):
 
 
 class TermsGateTests(unittest.TestCase):
-    def test_the_rule_and_no_refund_are_shown_before_paying(self):
+    def test_no_refund_is_shown_before_paying_and_identity_is_not(self):
         query = SimpleNamespace(edit_message_text=AsyncMock())
         with patch.object(identity, 'terms_accepted', return_value=False), \
                 patch.object(identity, 'identity_threshold_toman', return_value=1_000_000), \
@@ -201,8 +203,9 @@ class TermsGateTests(unittest.TestCase):
             self.assertFalse(run(identity.terms_gate(query, 5, 12)))
         text = query.edit_message_text.call_args.args[0]
         self.assertIn('بازگشت وجه نداریم', text)
-        self.assertIn('۱٬۰۰۰٬۰۰۰ تومان', text)
-        self.assertIn('۴ روز', text)
+        self.assertNotIn('احراز', text)
+        for mark in RULE_MARKS:
+            self.assertNotIn(mark, text)
         markup = query.edit_message_text.call_args.kwargs['reply_markup']
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'terms_ok_12')
 
@@ -236,7 +239,9 @@ class HoldNoticeTests(unittest.TestCase):
             run(identity.announce_identity_hold(self.bot, 9))
         kwargs = self.bot.send_message.call_args.kwargs
         self.assertEqual(kwargs['chat_id'], 555)
-        self.assertIn('بعد از احراز هویت تکمیل', kwargs['text'])
+        self.assertIn('برای تکمیل این سفارش یک‌بار احراز هویت لازم است', kwargs['text'])
+        for mark in RULE_MARKS:
+            self.assertNotIn(mark, kwargs['text'])
         self.assertEqual(kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'idv_start')
         self.assertIn('منتظر احراز هویت', admin.call_args.args[1])
 
@@ -338,6 +343,31 @@ class ConversationTests(unittest.TestCase):
         user = SimpleNamespace(id=42, username='buyer', full_name='علی رضایی')
         return SimpleNamespace(message=message, effective_user=user, effective_message=message,
                                callback_query=None)
+
+    def _start(self, state, held):
+        update = self._update()
+        update.effective_user = SimpleNamespace(id=42, username='buyer', first_name='علی',
+                                                last_name='', full_name='علی')
+        ctx = SimpleNamespace(user_data={}, bot=None)
+        with patch.object(identity, 'get_or_create_user', return_value=(7, False)), \
+                patch.object(identity, 'identity_state', return_value=state), \
+                patch.object(identity, 'list_identity_held_orders', return_value=held):
+            result = run(identity.idv_start(update, ctx))
+        return result, update.message.reply_text
+
+    def test_nothing_is_asked_when_no_order_waits(self):
+        for state in ('none', 'rejected'):
+            result, reply = self._start(state, [])
+            self.assertEqual(result, identity.ConversationHandler.END)
+            self.assertIn('نیازی به احراز هویت نداری', reply.call_args.args[0])
+
+    def test_a_waiting_order_opens_the_flow_without_the_rule(self):
+        result, reply = self._start('none', [(9, '42', 1_200_000, 0, 'card_transfer', None)])
+        self.assertEqual(result, identity.WAIT_PHONE)
+        intro = reply.call_args_list[0].args[0]
+        self.assertIn('برای تکمیل سفارشت یک‌بار احراز هویت لازم است', intro)
+        for mark in RULE_MARKS:
+            self.assertNotIn(mark, intro)
 
     def test_someone_elses_contact_is_refused(self):
         ctx = SimpleNamespace(user_data={'idv': {}}, bot=None)
@@ -468,16 +498,20 @@ class NoteTests(unittest.TestCase):
         self.assertIn('تاریخ: ۱۴۰۵/۰۸/۰۸ — امضا و اثر انگشت', text)
         self.assertIn('امضا کن و اثر انگشتت را بزن', text)
 
-    def test_every_step_text_mentions_the_note(self):
+    def test_every_step_text_mentions_the_note_but_never_the_rule(self):
         with patch.object(identity, 'identity_threshold_toman', return_value=1_000_000), \
                 patch.object(identity, 'identity_window_days', return_value=4):
             intro = identity._intro_text()
             terms = identity.terms_text()
             hold = identity.hold_user_text(7, 'none')
+            waiting = identity.hold_user_text(7, 'pending')
         self.assertIn('۳. کارت ملی کنار یک دست‌نوشتهٔ کوتاه با امضا و اثر انگشت', intro)
         self.assertTrue(legacy_markdown_ok(intro), intro)
-        self.assertIn('کارت ملی کنار یک دست‌نوشتهٔ امضاشده', terms)
         self.assertIn('کارت ملی کنار یک دست‌نوشتهٔ کوتاهِ امضاشده', hold)
+        self.assertNotIn('احراز', terms)
+        for text in (intro, terms, hold, waiting):
+            for mark in RULE_MARKS:
+                self.assertNotIn(mark, text)
 
     def test_the_reviewer_gets_the_accepted_date_range(self):
         sent = datetime(2026, 10, 30, 5, 30, tzinfo=timezone.utc)  # ۹ صبح تهران
@@ -492,6 +526,43 @@ class NoteTests(unittest.TestCase):
         data = [row[0].callback_data for row in markup.inline_keyboard]
         self.assertIn('idv_rj_5_note', data)
         self.assertTrue(identity._REVIEW_RE.match('site_idv_rj_5_note'))
+
+
+class AccountViewTests(unittest.TestCase):
+    """«حساب من»: احراز هویت فقط وقتی دیده می‌شود که لازم است یا انجام شده."""
+
+    def _account(self, state, held):
+        from handlers import account
+
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=42, first_name='علی', last_name='', username='buyer'),
+            callback_query=None, message=message, effective_message=message)
+        ctx = SimpleNamespace(user_data={'db_id': 7})
+        with patch.object(account, 'get_wallet_balance', return_value=0), \
+                patch.object(account.appearance, 'user_label', return_value='حساب من'), \
+                patch('db.identity_state', return_value=state), \
+                patch('db.list_identity_held_orders', return_value=held):
+            run(account.my_account(update, ctx))
+        return [c.args[0] for c in message.reply_text.call_args_list]
+
+    def test_a_fresh_buyer_sees_nothing_about_it(self):
+        texts = self._account('none', [])
+        self.assertEqual(len(texts), 1)
+        self.assertNotIn('احراز', texts[0])
+        self.assertNotIn('سقف', texts[0])
+
+    def test_a_waiting_order_brings_it_up(self):
+        texts = self._account('none', [(9, '42', 1_200_000, 0, 'card_transfer', None)])
+        self.assertIn('احراز هویت: ⚠️ لازم برای تحویل سفارش منتظر', texts[0])
+        self.assertIn('۱ سفارش منتظر احراز هویت توست', texts[1])
+        for text in texts:
+            self.assertNotIn('سقف', text)
+
+    def test_a_verified_buyer_sees_the_status(self):
+        texts = self._account('approved', [])
+        self.assertIn('احراز هویت: ✅ تایید شده', texts[0])
+        self.assertEqual(len(texts), 1)
 
 
 class SiteAlbumTests(unittest.TestCase):
@@ -554,6 +625,13 @@ class WiringTests(unittest.TestCase):
         source = inspect.getsource(db.list_processing_auto_orders)
         self.assertIn('processing', source)
         self.assertNotIn('kyc_hold', source)
+
+    def test_gem_pages_do_not_mention_identity(self):
+        import inspect
+
+        from handlers import gems
+
+        self.assertNotIn('احراز', inspect.getsource(gems))
 
     def test_the_sample_photos_ship_with_the_bot(self):
         for name in ('bank_card', 'national_note', 'selfie'):

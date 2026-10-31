@@ -134,12 +134,6 @@ async def show_gem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if g[8]:
         text += f"\n\n{ID_ZARINPAL_INSTANT_NOTE}"
-    if g[2] in (1188, 2420):
-        text += (
-            "\n\n🔐 برای *درگاه زرین‌پال* احراز هویت یک‌باره لازم است "
-            "(کارت ملی + دست‌نوشته + کارت بانکی).\n"
-            "کارت‌به‌کارت بدون احراز است."
-        )
     # Product-detail clicks must never wait for the supplier network.  The
     # package is checked against G2Bulk again with force=True immediately
     # before the local order is created, so removing this duplicate lookup

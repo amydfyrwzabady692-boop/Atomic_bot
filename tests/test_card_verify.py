@@ -36,15 +36,17 @@ class CardNumberTests(unittest.TestCase):
 
 
 class LegacyButtonTests(unittest.TestCase):
-    def test_old_verify_buttons_lead_to_identity_verification(self):
+    def test_old_verify_buttons_say_it_is_not_needed(self):
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
         update = SimpleNamespace(callback_query=query)
-        with patch('handlers.identity.identity_threshold_toman', return_value=1_000_000), \
-                patch('handlers.identity.identity_window_days', return_value=4):
-            run(card_verify.cverify_start(update, SimpleNamespace(user_data={})))
-        self.assertIn('لازم نیست', query.edit_message_text.call_args.args[0])
+        run(card_verify.cverify_start(update, SimpleNamespace(user_data={})))
+        text = query.edit_message_text.call_args.args[0]
+        self.assertIn('لازم نیست', text)
+        # قاعدهٔ احراز هویت به خریدار گفته نمی‌شود و دکمه‌اش هم نیست.
+        self.assertNotIn('احراز هویت', text)
+        self.assertNotIn('تومان', text)
         markup = query.edit_message_text.call_args.kwargs['reply_markup']
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'idv_start')
+        self.assertEqual([b.callback_data for row in markup.inline_keyboard for b in row], ['home'])
 
     def test_receipt_caption_without_a_verified_card_is_informational(self):
         with patch.object(card_verify, 'approved_cards', return_value=[]):
