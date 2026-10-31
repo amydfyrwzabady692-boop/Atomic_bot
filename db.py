@@ -4075,7 +4075,7 @@ def ensure_admin_schema():
             "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         # احراز هویت بعد از پرداخت: بالای سقفِ چندروزه، سفارش «kyc_hold» می‌ماند
-        # تا کارت بانکی، کارت ملی کنار دست‌نوشته و سلفی با کارت ملی تایید شود.
+        # تا کارت بانکی و کارت ملی یا شناسنامه کنار دست‌نوشته تایید شود.
         '''CREATE TABLE IF NOT EXISTS "IdentityVerifications" (
             "Id" SERIAL PRIMARY KEY,
             "TelegramId" VARCHAR(64) NOT NULL UNIQUE,
@@ -7472,8 +7472,8 @@ def import_site_verified_card(telegram_id, card_number, holder_name, phone):
 # ─── احراز هویت بعد از پرداخت ───────────────────────────────────────────────
 # پیش از پرداخت هیچ مدرکی خواسته نمی‌شود. اگر جمع خریدهای پرداخت‌شدهٔ یک
 # خریدارِ احرازنشده در چند روز اخیر (با همین سفارش) به سقف برسد، سفارش
-# «kyc_hold» می‌ماند و تحویل نمی‌شود تا شماره و عکس کارت بانکی، کارت ملی کنار
-# دست‌نوشته و سلفی با کارت ملی را بفرستد و ادمین تایید کند. همان قاعدهٔ سایت
+# «kyc_hold» می‌ماند و تحویل نمی‌شود تا شماره و عکس کارت بانکی، و کارت ملی یا
+# شناسنامه کنار دست‌نوشته را بفرستد و ادمین تایید کند. همان قاعدهٔ سایت
 # (account/identity.py). وضعیتِ جدا یعنی حلقهٔ پیگیری تحویل، هشدارِ سفارشِ
 # گیرکرده و ریفاندِ خودکار سراغش نمی‌روند.
 
@@ -7646,8 +7646,11 @@ def identity_card_owned_by_other(telegram_id, card_number) -> bool:
 
 
 def submit_identity_verification(telegram_id, card_number, phone, card_file_id,
-                                 national_file_id, selfie_file_id):
-    """ثبت یا جایگزینیِ مدارک. خروجی: (Id, Status) — تاییدشده تایید می‌ماند."""
+                                 national_file_id, selfie_file_id=''):
+    """ثبت یا جایگزینیِ مدارک. خروجی: (Id, Status) — تاییدشده تایید می‌ماند.
+
+    سلفی دیگر خواسته نمی‌شود (خالی)؛ فقط مدارکِ قدیمی آن را دارند.
+    """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone",'

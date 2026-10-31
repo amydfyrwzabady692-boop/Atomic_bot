@@ -5,8 +5,8 @@
 شد، از همان خریدار مدارک خواسته می‌شود. rule_text فقط برای پنل ادمین است.
 بعد از پرداخت: اگر جمع خریدهای پرداخت‌شدهٔ چند روز اخیرِ خریدارِ احرازنشده
 به سقف برسد، سفارش «kyc_hold» می‌ماند (db.claim_identity_hold) تا خریدار شماره
-و عکس کارت بانکی، عکس کارت ملی کنار یک دست‌نوشتهٔ کوتاه (با تاریخ، امضا و اثر
-انگشت) و سلفی با کارت ملی را بفرستد و ادمین تایید کند.
+و عکس کارت بانکی، و عکس کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه (با تاریخ،
+امضا و اثر انگشت) را بفرستد و ادمین تایید کند.
 با تایید، سفارش‌های منتظر خودکار تحویل می‌شوند.
 
 احراز سایت و ربات مشترک است: بعد از اشتراکِ شماره، اگر حسابِ سایت با همین شماره
@@ -48,13 +48,12 @@ SAMPLES = Path(__file__).resolve().parent.parent / 'assets' / 'identity_samples'
 # file_idِ نمونه‌ها بعد از اولین ارسال؛ آپلودِ دوباره لازم نیست.
 _SAMPLE_IDS: dict[str, str] = {}
 
-WAIT_PHONE, WAIT_NUMBER, WAIT_CARD, WAIT_NATIONAL, WAIT_SELFIE = range(5)
+WAIT_PHONE, WAIT_NUMBER, WAIT_CARD, WAIT_NATIONAL = range(4)
 
 REJECT_REASONS = {
     'blur': 'عکس‌ها تار یا ناخوانا است',
-    'name': 'نام کارت بانکی با کارت ملی یکی نیست',
+    'name': 'نام کارت بانکی با کارت ملی یا شناسنامه یکی نیست',
     'note': 'دست‌نوشته ناقص است (متن، تاریخ، امضا یا اثر انگشت)',
-    'selfie': 'در سلفی صورت یا کارت ملی واضح نیست',
     'card': 'شمارهٔ کارت با عکس کارت یکی نیست',
     'other': 'مدارک ناقص یا نامعتبر است',
 }
@@ -115,7 +114,7 @@ def review_checklist(sent_at=None):
     sent = _tehran_day(sent_at)
     oldest, newest = note_date(sent - timedelta(days=NOTE_MAX_AGE_DAYS)), note_date(sent)
     return [
-        'نام کارت بانکی، کارت ملی و دست‌نوشته یکی باشد و چهرهٔ سلفی همان عکس کارت ملی.',
+        'نام روی کارت بانکی، کارت ملی یا شناسنامه و دست‌نوشته یکی باشد.',
         f'دست‌نوشته: متن احراز، امضا، اثر انگشت و تاریخی از {oldest} تا {newest}.',
     ]
 
@@ -193,9 +192,8 @@ def hold_user_text(order_id, state) -> str:
     head = f'✅ پرداخت سفارش #{order_id} انجام شد.\n\n'
     if state == 'pending':
         return head + '⏳ مدارک احراز هویتت در صف بررسی است؛ بعد از تایید، سفارش خودکار تحویل می‌شود.'
-    return head + ('برای تکمیل این سفارش یک‌بار احراز هویت لازم است: شماره و عکس کارت بانکی، '
-                   'عکس کارت ملی کنار یک دست‌نوشتهٔ کوتاهِ امضاشده، و یک سلفی که کارت ملی را '
-                   'کنار صورتت گرفته‌ای.\n'
+    return head + ('برای تکمیل این سفارش یک‌بار احراز هویت لازم است: عکس کارت بانکی، و '
+                   'عکس کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه.\n'
                    'پولت محفوظ است و موجودی سفارش برایت کنار گذاشته شده.')
 
 
@@ -256,15 +254,12 @@ def _intro_text() -> str:
     return (
         '🪪 *احراز هویت — یک‌بار برای همیشه*\n'
         '━━━━━━━━━━━━━━━\n'
-        'برای تکمیل سفارشت یک‌بار احراز هویت لازم است.\n\n'
-        'چهار چیز لازم است:\n'
+        'برای تکمیل سفارشت یک‌بار احراز هویت لازم است:\n'
         '۱. شمارهٔ موبایلِ همین حساب تلگرام\n'
-        '۲. شماره و عکس کارت بانکی (CVV2 و تاریخ انقضا را بپوشان)\n'
-        '۳. کارت ملی کنار یک دست‌نوشتهٔ کوتاه با امضا و اثر انگشت\n'
-        '۴. سلفی با کارت ملی کنار صورتت\n\n'
-        '✍️ کاغذ و خودکار (و استامپ برای اثر انگشت) دم دستت باشد.\n'
+        '۲. شماره و عکس کارت بانکی\n'
+        '۳. کارت ملی یا شناسنامه کنار یک دست‌نوشته\n\n'
         '🔒 مدارک فقط برای مدیران فروشگاه فرستاده می‌شود.\n\n'
-        '📱 *قدم ۱ از ۴* — دکمهٔ «اشتراک شماره» پایین صفحه را بزن.'
+        '📱 *قدم ۱ از ۳* — دکمهٔ «اشتراک شماره» پایین صفحه را بزن.'
     )
 
 
@@ -351,8 +346,8 @@ async def idv_phone(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        f'✅ شماره {phone} ثبت شد.\n\n💳 *قدم ۲ از ۴ — شماره کارت بانکی*\n'
-        'شمارهٔ ۱۶ رقمیِ کارتی که با آن خرید می‌کنی را بفرست (کارت باید به نام خودت باشد).',
+        f'✅ شماره {phone} ثبت شد.\n\n💳 *قدم ۲ از ۳ — کارت بانکی*\n'
+        'شمارهٔ ۱۶ رقمیِ کارت بانکی‌ات را بفرست.',
         parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
     return WAIT_NUMBER
 
@@ -401,29 +396,17 @@ async def _send_sample(message, name, caption):
         await message.reply_text(caption, parse_mode='Markdown', reply_markup=_cancel_kb())
 
 
-CARD_CAPTION = ('📷 *عکس روی کارت بانکی* — مثل نمونه\n'
-                '✓ شماره و نام صاحب کارت کامل و خوانا باشد.\n'
-                '✓ CVV2 و تاریخ انقضا را با انگشت یا کاغذ بپوشان؛ لازمشان نداریم.\n'
-                'عکس را *به‌صورت عکس* بفرست، نه فایل.')
+CARD_CAPTION = '📷 *عکس کارت بانکی* — مثل نمونه'
 
 
 def national_caption(day=None) -> str:
-    """قدمِ کارت ملی کنار دست‌نوشته، با تاریخِ امروز در متن."""
+    """قدمِ آخر: کارت ملی یا شناسنامه کنار دست‌نوشته، با تاریخِ امروز در متن."""
     # Markdownِ قدیمی «[» را شروعِ لینک می‌داند.
     first, second = (line.replace('[', '\\[') for line in note_lines(day))
-    return ('🪪 *قدم ۳ از ۴ — کارت ملی کنار دست‌نوشته* — مثل نمونه\n'
-            'این دو خط را با خودکار روی کاغذ بنویس، امضا کن و اثر انگشتت را بزن:\n\n'
-            f'«{first}\n{second}»\n\n'
-            '✓ جای \\[نام و نام خانوادگی] نامت را دقیقاً مثل کارت ملی بنویس؛ تاریخ، همان امروز.\n'
-            '✓ دست‌نویس باشد، نه تایپ یا چاپ. اثر انگشت با استامپ (یا انگشتی که با ماژیک '
-            'رنگ کرده‌ای).\n'
-            '✓ کارت ملی را کنار کاغذ بگذار؛ هر دو کامل و خوانا در یک عکس.\n'
-            '✓ نام روی کارت ملی همان نام صاحب کارت بانکی باشد.')
-
-
-SELFIE_CAPTION = ('🤳 *قدم ۴ از ۴ — سلفی با کارت ملی* — مثل نمونه\n'
-                  '✓ کارت ملی را کنار صورتت بگیر؛ صورت کامل و کارت خوانا در یک عکس.\n'
-                  '✓ نور کافی، بدون ماسک و عینک آفتابی، بدون فیلتر.')
+    return ('🪪 *قدم ۳ از ۳ — کارت ملی یا شناسنامه کنار دست‌نوشته* — مثل نمونه\n'
+            'این متن را روی کاغذ بنویس، امضا کن و اثر انگشت بزن؛ کارت ملی یا شناسنامه را '
+            'کنارش بگذار و از هر دو یک عکس بگیر:\n\n'
+            f'«{first}\n{second}»')
 
 
 async def idv_number(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -474,17 +457,6 @@ async def idv_card_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return WAIT_NATIONAL
 
 
-async def idv_national(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if await _left_for_menu(update, ctx):
-        return ConversationHandler.END
-    file_id = await _photo_or_retry(update)
-    if not file_id:
-        return WAIT_NATIONAL
-    ctx.user_data.setdefault('idv', {})['national'] = file_id
-    await _send_sample(update.message, 'selfie', SELFIE_CAPTION)
-    return WAIT_SELFIE
-
-
 def review_keyboard(verification_id, prefix='idv'):
     vid = int(verification_id)
     return InlineKeyboardMarkup([[
@@ -502,7 +474,7 @@ def reasons_keyboard(verification_id, prefix='idv'):
 
 
 def admin_caption(verification_id, user, number, phone, held, other_account,
-                  sent_at=None) -> str:
+                  sent_at=None, legacy_selfie=False) -> str:
     uname = f'@{user.username}' if getattr(user, 'username', None) else '—'
     held_total = sum(max(0, int(row[2] or 0) - int(row[3] or 0)) for row in held)
     lines = [
@@ -516,7 +488,8 @@ def admin_caption(verification_id, user, number, phone, held, other_account,
         lines.append(f'⏸ سفارش منتظر: {len(held)} (جمع {held_total:,} تومان)')
     if other_account:
         lines.append('⚠️ این کارت روی حساب دیگری هم ثبت شده است.')
-    lines += ['', 'عکس‌ها به ترتیب: کارت بانکی، کارت ملی کنار دست‌نوشته، سلفی با کارت ملی.']
+    lines += ['', 'عکس‌ها به ترتیب: کارت بانکی، کارت ملی یا شناسنامه کنار دست‌نوشته'
+              + ('، سلفی (مدارک قدیمی).' if legacy_selfie else '.')]
     lines += [f'✓ {line}' for line in review_checklist(sent_at)]
     lines.append('با تایید، سفارش‌های منتظرِ این خریدار خودکار تحویل می‌شوند.')
     return '\n'.join(lines)
@@ -541,15 +514,16 @@ async def send_for_review(bot, verification_id, caption, file_ids, recipients=No
     return notices
 
 
-async def idv_selfie(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def idv_national(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """قدمِ آخر: عکسِ کارت ملی یا شناسنامه کنار دست‌نوشته؛ بعدش مدارک برای بررسی می‌رود."""
     if await _left_for_menu(update, ctx):
         return ConversationHandler.END
     file_id = await _photo_or_retry(update)
     if not file_id:
-        return WAIT_SELFIE
+        return WAIT_NATIONAL
     data = ctx.user_data.get('idv') or {}
-    data['selfie'] = file_id
-    if not all(data.get(k) for k in ('phone', 'number', 'card', 'national', 'selfie')):
+    data['national'] = file_id
+    if not all(data.get(k) for k in ('phone', 'number', 'card', 'national')):
         ctx.user_data.pop('idv', None)
         await update.message.reply_text('اطلاعات ناقص ماند؛ از اول شروع کن.',
                                         reply_markup=start_keyboard())
@@ -557,7 +531,7 @@ async def idv_selfie(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     verification_id, status = await asyncio.to_thread(
         submit_identity_verification, user.id, data['number'], data['phone'], data['card'],
-        data['national'], data['selfie'])
+        data['national'])
     ctx.user_data.pop('idv', None)
     if status == 'approved':
         released = await release_and_deliver(ctx.bot, user.id)
@@ -569,8 +543,7 @@ async def idv_selfie(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     held = await asyncio.to_thread(list_identity_held_orders, user.id, 20)
     other = await asyncio.to_thread(identity_card_owned_by_other, user.id, data['number'])
     caption = admin_caption(verification_id, user, data['number'], data['phone'], held, other)
-    await send_for_review(ctx.bot, verification_id, caption,
-                          [data['card'], data['national'], data['selfie']])
+    await send_for_review(ctx.bot, verification_id, caption, [data['card'], data['national']])
     await update.message.reply_text(
         '✅ مدارکت ثبت شد و در صف بررسی است. بعد از تایید همین‌جا خبرت می‌کنیم'
         + (' و سفارش‌های منتظرت خودکار تحویل می‌شوند.' if held else '.'),
@@ -603,7 +576,6 @@ def identity_conversation_handler():
             WAIT_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, idv_number)],
             WAIT_CARD: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_card_photo)],
             WAIT_NATIONAL: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_national)],
-            WAIT_SELFIE: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_selfie)],
         },
         fallbacks=[
             CommandHandler('cancel', idv_cancel),
@@ -769,7 +741,8 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             username = None
             full_name = ''
 
-        caption = admin_caption(pk, _Who, row[2], row[3], held, other, sent_at=row[12])
+        caption = admin_caption(pk, _Who, row[2], row[3], held, other, sent_at=row[12],
+                                legacy_selfie=bool(row[6]))
         await send_for_review(ctx.bot, pk, caption, [row[4], row[5], row[6]],
                               recipients=[update.effective_user.id])
     elif kind == 'order':

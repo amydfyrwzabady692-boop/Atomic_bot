@@ -2,8 +2,8 @@
 
 پیش از پرداخت فقط «بازگشت وجه نداریم» پذیرفته می‌شود. بعد از پرداخت، اگر جمع
 خریدهای پرداخت‌شدهٔ چهار روزِ خریدارِ احرازنشده (با همین سفارش) به یک میلیون
-تومان برسد، سفارش «kyc_hold» می‌ماند تا کارت بانکی، کارت ملی و سلفی با کارت ملی
-تایید شود؛ با تایید، سفارش‌های منتظر خودکار تحویل می‌شوند.
+تومان برسد، سفارش «kyc_hold» می‌ماند تا عکس کارت بانکی، و کارت ملی یا شناسنامه
+کنار دست‌نوشته تایید شود؛ با تایید، سفارش‌های منتظر خودکار تحویل می‌شوند.
 """
 import asyncio
 import pathlib
@@ -320,9 +320,9 @@ class AdminReviewTests(unittest.TestCase):
     def test_site_documents_are_decided_on_the_site(self):
         with patch('site_api.call_site_identity_review',
                    return_value={'ok': True, 'status': 'rejected', 'released': 0}) as call:
-            self.review('site_idv_rj_7_selfie')
+            self.review('site_idv_rj_7_note')
         self.assertEqual(call.call_args.args[:2], (7, 'reject'))
-        self.assertEqual(call.call_args.args[4], identity.REJECT_REASONS['selfie'])
+        self.assertEqual(call.call_args.args[4], identity.REJECT_REASONS['note'])
 
     def test_strangers_cannot_review(self):
         query = _admin_query('idv_ok_5')
@@ -412,7 +412,9 @@ class ConversationTests(unittest.TestCase):
         with patch.object(identity, 'identity_card_owned_by_other', return_value=False):
             state = run(identity.idv_number(update, ctx))
         self.assertEqual(state, identity.WAIT_CARD)
-        self.assertIn('CVV2', update.message.reply_photo.call_args.kwargs['caption'])
+        caption = update.message.reply_photo.call_args.kwargs['caption']
+        self.assertIn('عکس کارت بانکی', caption)
+        self.assertNotIn('CVV', caption)
 
     def test_a_file_instead_of_a_photo_is_asked_again(self):
         ctx = SimpleNamespace(user_data={'idv': {}}, bot=None)
@@ -421,27 +423,28 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(run(identity.idv_card_photo(update, ctx)), identity.WAIT_CARD)
         self.assertIn('به‌صورت عکس', update.message.reply_text.call_args.args[0])
 
-    def test_the_last_photo_sends_everything_for_review(self):
+    def test_the_note_photo_is_the_last_step_and_sends_both_for_review(self):
         bot = SimpleNamespace(send_media_group=AsyncMock(), send_message=AsyncMock(
             return_value=SimpleNamespace(message_id=77)))
         ctx = SimpleNamespace(bot=bot, user_data={'idv': {
-            'phone': '09125550000', 'number': CARD, 'card': 'F1', 'national': 'F2'}})
-        update = self._update(photo=[SimpleNamespace(file_id='F3')])
+            'phone': '09125550000', 'number': CARD, 'card': 'F1'}})
+        update = self._update(photo=[SimpleNamespace(file_id='F2')])
         with patch.object(identity, 'submit_identity_verification', return_value=(5, 'pending')) as sub, \
                 patch.object(identity, 'list_identity_held_orders',
                              return_value=[(9, '42', 1_200_000, 0, 'card_transfer', None)]), \
                 patch.object(identity, 'identity_card_owned_by_other', return_value=False), \
                 patch.object(identity, 'admin_ids', return_value=[1, 2]), \
                 patch.object(identity, 'remember_notices') as remember:
-            state = run(identity.idv_selfie(update, ctx))
+            state = run(identity.idv_national(update, ctx))
         self.assertEqual(state, identity.ConversationHandler.END)
-        sub.assert_called_once_with(42, CARD, '09125550000', 'F1', 'F2', 'F3')
+        sub.assert_called_once_with(42, CARD, '09125550000', 'F1', 'F2')
         self.assertEqual(bot.send_media_group.await_count, 2)
         media = bot.send_media_group.call_args.kwargs['media']
-        self.assertEqual([m.media for m in media], ['F1', 'F2', 'F3'])
+        self.assertEqual([m.media for m in media], ['F1', 'F2'])
         caption = bot.send_message.call_args.kwargs['text']
         self.assertIn('سفارش منتظر: 1', caption)
-        self.assertIn('کارت ملی کنار دست‌نوشته', caption)
+        self.assertIn('کارت ملی یا شناسنامه کنار دست‌نوشته', caption)
+        self.assertNotIn('سلفی', caption)
         self.assertIn(f'تاریخی از {identity.note_date(identity._tehran_day() - timedelta(days=3))} '
                       f'تا {identity.note_date()}', caption)
         self.assertEqual(remember.call_args.args[:2], ('bot_idv', 5))
@@ -454,7 +457,7 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(ctx.user_data['idv']['card'], 'F1')
         kwargs = update.message.reply_photo.call_args.kwargs
         self.assertTrue(kwargs['photo'].name.endswith('national_note.png'))
-        self.assertIn('کارت ملی کنار دست‌نوشته', kwargs['caption'])
+        self.assertIn('کارت ملی یا شناسنامه کنار دست‌نوشته', kwargs['caption'])
         self.assertIn(f'تاریخ: {identity.note_date()} — امضا و اثر انگشت', kwargs['caption'])
         self.assertEqual(kwargs['parse_mode'], 'Markdown')
 
@@ -496,7 +499,8 @@ class NoteTests(unittest.TestCase):
         self.assertLessEqual(len(text), 1024)
         self.assertIn('\\[نام و نام خانوادگی]', text)
         self.assertIn('تاریخ: ۱۴۰۵/۰۸/۰۸ — امضا و اثر انگشت', text)
-        self.assertIn('امضا کن و اثر انگشتت را بزن', text)
+        self.assertIn('امضا کن و اثر انگشت بزن', text)
+        self.assertIn('قدم ۳ از ۳', text)
 
     def test_every_step_text_mentions_the_note_but_never_the_rule(self):
         with patch.object(identity, 'identity_threshold_toman', return_value=1_000_000), \
@@ -505,9 +509,15 @@ class NoteTests(unittest.TestCase):
             terms = identity.terms_text()
             hold = identity.hold_user_text(7, 'none')
             waiting = identity.hold_user_text(7, 'pending')
-        self.assertIn('۳. کارت ملی کنار یک دست‌نوشتهٔ کوتاه با امضا و اثر انگشت', intro)
+        self.assertIn('۳. کارت ملی یا شناسنامه کنار یک دست‌نوشته', intro)
         self.assertTrue(legacy_markdown_ok(intro), intro)
-        self.assertIn('کارت ملی کنار یک دست‌نوشتهٔ کوتاهِ امضاشده', hold)
+        self.assertIn('کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه', hold)
+        # فقط دو عکس: سلفی و توضیحِ اضافه (CVV2) دیگر نیست.
+        for text in (intro, hold, identity.CARD_CAPTION, identity.national_caption()):
+            self.assertNotIn('سلفی', text)
+            self.assertNotIn('CVV', text)
+        self.assertFalse(hasattr(identity, 'WAIT_SELFIE'))
+        self.assertNotIn('selfie', identity.REJECT_REASONS)
         self.assertNotIn('احراز', terms)
         for text in (intro, terms, hold, waiting):
             for mark in RULE_MARKS:
@@ -517,7 +527,10 @@ class NoteTests(unittest.TestCase):
         sent = datetime(2026, 10, 30, 5, 30, tzinfo=timezone.utc)  # ۹ صبح تهران
         user = SimpleNamespace(id=42, username='buyer', full_name='علی رضایی')
         text = identity.admin_caption(5, user, CARD, '09125550000', [], False, sent_at=sent)
-        self.assertIn('عکس‌ها به ترتیب: کارت بانکی، کارت ملی کنار دست‌نوشته، سلفی با کارت ملی.', text)
+        self.assertIn('عکس‌ها به ترتیب: کارت بانکی، کارت ملی یا شناسنامه کنار دست‌نوشته.', text)
+        old = identity.admin_caption(5, user, CARD, '09125550000', [], False, sent_at=sent,
+                                     legacy_selfie=True)
+        self.assertIn('، سلفی (مدارک قدیمی).', old)
         self.assertIn('امضا، اثر انگشت و تاریخی از ۱۴۰۵/۰۸/۰۵ تا ۱۴۰۵/۰۸/۰۸', text)
 
     def test_a_missing_note_is_a_rejection_reason(self):
@@ -634,7 +647,7 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn('احراز', inspect.getsource(gems))
 
     def test_the_sample_photos_ship_with_the_bot(self):
-        for name in ('bank_card', 'national_note', 'selfie'):
+        for name in ('bank_card', 'national_note'):
             data = (ROOT / 'assets' / 'identity_samples' / f'{name}.png').read_bytes()
             self.assertEqual(data[:8], b'\x89PNG\r\n\x1a\n')
             self.assertGreater(int.from_bytes(data[16:20], 'big'), 600)  # پهنا از IHDR
