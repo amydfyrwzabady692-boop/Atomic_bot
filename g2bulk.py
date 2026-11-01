@@ -163,6 +163,22 @@ def parse_stars_amount(name):
     return amount if amount > 0 else None
 
 
+def parse_premium_months(name):
+    """«3 Months Premium» / «Telegram Premium 1 Year» → تعداد ماه؛ هر چیز دیگر None."""
+    text = str(name or '').strip().casefold()
+    if 'premium' not in text:
+        return None
+    match = re.search(r'(\d+)\s*(?:months?|mos?\b|ماه)', text)
+    if match:
+        months = int(match.group(1))
+    else:
+        year = re.search(r'(\d+)?\s*(?:years?|yr\b|سال)', text)
+        if not year:
+            return None
+        months = 12 * int(year.group(1) or 1)
+    return months if 0 < months <= 24 else None
+
+
 def stars_amount_for_sale(amount):
     try:
         value = int(amount)
@@ -999,7 +1015,10 @@ def get_stars_snapshot(force=False):
         for item in catalogue.get('catalogues') or []:
             name = str(item.get('name') or '').strip()
             stars = parse_stars_amount(name)
-            if not name or not stars_amount_for_sale(stars):
+            # همان کاتالوگِ «Telegram» تلگرام پرمیوم هم دارد («3 Months Premium»)؛
+            # با همان آیدی سفارش داده می‌شود، فقط جدا نمایش داده می‌شود.
+            months = None if stars else parse_premium_months(name)
+            if not name or not (stars_amount_for_sale(stars) or months):
                 continue
             try:
                 cost = Decimal(str(item.get('amount')))
@@ -1010,10 +1029,13 @@ def get_stars_snapshot(force=False):
             prices_by_name[_normalise_catalogue_name(name)] = cost
             items.append({
                 'name': name,
-                'stars': stars,
+                'kind': 'premium' if months else 'stars',
+                'stars': stars or 0,
+                'months': months or 0,
                 'cost_usd': cost,
             })
-        items.sort(key=lambda row: (row['stars'], row['cost_usd']))
+        items.sort(key=lambda row: (row['kind'] != 'stars', row['stars'] or row['months'],
+                                    row['cost_usd']))
         result = {
             'ok': True,
             'balance': balance,

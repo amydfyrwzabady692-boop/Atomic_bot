@@ -1020,17 +1020,34 @@ def _stars_title(stars_amount, catalogue_name=''):
         amount = 0
     if amount > 0:
         return f'⭐ {amount:,} استارز'
+    months = g2bulk.parse_premium_months(catalogue_name)
+    if months:
+        return premium_title(months)
     return str(catalogue_name or 'استارز تلگرام').strip()
 
 
-def list_star_packages():
-    """بسته‌های استارز از دیتابیس — سریع برای دکمه‌ها."""
+def premium_title(months):
+    return f'💎 تلگرام پرمیوم {int(months)} ماهه'
+
+
+def is_premium_package(pkg):
+    """بستهٔ پرمیوم (نه استارز) — از ستونِ Kind، یا از نامِ کاتالوگ برای ردیف‌های قدیمی."""
+    if not pkg:
+        return False
+    return (pkg.get('kind') == 'premium'
+            or bool(g2bulk.parse_premium_months(pkg.get('catalogue') or '')))
+
+
+def list_star_packages(kind='stars'):
+    """بسته‌های استارز (یا پرمیومِ تلگرام با kind='premium') — سریع برای دکمه‌ها."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
-            '"IsAvailable","IsActive","SortOrder",COALESCE("IsManual",false) '
-            'FROM "StarPackages" WHERE "IsActive"=true '
-            'ORDER BY "SortOrder","StarsAmount","Id"'
+            '"IsAvailable","IsActive","SortOrder",COALESCE("IsManual",false),'
+            'COALESCE("Kind",\'stars\'),COALESCE("Months",0) '
+            'FROM "StarPackages" WHERE "IsActive"=true AND COALESCE("Kind",\'stars\')=%s '
+            'ORDER BY "SortOrder","StarsAmount","Months","Id"',
+            (kind,),
         )
         rows = cur.fetchall()
     return [
@@ -1045,6 +1062,8 @@ def list_star_packages():
             'active': bool(row[7]),
             'sort': int(row[8] or 0),
             'is_manual': bool(row[9]),
+            'kind': row[10],
+            'months': int(row[11] or 0),
         }
         for row in rows
     ]
@@ -1058,7 +1077,8 @@ def get_star_package(package_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","CatalogueName","Title","StarsAmount","CostUsd","Price",'
-            '"IsAvailable","IsActive",COALESCE("IsManual",false) FROM "StarPackages" WHERE "Id"=%s',
+            '"IsAvailable","IsActive",COALESCE("IsManual",false),'
+            'COALESCE("Kind",\'stars\'),COALESCE("Months",0) FROM "StarPackages" WHERE "Id"=%s',
             (package_id,),
         )
         row = cur.fetchone()
@@ -1075,6 +1095,8 @@ def get_star_package(package_id):
         'available': (bool(row[6]) or is_manual) and bool(row[7]),
         'active': bool(row[7]),
         'is_manual': is_manual,
+        'kind': row[9],
+        'months': int(row[10] or 0),
     }
 
 
@@ -1170,17 +1192,21 @@ def star_user_delivery_text(order_id):
     if not info:
         return None
     handle = f"@{info['target_username']}"
+    premium = bool(g2bulk.parse_premium_months(info.get('catalogue')))
     if str(info.get('g2_status') or '').upper() == 'COMPLETED':
         return (
             f"✅ سفارش #{order_id} تحویل شد\n"
-            f"⭐ {info['title']}\n"
+            f"{info['title']}\n"
             f"اکانت: {handle}\n"
             f"مبلغ پرداختی: {int(info['sale_toman']):,} تومان\n\n"
-            "استارز روی همان اکانت نشسته است. از تنظیمات تلگرام → Stars چک کن."
+            + ("تلگرام پرمیوم روی همان اکانت فعال شد؛ اگر تیکِ پرمیوم را نمی‌بینی، یک‌بار "
+               "تلگرام را ببند و باز کن." if premium else
+               "استارز روی همان اکانت نشسته است. از تنظیمات تلگرام → Stars چک کن.")
         )
     return (
-        f"✅ سفارش #{order_id} پرداخت شد و استارز در حال واریز است.\n"
-        f"⭐ {info['title']}\n"
+        f"✅ سفارش #{order_id} پرداخت شد و "
+        + ("پرمیوم در حال فعال‌سازی است.\n" if premium else "استارز در حال واریز است.\n")
+        + f"{info['title']}\n"
         f"اکانت: {handle}\n"
         "نتیجه نهایی به‌صورت خودکار برایت ارسال می‌شود."
     )
@@ -1290,15 +1316,9 @@ def _fulfill_star_order(order_id, star):
             return False, f'refunded:{int(refunded)}'
         return False, 'واریز استارز ناموفق بود.'
 
-    available, cost, _balance, error = g2bulk.can_fulfill_stars(
-        star['catalogue'], force=True
-    )
-    if not available:
-        update_star_g2(star['id'], status='REJECTED')
-        ok_refund, refunded = _refund_failed_order(order_id)
-        if ok_refund:
-            return False, f'refunded:{int(refunded)}'
-        return False, error or 'موجودی استارز کافی نیست.'
+    # موجودی پیش از ساختِ سفارش چک شده (create_star_order_atomic). چکِ دوباره بعد
+    # از پرداخت هر قطعیِ لحظه‌ایِ کاتالوگ را به ریفاندِ سفارشِ پرداخت‌شده تبدیل
+    # می‌کرد، بی‌آنکه سفارشی ثبت شود؛ حالا فقط ردِ صریحِ تامین‌کننده ریفاند دارد.
     if not username:
         update_star_g2(star['id'], status='REJECTED')
         ok_refund, refunded = _refund_failed_order(order_id)
@@ -1338,10 +1358,32 @@ def _fulfill_star_order(order_id, star):
         update_order_status(order_id, 'processing')
         return True, 'processing'
     update_star_g2(star['id'], status='REJECTED')
+    _set_star_error(star['id'], f'رد تامین‌کننده: {result.get("error") or "—"}')
     ok_refund, refunded = _refund_failed_order(order_id)
     if ok_refund:
         return False, f'refunded:{int(refunded)}'
     return False, result.get('error') or 'ثبت سفارش استارز ناموفق بود.'
+
+
+def _set_star_error(star_id, error):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('UPDATE "StarOrders" SET "LastError"=%s,"UpdatedAt"=now() WHERE "Id"=%s',
+                        (str(error)[:4000], int(star_id)))
+            conn.commit()
+    except Exception:  # noqa: BLE001 — دلیل کمکی است، نه شرطِ ریفاند
+        _LOG.exception('star order error note failed id=%s', star_id)
+
+
+def star_order_error(order_id):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute('SELECT COALESCE("LastError",\'\') FROM "StarOrders" WHERE "OrderId"=%s',
+                        (int(order_id),))
+            row = cur.fetchone()
+        return row[0] if row else ''
+    except Exception:  # noqa: BLE001
+        return ''
 
 
 def toggle_star_package_manual(package_id):
@@ -1579,24 +1621,28 @@ def sync_star_packages(force=False):
     with get_conn() as conn, conn.cursor() as cur:
         for index, item in enumerate(snapshot.get('items') or []):
             name = item['name']
+            kind = item.get('kind') or 'stars'
+            months = int(item.get('months') or 0)
             sale = int(compute_gem_sale_price(item['cost_usd'], rate, profit))
-            if not g2bulk.stars_amount_for_sale(item['stars']) or sale <= 0 or sale > pg_int_max:
+            valid = (months > 0) if kind == 'premium' else g2bulk.stars_amount_for_sale(item['stars'])
+            if not valid or sale <= 0 or sale > pg_int_max:
                 _LOG.warning(
-                    'skip star package %s amount=%s price=%s',
-                    name, item.get('stars'), sale,
+                    'skip star package %s amount=%s months=%s price=%s',
+                    name, item.get('stars'), months, sale,
                 )
                 continue
             live_names.append(name)
-            title = _stars_title(item['stars'], name)
+            title = premium_title(months) if kind == 'premium' else _stars_title(item['stars'], name)
             savepoint = f'star_pkg_{index}'
             cur.execute(f'SAVEPOINT {savepoint}')
             try:
-                is_manual_default = int(item['stars']) in (1500, 2500) or name in ('1.5K Stars', '2.5K Stars')
+                is_manual_default = kind == 'stars' and (
+                    int(item['stars']) in (1500, 2500) or name in ('1.5K Stars', '2.5K Stars'))
                 cur.execute(
                     '''INSERT INTO "StarPackages"
                        ("CatalogueName","Title","StarsAmount","CostUsd","Price",
-                        "IsAvailable","IsActive","SortOrder","IsManual","UpdatedAt")
-                       VALUES (%s,%s,%s,%s,%s,true,true,%s,%s,now())
+                        "IsAvailable","IsActive","SortOrder","IsManual","Kind","Months","UpdatedAt")
+                       VALUES (%s,%s,%s,%s,%s,true,true,%s,%s,%s,%s,now())
                        ON CONFLICT ("CatalogueName") DO UPDATE SET
                          "Title"=EXCLUDED."Title",
                          "StarsAmount"=EXCLUDED."StarsAmount",
@@ -1605,8 +1651,11 @@ def sync_star_packages(force=False):
                          "IsAvailable"=true,
                          "IsActive"=true,
                          "SortOrder"=EXCLUDED."SortOrder",
+                         "Kind"=EXCLUDED."Kind",
+                         "Months"=EXCLUDED."Months",
                          "UpdatedAt"=now()''',
-                    (name, title, int(item['stars']), str(item['cost_usd']), sale, index, is_manual_default),
+                    (name, title, int(item['stars']), str(item['cost_usd']), sale, index,
+                     is_manual_default, kind, months),
                 )
                 cur.execute(f'RELEASE SAVEPOINT {savepoint}')
                 updated += 1
@@ -4071,6 +4120,10 @@ def ensure_admin_schema():
             "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
         )''',
         '''ALTER TABLE "StarPackages" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
+        # تلگرام پرمیوم از همان کاتالوگ و همان مسیرِ سفارشِ استارز (با آیدی).
+        'ALTER TABLE "StarPackages" ADD COLUMN IF NOT EXISTS "Kind" VARCHAR(10) NOT NULL DEFAULT \'stars\'',
+        '''ALTER TABLE "StarPackages" ADD COLUMN IF NOT EXISTS "Months" INTEGER NOT NULL DEFAULT 0''',
+        'ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "LastError" TEXT NOT NULL DEFAULT \'\'',
         '''ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
         '''UPDATE "StarPackages" SET "IsManual"=true WHERE "StarsAmount" IN (1500, 2500) OR "CatalogueName" IN ('1.5K Stars', '2.5K Stars')''',
         # احراز کارت بانکی: کارت‌به‌کارت فقط از کارتِ تاییدشده.

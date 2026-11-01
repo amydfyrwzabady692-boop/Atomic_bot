@@ -1,4 +1,9 @@
-"""خرید استارز تلگرام با آیدی — شارژ مستقیم G2Bulk."""
+"""خرید استارز و تلگرام پرمیوم با آیدی — شارژ مستقیم G2Bulk.
+
+پرمیوم از همان کاتالوگِ «Telegram» تامین‌کننده می‌آید و با همان آیدی سفارش
+داده می‌شود؛ پس همین مسیر (انتخاب بسته ← آیدی ← تایید ← پرداخت) برای هر دو
+است و فقط فهرست و متن‌ها جدا هستند.
+"""
 import asyncio
 
 from telegram import Update
@@ -15,12 +20,14 @@ from db import (
     get_or_create_user,
     get_star_package,
     get_wallet_balance,
+    is_premium_package,
     list_star_packages,
     normalize_telegram_username,
 )
 from keyboards import (
     main_menu,
     pay_method_keyboard,
+    premium_list_keyboard,
     stars_cancel_keyboard,
     stars_confirm_keyboard,
     stars_detail_keyboard,
@@ -37,6 +44,20 @@ INSTANT_NOTE = (
     '⚡ اگر با درگاه زرین‌پال پرداخت کنی، بعد از تأیید پرداخت '
     'استارز به‌صورت آنی روی اکانت می‌نشیند.'
 )
+PREMIUM_NOTE = (
+    '⚡ بعد از تأیید پرداخت، پرمیوم روی همان آیدی فعال می‌شود؛ رمز یا کدِ ورود '
+    'لازم نیست.'
+)
+PREMIUM_HEADER = (
+    '💎 *تلگرام پرمیوم*\n'
+    '━━━━━━━━━━━━━━━\n'
+    'فعال‌سازی روی آیدی خودت یا هدیه به دوستت — بدون نیاز به رمز.\n'
+    'مدت را انتخاب کن:'
+)
+
+
+def _note(pkg):
+    return PREMIUM_NOTE if is_premium_package(pkg) else INSTANT_NOTE
 
 
 def _is_menu_tap(text):
@@ -84,6 +105,22 @@ async def stars_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=kb)
 
 
+async def premium_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """فهرستِ بسته‌های تلگرام پرمیوم (۳، ۶، ۱۲ ماهه)."""
+    packages = await asyncio.to_thread(list_star_packages, 'premium')
+    text = PREMIUM_HEADER
+    if not packages:
+        text += '\n\n❌ فعلاً بسته‌ای آماده نیست. کمی بعد دوباره سر بزن.'
+        kb = stars_cancel_keyboard()
+    else:
+        kb = premium_list_keyboard(packages)
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
+        return
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=kb)
+
+
 async def show_star(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -93,30 +130,43 @@ async def show_star(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text('❌ بسته پیدا نشد.')
         return
     title = markdown_safe(pkg['title'], 120)
-    text = (
-        f"⭐ *{title}*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🔢 مقدار: *{int(pkg['stars']):,} استارز*\n"
-        f"🚚 تحویل آنی روی آیدی تلگرام\n"
-        f"💰 *{int(pkg['price']):,} تومان*\n\n"
-        "بعد از انتخاب، آیدی اکانتی که می‌خوای استارز بزنی روش را می‌فرستی."
-        f"\n\n{INSTANT_NOTE}"
-    )
-    if _sold_out(pkg):
-        text += '\n\n❌ این مقدار فعلاً ناموجود است.'
-        packages = await asyncio.to_thread(list_star_packages)
-        await query.edit_message_text(
-            text, parse_mode='Markdown',
-            reply_markup=stars_list_keyboard(
-                packages, page=ctx.user_data.get('stars_page', 1),
-                per_page=STARS_PER_PAGE,
-            ),
+    premium = is_premium_package(pkg)
+    if premium:
+        text = (
+            f"*{title}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🗓 مدت: *{int(pkg.get('months') or 0)} ماه*\n"
+            f"🚚 فعال‌سازی روی آیدی تلگرام\n"
+            f"💰 *{int(pkg['price']):,} تومان*\n\n"
+            "بعد از انتخاب، آیدی اکانتی که می‌خوای پرمیوم روش فعال شه را می‌فرستی."
+            f"\n\n{PREMIUM_NOTE}"
         )
+    else:
+        text = (
+            f"⭐ *{title}*\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🔢 مقدار: *{int(pkg['stars']):,} استارز*\n"
+            f"🚚 تحویل آنی روی آیدی تلگرام\n"
+            f"💰 *{int(pkg['price']):,} تومان*\n\n"
+            "بعد از انتخاب، آیدی اکانتی که می‌خوای استارز بزنی روش را می‌فرستی."
+            f"\n\n{INSTANT_NOTE}"
+        )
+    if _sold_out(pkg):
+        text += '\n\n❌ این مورد فعلاً ناموجود است.'
+        if premium:
+            packages = await asyncio.to_thread(list_star_packages, 'premium')
+            markup = premium_list_keyboard(packages)
+        else:
+            packages = await asyncio.to_thread(list_star_packages)
+            markup = stars_list_keyboard(packages, page=ctx.user_data.get('stars_page', 1),
+                                         per_page=STARS_PER_PAGE)
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=markup)
         return
     await query.edit_message_text(
         text, parse_mode='Markdown',
         reply_markup=stars_detail_keyboard(
-            pk, page=ctx.user_data.get('stars_page', 1)
+            pk, page=ctx.user_data.get('stars_page', 1),
+            back='pr_home' if premium else None,
         ),
     )
 
@@ -135,13 +185,15 @@ async def stars_buy_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         'stars': pkg['stars'],
         'price': pkg['price'],
         'catalogue': pkg['catalogue'],
+        'premium': is_premium_package(pkg),
     }
     user = update.effective_user
     own = normalize_telegram_username(getattr(user, 'username', None) or '')
+    target = ('پرمیوم روش فعال شه' if is_premium_package(pkg) else 'استارز بزنی روش')
     await query.edit_message_text(
         f"🆔 *ثبت سفارش — {markdown_safe(pkg['title'], 120)}*\n"
         "━━━━━━━━━━━━━━━\n"
-        "آیدی اکانتی که می‌خوای استارز بزنی روش بده.\n"
+        f"آیدی اکانتی که می‌خوای {target} بده.\n"
         "مثال: `@username`\n\n"
         "شناسه عددی تلگرام قبول نیست؛ باید آیدی عمومی (@) باشد.",
         parse_mode='Markdown',
@@ -325,11 +377,11 @@ async def stars_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✦ *انتخاب روش پرداخت*\n"
         f"سفارش `#{order_id}`\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"⭐ {markdown_safe(title, 120)}\n"
+        f"{markdown_safe(title, 120)}\n"
         f"اکانت `{handle}`\n"
         f"مبلغ: *{price:,}* تومان\n"
         f"موجودی کیف پول: *{balance:,}* ت\n"
-        f"{INSTANT_NOTE}\n"
+        f"{_note(current)}\n"
         "┄┄┄┄┄┄┄┄┄┄┄┄┄┄\nروش را انتخاب کن:"
     )
     await query.edit_message_text(

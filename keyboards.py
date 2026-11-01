@@ -108,7 +108,8 @@ def main_menu():
          _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
         [_kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
          _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
-        [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger')],
+        [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger'),
+         _kbtn('b.menu.prem', '💎 تلگرام پرمیوم', 'primary')],
     ]
     if _referral_menu_visible():
         rows.insert(4, [_kbtn('b.menu.ref', appearance.DEFAULTS['b.menu.ref'], 'success')])
@@ -246,13 +247,31 @@ def stars_list_keyboard(packages, page=1, per_page=8):
     return InlineKeyboardMarkup(buttons)
 
 
-def stars_detail_keyboard(package_id, page=1):
+def stars_detail_keyboard(package_id, page=1, back=None):
+    if back:
+        # پرمیوم: همان مسیرِ خرید، بازگشت به فهرستِ پرمیوم
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ خرید این بسته', callback_data=f'st_buy_{int(package_id)}')],
+            [InlineKeyboardButton('🔙 بازگشت به لیست', callback_data=back)],
+        ])
     return InlineKeyboardMarkup([
         [_ibtn('b.stars.buy', '✅ خرید این استارز', f'st_buy_{int(package_id)}')],
         [InlineKeyboardButton(
             '🔙 بازگشت به لیست', callback_data=f'st_page_{max(1, int(page))}'
         )],
     ])
+
+
+def premium_list_keyboard(packages):
+    """تلگرام پرمیوم: یک دکمه برای هر مدت، با قیمت."""
+    rows = []
+    for pkg in packages or []:
+        label = f"{pkg['title']} — {int(pkg['price']):,} ت"
+        if not pkg.get('available'):
+            label += ' (ناموجود)'
+        rows.append([InlineKeyboardButton(label, callback_data=f"st_{int(pkg['id'])}")])
+    rows.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
+    return InlineKeyboardMarkup(rows)
 
 
 def stars_uid_keyboard(own_username=''):

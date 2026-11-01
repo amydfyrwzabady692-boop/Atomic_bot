@@ -270,6 +270,14 @@ def _failure_reason(order_id, status=''):
         gift = None
     if gift and gift.get('last_error'):
         return str(gift['last_error'])[:900]
+    try:
+        from db import star_order_error
+
+        star_error = star_order_error(order_id)
+    except Exception:  # noqa: BLE001
+        star_error = ''
+    if star_error:
+        return str(star_error)[:900]
     text = str(status or '')
     if text and not text.startswith(('refunded:', 'partial_refunded:')) and text not in (
             'failed', 'processing'):

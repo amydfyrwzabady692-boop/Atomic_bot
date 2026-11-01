@@ -39,7 +39,7 @@ from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens
 from handlers.cart import show_cart
 from handlers.giftcards import giftcard_menu, giftcard_brand, giftcard_show, giftcard_buy
 from handlers.stars import (
-    stars_menu, show_star, stars_conversation_handler,
+    premium_menu, stars_menu, show_star, stars_conversation_handler,
 )
 from handlers.payment import (
     payment_conversation_handler, start_zarinpal, check_zarinpal,
@@ -126,6 +126,7 @@ MENU_ACTIONS = {
     'store': store_menu,
     'sense': sens_menu,
     'stars': stars_menu,
+    'premium': premium_menu,
     'giftcards': giftcard_menu,
     'cart': show_cart,
     'referral': referral_menu,
@@ -982,6 +983,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_gem, pattern='^noop$'))
     app.add_handler(CallbackQueryHandler(stars_menu, pattern=r'^(?:st_home|st_page_\d+)$'))
     app.add_handler(CallbackQueryHandler(show_star, pattern=r'^st_\d+$'))
+    app.add_handler(CallbackQueryHandler(premium_menu, pattern=r'^pr_home$'))
     app.add_handler(CallbackQueryHandler(giftcard_menu, pattern=r'^gc_home$'))
     app.add_handler(CallbackQueryHandler(giftcard_brand, pattern=r'^gc_b_(?:gplay_us|itunes_us|itunes_tr|gplay_tr)$'))
     app.add_handler(CallbackQueryHandler(giftcard_show, pattern=r'^gc_p_\d+$'))
