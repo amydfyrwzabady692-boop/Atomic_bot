@@ -1363,7 +1363,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             weekly_sale = f"{compute_gem_sale_price(cfg['weekly_cost'], rate, cfg['weekly_profit']):,} ت"
             monthly_sale = f"{compute_gem_sale_price(cfg['monthly_cost'], rate, cfg['monthly_profit']):,} ت"
         rate_line = (
-            f'نرخ زنده دلار: *{rate:,}* تومان'
+            f'نرخ دلار (مبنای قیمت‌ها): *{rate:,}* تومان\n'
+            f'= نرخ بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,}'
             if rate else
             'نرخ زنده دلار: *در دسترس نیست* (از نرخ پشتیبان استفاده می‌شود)'
         )
@@ -1507,7 +1508,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         if not snapshot.get('ok'):
             rate_line = (
-                f'نرخ زنده مبنا: {int(fx["rate"]):,} تومان\n'
+                f'نرخ زنده مبنا: {int(fx["rate"]):,} تومان '
+                f'(بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,})\n'
                 f'منبع: {str(fx.get("source") or "—").replace("_", "-")}\n\n'
                 if fx.get('ok') else
                 f'نرخ زنده مبنا دریافت نشد: {fx.get("error") or "نامشخص"}\n\n'
@@ -1525,7 +1527,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '💱 *نرخ زنده دلار و بهای واقعی پک‌ها*',
                 '━━━━━━━━━━━━━━━',
                 (
-                    f'نرخ زنده مبنا: *{int(fx["rate"]):,} تومان*'
+                    f'نرخ زنده مبنا: *{int(fx["rate"]):,} تومان* '
+                    f'(بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,})'
                     if fx.get('ok') else
                     'نرخ زنده مبنا: *دریافت نشد*'
                 ),
@@ -1543,8 +1546,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 for g in admin_list_gems() if g[12]
             ]
             live_rows = (
+                # بها با نرخ خودِ بازار؛ ۵٬۰۰۰ تومانِ روی نرخ جزو سود است.
                 profitability.calculate_live_pack_costs(
-                    configured, snapshot['prices'], fx['rate']
+                    configured, snapshot['prices'], profitability.market_rate(fx)
                 )
                 if fx.get('ok') else []
             )
@@ -1613,7 +1617,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append(f'❌ {catalog.get("error") or "کاتالوگ در دسترس نیست."}')
         else:
             rate = int(catalog.get('usd_toman_rate') or 0)
-            lines.append(f'نرخ دلار: *{rate:,}* تومان')
+            lines.append(f'نرخ دلار (مبنای قیمت‌ها، با ۵٬۰۰۰ اضافه): *{rate:,}* تومان')
             for brand in ('gplay_us', 'itunes_us', 'itunes_tr', 'gplay_tr'):
                 title = g2bulk.gift_card_brand_title(brand)
                 items = (catalog.get('brands') or {}).get(brand) or []
@@ -1814,7 +1818,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             '📈 *سود ناخالص فروش جم*',
             '━━━━━━━━━━━━━━━',
             (
-                f'نرخ زنده فعلی: *{int(current_fx["rate"]):,} تومان*'
+                f'نرخ بازار فعلی: *{profitability.market_rate(current_fx):,} تومان* '
+                f'(مبنای قیمت‌ها {int(current_fx["rate"]):,})'
                 if current_fx.get('ok') else
                 'نرخ زنده فعلی: *دریافت نشد*'
             ),
@@ -2610,7 +2615,8 @@ INPUT_ACTIONS = {
     'admi_callback': ('setting:payment_callback_base', 'آدرس HTTPS پایه callback را بفرست.'),
     'admi_usdrate': (
         'setting:usd_toman_rate',
-        'نرخ پشتیبان هر دلار به تومان را بفرست؛ فقط هنگام قطع نرخ زنده استفاده می‌شود.',
+        'نرخ پشتیبان هر دلار به تومان را بفرست؛ فقط هنگام قطع نرخ زنده استفاده می‌شود. '
+        'نرخ بازار را بنویس؛ ۵٬۰۰۰ تومان خودکار رویش اضافه می‌شود.',
     ),
     'admi_cardnumber': ('setting:card_number', 'شماره کارت ۱۶ رقمی را بفرست.'),
     'admi_cardholder': ('setting:card_holder', 'نام صاحب کارت را بفرست.'),

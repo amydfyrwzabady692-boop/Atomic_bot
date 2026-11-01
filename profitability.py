@@ -12,6 +12,27 @@ NOBITEX_USDT_IRT_ORDERBOOK = (
 _rate_cache = {'at': 0.0, 'value': None}
 
 
+def usd_rate_markup():
+    """تومانی که روی هر نرخ گرفته‌شده اضافه می‌شود تا مبنای قیمت‌ها شود.
+
+    پیش‌فرض ۵٬۰۰۰ تومان (USD_RATE_MARKUP_TOMAN)؛ همان عدد سایت
+    (account_shop/settings.py). روی نرخ زندهٔ نوبیتکس و روی نرخ دستیِ پشتیبان،
+    هر دو، تا مبنا هیچ‌وقت با منبع نرخ عوض نشود.
+    """
+    raw = (os.getenv('USD_RATE_MARKUP_TOMAN') or '').strip()
+    try:
+        return max(0, int(raw)) if raw else 5000
+    except ValueError:
+        return 5000
+
+
+def market_rate(fx):
+    """نرخ خودِ بازار از خروجی get_usd_toman_rate — برای بها و سود، نه قیمت فروش."""
+    if not fx or not fx.get('ok'):
+        return 0
+    return int(fx.get('market_rate') or fx.get('rate') or 0)
+
+
 def calculate_gross_profit(sale_toman, supplier_cost_usd, usd_toman_rate):
     """خروجی (هزینه تامین به تومان، سود ناخالص) با گردکردن حسابداری."""
     try:
@@ -99,7 +120,12 @@ def _request_json(url):
 
 
 def get_usd_toman_rate(force=False):
-    """بهترین ask بازار USDTIRT را از ریال به تومان تبدیل و cache می‌کند."""
+    """بهترین ask بازار USDTIRT را از ریال به تومان تبدیل و cache می‌کند.
+
+    `rate` مبنای قیمت‌گذاری است: نرخ گرفته‌شده + usd_rate_markup() (۵٬۰۰۰ تومان).
+    هر جا قیمت فروش حساب می‌شود (جم، گیفت کارت، استارز، پرمیوم) همین را
+    می‌خواند. `market_rate` خودِ نرخ بازار است، برای بهای واقعی و سود.
+    """
     now = time.monotonic()
     cached = _rate_cache.get('value')
     if not force and cached and now - _rate_cache.get('at', 0) < 60:
@@ -120,9 +146,12 @@ def get_usd_toman_rate(force=False):
         if not 10_000 <= rate <= 10_000_000:
             raise ValueError('نرخ خارج از محدوده ایمن است')
         observed_ms = int(data.get('lastUpdate') or 0) or None
+        markup = usd_rate_markup()
         result = {
             'ok': True,
-            'rate': rate,
+            'rate': rate + markup,
+            'market_rate': rate,
+            'markup': markup,
             'source': 'nobitex_usdtirt_best_ask',
             'observed_ms': observed_ms,
             'fallback': False,
@@ -133,9 +162,12 @@ def get_usd_toman_rate(force=False):
     ) as exc:
         manual = _manual_rate()
         if manual:
+            markup = usd_rate_markup()
             result = {
                 'ok': True,
-                'rate': manual,
+                'rate': manual + markup,
+                'market_rate': manual,
+                'markup': markup,
                 'source': 'manual_fallback',
                 'observed_ms': None,
                 'fallback': True,
@@ -151,5 +183,12 @@ def get_usd_toman_rate(force=False):
 
 
 def get_purchase_rate_snapshot():
-    """Fetch a fresh rate for an immutable purchase-profit snapshot."""
-    return get_usd_toman_rate(force=True)
+    """Fetch a fresh rate for an immutable purchase-profit snapshot.
+
+    سود هر فروش با نرخ خودِ بازار ثبت می‌شود، نه با مبنای قیمت‌گذاری؛ پس
+    ۵٬۰۰۰ تومانِ روی نرخ در گزارش سود، سود دیده می‌شود نه هزینه.
+    """
+    fx = get_usd_toman_rate(force=True)
+    if fx.get('ok') and fx.get('market_rate'):
+        return {**fx, 'rate': int(fx['market_rate'])}
+    return fx

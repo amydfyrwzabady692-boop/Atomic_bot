@@ -34,7 +34,10 @@ class ProfitabilityTests(unittest.TestCase):
     def test_reads_best_ask_and_converts_rial_to_toman(self, _request):
         result = profitability.get_usd_toman_rate(force=True)
         self.assertTrue(result['ok'])
-        self.assertEqual(result['rate'], 100_000)
+        # مبنای قیمت‌ها = نرخ گرفته‌شده + ۵٬۰۰۰ تومان
+        self.assertEqual(result['market_rate'], 100_000)
+        self.assertEqual(result['markup'], 5_000)
+        self.assertEqual(result['rate'], 105_000)
         self.assertEqual(result['source'], 'nobitex_usdtirt_best_ask')
         self.assertFalse(result['fallback'])
 
@@ -43,9 +46,31 @@ class ProfitabilityTests(unittest.TestCase):
     def test_uses_labeled_manual_fallback_when_live_rate_fails(self, _request):
         result = profitability.get_usd_toman_rate(force=True)
         self.assertTrue(result['ok'])
-        self.assertEqual(result['rate'], 123_456)
+        self.assertEqual(result['market_rate'], 123_456)
+        self.assertEqual(result['rate'], 128_456)
         self.assertEqual(result['source'], 'manual_fallback')
         self.assertTrue(result['fallback'])
+
+    @patch.object(profitability, '_request_json', return_value={
+        'status': 'ok', 'asks': [['1000000', '50']]})
+    @patch.dict('os.environ', {'USD_RATE_MARKUP_TOMAN': '0'})
+    def test_the_markup_can_be_set_from_the_environment(self, _request):
+        result = profitability.get_usd_toman_rate(force=True)
+        self.assertEqual(result['rate'], result['market_rate'])
+
+    @patch.object(profitability, '_request_json', return_value={
+        'status': 'ok', 'asks': [['50000', '50']]})
+    @patch.dict('os.environ', {'USD_TOMAN_RATE': ''})
+    def test_an_absurd_market_rate_is_refused_before_any_markup(self, _request):
+        with patch('db.get_setting', return_value=''):
+            result = profitability.get_usd_toman_rate(force=True)
+        self.assertFalse(result['ok'])
+
+    def test_market_rate_reads_the_unmarked_rate(self):
+        self.assertEqual(profitability.market_rate(
+            {'ok': True, 'rate': 105_000, 'market_rate': 100_000}), 100_000)
+        self.assertEqual(profitability.market_rate({'ok': True, 'rate': 92_000}), 92_000)
+        self.assertEqual(profitability.market_rate({'ok': False}), 0)
 
     def test_rejects_non_positive_profit_inputs(self):
         with self.assertRaises(ValueError):
@@ -68,6 +93,14 @@ class ProfitabilityTests(unittest.TestCase):
         result = profitability.get_purchase_rate_snapshot()
         self.assertEqual(result['rate'], 100_000)
         get_rate.assert_called_once_with(force=True)
+
+    @patch.object(profitability, 'get_usd_toman_rate')
+    def test_profit_snapshots_use_the_market_rate_not_the_price_base(self, get_rate):
+        get_rate.return_value = {'ok': True, 'rate': 105_000, 'market_rate': 100_000,
+                                 'markup': 5_000, 'source': 'nobitex_usdtirt_best_ask'}
+        result = profitability.get_purchase_rate_snapshot()
+        self.assertEqual(result['rate'], 100_000)
+        self.assertEqual(result['source'], 'nobitex_usdtirt_best_ask')
 
 
 if __name__ == '__main__':
