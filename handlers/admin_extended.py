@@ -1364,7 +1364,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             monthly_sale = f"{compute_gem_sale_price(cfg['monthly_cost'], rate, cfg['monthly_profit']):,} ت"
         rate_line = (
             f'نرخ دلار (مبنای قیمت‌ها): *{rate:,}* تومان\n'
-            f'= نرخ بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,}'
+            f'= نرخ بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,}\n'
+            f'منبع: {profitability.source_label(fx)}'
             if rate else
             'نرخ زنده دلار: *در دسترس نیست* (از نرخ پشتیبان استفاده می‌شود)'
         )
@@ -1387,7 +1388,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'بهای دلاری: *${cfg["monthly_cost"]}*\n'
             f'سود شما: *{cfg["monthly_profit"]}٪*\n'
             f'قیمت فروش تقریبی: *{monthly_sale}*\n\n'
-            'قیمت فروش ≈ بهای دلار × نرخ تومان × (۱ + سود٪)\n'
+            'قیمت فروش ≈ بهای دلار × (نرخ زندهٔ بازار + ۵٬۰۰۰) × (۱ + سود٪)\n'
             'و هر ۲۴ ساعت مثل جم با آیدی به‌روز می‌شود.',
             parse_mode='Markdown',
             reply_markup=admin_pricing_keyboard(),
@@ -1510,7 +1511,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             rate_line = (
                 f'نرخ زنده مبنا: {int(fx["rate"]):,} تومان '
                 f'(بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,})\n'
-                f'منبع: {str(fx.get("source") or "—").replace("_", "-")}\n\n'
+                f'منبع: {profitability.source_label(fx)}\n\n'
                 if fx.get('ok') else
                 f'نرخ زنده مبنا دریافت نشد: {fx.get("error") or "نامشخص"}\n\n'
             )
@@ -1533,7 +1534,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     'نرخ زنده مبنا: *دریافت نشد*'
                 ),
                 (
-                    f'منبع: `{str(fx.get("source") or "—").replace("_", "-")}`'
+                    f'منبع: {_md_safe(profitability.source_label(fx))}'
                     if fx.get('ok') else
                     f'خطا: {fx.get("error") or "نامشخص"}'
                 ),

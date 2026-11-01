@@ -204,6 +204,11 @@ def fetch_site_ping():
     return _site_request('/internal/bot/ping/', timeout=15)
 
 
+def fetch_site_usd_rate():
+    """نرخ زندهٔ بازارِ دلار از سایت (نوبیتکسِ سرور ایران) — بدون افزایش ۵٬۰۰۰ تومانی."""
+    return _site_request('/internal/bot/usd-rate/', timeout=8)
+
+
 def fetch_site_verified_cards(phone, telegram_id):
     """کارت‌های تاییدشدهٔ حسابِ سایت با همین شماره (احراز مشترک)."""
     data = _site_request('/internal/bot/verified-cards/',

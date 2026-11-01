@@ -10,6 +10,10 @@ NOBITEX_USDT_IRT_ORDERBOOK = (
     'https://apiv2.nobitex.ir/v3/orderbook/USDTIRT'
 )
 _rate_cache = {'at': 0.0, 'value': None}
+# اگر نوبیتکس از این سرور جواب نداد، تا ده دقیقه مستقیم سراغش نمی‌رویم و نرخ
+# زنده را از سایت می‌گیریم؛ وگرنه هر خرید شش ثانیه پشت تایم‌اوتش می‌ماند.
+_direct_failed = {'at': None}
+_DIRECT_RETRY_SECONDS = 600
 
 
 def usd_rate_markup():
@@ -24,6 +28,18 @@ def usd_rate_markup():
         return max(0, int(raw)) if raw else 5000
     except ValueError:
         return 5000
+
+
+SOURCE_LABELS = {
+    'nobitex_usdtirt_best_ask': 'نوبیتکس، زنده',
+    'site_nobitex': 'نوبیتکس از طریق سایت، زنده',
+    'last_live': 'آخرین نرخ زنده — نرخ زنده الان نرسید',
+    'manual_fallback': 'نرخ دستی پشتیبان — نرخ زنده الان نرسید',
+}
+
+
+def source_label(fx):
+    return SOURCE_LABELS.get((fx or {}).get('source'), str((fx or {}).get('source') or '—'))
 
 
 def market_rate(fx):
@@ -120,18 +136,33 @@ def _request_json(url):
 
 
 def get_usd_toman_rate(force=False):
-    """بهترین ask بازار USDTIRT را از ریال به تومان تبدیل و cache می‌کند.
+    """نرخ دلار برای قیمت‌گذاری: همیشه نرخ زندهٔ تازه + usd_rate_markup() (۵٬۰۰۰ تومان).
 
-    `rate` مبنای قیمت‌گذاری است: نرخ گرفته‌شده + usd_rate_markup() (۵٬۰۰۰ تومان).
-    هر جا قیمت فروش حساب می‌شود (جم، گیفت کارت، استارز، پرمیوم) همین را
-    می‌خواند. `market_rate` خودِ نرخ بازار است، برای بهای واقعی و سود.
+    `rate` مبنای قیمت‌گذاری است و هر جا قیمت فروش حساب می‌شود (جم، گیفت کارت،
+    استارز، پرمیوم) همین را می‌خواند. `market_rate` خودِ نرخ بازار است، برای
+    بهای واقعی و سود. افزایش فقط همین‌جا و فقط یک بار روی نرخ بازار می‌نشیند.
+
+    نرخ زنده به این ترتیب گرفته می‌شود:
+    ۱. مستقیم از نوبیتکس (بهترین ask بازار USDTIRT)؛
+    ۲. اگر نشد، از سایت: سرور ربات خارج از ایران است و نوبیتکس معمولاً راهش
+       نمی‌دهد، ولی سرور سایت داخل ایران است و همان نرخ زنده را دارد؛
+    ۳. اگر هیچ‌کدام نشد، بالاترینِ «آخرین نرخ زندهٔ موفق» و «نرخ دستی پشتیبان»
+       — هیچ‌وقت با نرخی پایین‌تر از آخرین نرخ زنده قیمت‌گذاری نمی‌شود.
     """
     now = time.monotonic()
     cached = _rate_cache.get('value')
     if not force and cached and now - _rate_cache.get('at', 0) < 60:
         return cached
     try:
-        data = _request_json(NOBITEX_USDT_IRT_ORDERBOOK)
+        failed_at = _direct_failed.get('at')
+        if failed_at is not None and now - failed_at < _DIRECT_RETRY_SECONDS:
+            raise OSError('نوبیتکس چند دقیقه پیش از این سرور جواب نداد')
+        try:
+            data = _request_json(NOBITEX_USDT_IRT_ORDERBOOK)
+        except Exception:
+            _direct_failed['at'] = now
+            raise
+        _direct_failed['at'] = None
         asks = data.get('asks') or []
         if data.get('status') != 'ok' or not asks or not asks[0]:
             raise ValueError('orderbook معتبر نیست')
@@ -146,40 +177,123 @@ def get_usd_toman_rate(force=False):
         if not 10_000 <= rate <= 10_000_000:
             raise ValueError('نرخ خارج از محدوده ایمن است')
         observed_ms = int(data.get('lastUpdate') or 0) or None
-        markup = usd_rate_markup()
-        result = {
-            'ok': True,
-            'rate': rate + markup,
-            'market_rate': rate,
-            'markup': markup,
-            'source': 'nobitex_usdtirt_best_ask',
-            'observed_ms': observed_ms,
-            'fallback': False,
-        }
+        result = _live_result(rate, 'nobitex_usdtirt_best_ask', observed_ms)
     except (
         urllib.error.URLError, TimeoutError, OSError, ValueError,
         KeyError, TypeError, InvalidOperation, json.JSONDecodeError,
     ) as exc:
-        manual = _manual_rate()
-        if manual:
-            markup = usd_rate_markup()
-            result = {
-                'ok': True,
-                'rate': manual + markup,
-                'market_rate': manual,
-                'markup': markup,
-                'source': 'manual_fallback',
-                'observed_ms': None,
-                'fallback': True,
-                'warning': str(exc),
-            }
+        site_rate = _rate_from_site()
+        if site_rate:
+            result = _live_result(site_rate, 'site_nobitex', None)
         else:
-            result = {
-                'ok': False,
-                'error': 'نرخ زنده دلار دریافت نشد و نرخ دستی تنظیم نشده است.',
-            }
+            result = _fallback_result(str(exc))
     _rate_cache.update(at=now, value=result)
     return result
+
+
+def _live_result(market, source, observed_ms):
+    markup = usd_rate_markup()
+    _remember_live(market)
+    return {
+        'ok': True,
+        'rate': int(market) + markup,
+        'market_rate': int(market),
+        'markup': markup,
+        'source': source,
+        'observed_ms': observed_ms,
+        'fallback': False,
+    }
+
+
+def _rate_from_site():
+    """نرخ زندهٔ بازار از سایت (نوبیتکسِ سرور ایران)، یا None.
+
+    فقط نرخ زنده پذیرفته می‌شود، نه نرخ پشتیبانِ سایت؛ و سایت نرخ *بازار*
+    می‌دهد، بی‌افزایش — افزایش همین‌جا یک بار رویش می‌نشیند.
+    """
+    try:
+        import site_api
+        data = site_api.fetch_site_usd_rate()
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get('ok') or data.get('fallback'):
+        return None
+    if data.get('source') != 'nobitex_usdtirt_best_ask':
+        return None
+    try:
+        market = int(data.get('market_rate'))
+    except (TypeError, ValueError):
+        return None
+    return market if 10_000 <= market <= 10_000_000 else None
+
+
+LIVE_RATE_KEY = 'usd_live_last'
+
+
+def _remember_live(market):
+    """آخرین نرخ زندهٔ موفق: «نرخ|زمان»؛ مبنای پشتیبان وقتی هیچ نرخ زنده‌ای نرسید."""
+    from datetime import datetime, timezone
+    try:
+        from db import set_setting
+        stamp = datetime.now(timezone.utc)
+        last = _last_live()
+        if last and last[0] == int(market) and (stamp - last[1]).total_seconds() < 600:
+            return
+        set_setting(LIVE_RATE_KEY, f'{int(market)}|{stamp.isoformat()}')
+    except Exception:
+        pass
+
+
+def _last_live():
+    """(نرخ بازار، زمان) آخرین نرخ زندهٔ موفق، یا None."""
+    from datetime import datetime, timezone
+    try:
+        from db import get_setting
+        raw = str(get_setting(LIVE_RATE_KEY, '') or '')
+    except Exception:
+        return None
+    value, _, stamp = raw.partition('|')
+    try:
+        market = int(value)
+        when = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (market, when) if 10_000 <= market <= 10_000_000 else None
+
+
+def _fallback_result(error):
+    """هیچ نرخ زنده‌ای نرسید: بالاترینِ «آخرین نرخ زنده» و «نرخ دستی» + همان افزایش.
+
+    بالاترین، چون اشتباهِ رو به پایین ضرر است: نرخ دستیِ کهنه و پایین نباید
+    قیمت را از آخرین نرخ زنده پایین‌تر بیاورد؛ اگر مدیر عمداً نرخ دستیِ بالاتری
+    گذاشته، همان اعمال می‌شود. هیچ‌کدام نبود: ok=False و قیمت‌ها دست نمی‌خورند.
+    """
+    candidates = []
+    last = _last_live()
+    if last:
+        candidates.append((last[0], 'last_live'))
+    manual = _manual_rate()
+    if manual:
+        candidates.append((manual, 'manual_fallback'))
+    if not candidates:
+        return {
+            'ok': False,
+            'error': 'نرخ زنده دلار دریافت نشد و نرخ دستی تنظیم نشده است.',
+        }
+    market, source = max(candidates, key=lambda item: item[0])
+    markup = usd_rate_markup()
+    return {
+        'ok': True,
+        'rate': market + markup,
+        'market_rate': market,
+        'markup': markup,
+        'source': source,
+        'observed_ms': None,
+        'fallback': True,
+        'warning': error,
+    }
 
 
 def get_purchase_rate_snapshot():
