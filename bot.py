@@ -81,7 +81,9 @@ from handlers.site_receipts import (
 from handlers.site_panel import site_panel_router
 from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
-from handlers.identity import identity_admin_handlers, identity_conversation_handler
+from handlers.identity import (
+    identity_admin_handlers, identity_conversation_handler, identity_reason_handler,
+)
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
 from handlers.referral import (
@@ -916,6 +918,8 @@ def main():
     app.add_error_handler(error_handler)
 
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
+    # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
+    app.add_handler(identity_reason_handler(), group=-2)
     app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
 
     # دکمه «خرید جم» پست‌های رویداد (/start evgem_<id>) — باید قبل از /start عمومی باشد.

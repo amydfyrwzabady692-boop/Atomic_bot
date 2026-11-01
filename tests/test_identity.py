@@ -324,6 +324,71 @@ class AdminReviewTests(unittest.TestCase):
         self.assertEqual(call.call_args.args[:2], (7, 'reject'))
         self.assertEqual(call.call_args.args[4], identity.REJECT_REASONS['note'])
 
+    def test_the_admin_can_write_the_reason(self):
+        from telegram.ext import ApplicationHandlerStop
+
+        identity._PENDING_REASON.clear()
+        query = _admin_query('site_idv_why_7')
+        query.message = SimpleNamespace(photo=None, document=None, chat_id=1, message_id=99,
+                                        reply_markup=None)
+        with patch.object(identity, 'is_admin', return_value=True):
+            run(identity.identity_review(_admin_update(query), self.ctx))
+        prompt = self.ctx.bot.send_message.call_args.kwargs
+        self.assertIn('دلیل رد احراز #7', prompt['text'])
+        self.assertIn(1, identity._PENDING_REASON)
+        # فیلتر فقط پیامِ همین ادمین را می‌گیرد
+        self.assertTrue(identity._AwaitingReason().filter(SimpleNamespace(from_user=SimpleNamespace(id=1))))
+        self.assertFalse(identity._AwaitingReason().filter(SimpleNamespace(from_user=SimpleNamespace(id=2))))
+
+        bot = SimpleNamespace(send_message=AsyncMock(), edit_message_text=AsyncMock(),
+                              edit_message_caption=AsyncMock())
+        message = SimpleNamespace(text='  عکس کارت ملی بریده شده؛ کامل بفرست  ',
+                                  reply_text=AsyncMock(),
+                                  from_user=SimpleNamespace(id=1, full_name='مدیر', username='boss'))
+        update = SimpleNamespace(effective_message=message,
+                                 effective_user=SimpleNamespace(id=1, full_name='مدیر', username='boss'))
+        with patch.object(identity, 'is_admin', return_value=True), \
+                patch.object(identity, 'broadcast_reviewed', new=AsyncMock()), \
+                patch('site_api.call_site_identity_review',
+                      return_value={'ok': True, 'status': 'rejected', 'released': 0}) as call, \
+                self.assertRaises(ApplicationHandlerStop):
+            run(identity.identity_reason_text(update, SimpleNamespace(bot=bot)))
+        self.assertEqual(call.call_args.args[:2], (7, 'reject'))
+        self.assertEqual(call.call_args.args[4], 'عکس کارت ملی بریده شده؛ کامل بفرست')
+        edited = bot.edit_message_text.call_args.kwargs
+        self.assertEqual((edited['chat_id'], edited['message_id']), (1, 99))
+        self.assertIn('دلیل رد: عکس کارت ملی بریده شده', edited['text'])
+        self.assertNotIn(1, identity._PENDING_REASON)
+
+    def test_writing_the_reason_can_be_cancelled(self):
+        from telegram.ext import ApplicationHandlerStop
+
+        identity._PENDING_REASON[1] = {'prefix': 'idv', 'id': 5, 'chat_id': 1, 'message_id': 9,
+                                       'photo': False, 'at': __import__('time').time()}
+        message = SimpleNamespace(text='انصراف', reply_text=AsyncMock(),
+                                  from_user=SimpleNamespace(id=1))
+        update = SimpleNamespace(effective_message=message, effective_user=SimpleNamespace(id=1))
+        with patch.object(identity, 'is_admin', return_value=True), \
+                patch.object(identity, 'review_identity_verification') as decide, \
+                self.assertRaises(ApplicationHandlerStop):
+            run(identity.identity_reason_text(update, SimpleNamespace(bot=None)))
+        decide.assert_not_called()
+        self.assertIn('لغو', message.reply_text.call_args.args[0])
+
+    def test_photo_links_survive_switching_buttons(self):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        query = _admin_query('site_idv_no_7')
+        query.message = SimpleNamespace(photo=None, document=None, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅', callback_data='site_idv_ok_7')],
+            [InlineKeyboardButton('🖼 کارت بانکی', url='https://atomicshop.ir/x?s=1')]]))
+        with patch.object(identity, 'is_admin', return_value=True):
+            run(identity.identity_review(_admin_update(query), self.ctx))
+        markup = query.edit_message_reply_markup.call_args.kwargs['reply_markup']
+        self.assertEqual(markup.inline_keyboard[-1][0].url, 'https://atomicshop.ir/x?s=1')
+        self.assertIn('site_idv_why_7', [row[0].callback_data for row in markup.inline_keyboard
+                                         if row[0].callback_data])
+
     def test_strangers_cannot_review(self):
         query = _admin_query('idv_ok_5')
         with patch.object(identity, 'is_admin', return_value=False), \

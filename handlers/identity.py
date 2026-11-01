@@ -18,16 +18,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from telegram import (
-    InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
+    ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
     ReplyKeyboardMarkup, ReplyKeyboardRemove, Update,
 )
 from telegram.ext import (
-    CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler,
-    filters,
+    ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
+    ConversationHandler, MessageHandler, filters,
 )
 
 from admin_notify import admin_ids, is_admin, notify_admin
@@ -59,7 +61,11 @@ REJECT_REASONS = {
 }
 
 _FA = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-_REVIEW_RE = re.compile(r'^(site_idv|idv)_(ok|no|rj|back)_(\d+)(?:_([a-z]+))?$')
+_REVIEW_RE = re.compile(r'^(site_idv|idv)_(ok|no|rj|back|why)_(\d+)(?:_([a-z]+))?$')
+# ادمینی که «نوشتن دلیل» را زده: پیامِ متنیِ بعدی‌اش دلیلِ رد است.
+# {آیدی ادمین: {prefix, id, chat_id, message_id, photo, at}}
+_PENDING_REASON: dict[int, dict] = {}
+REASON_TTL = 15 * 60
 
 
 def fa(value) -> str:
@@ -469,6 +475,7 @@ def reasons_keyboard(verification_id, prefix='idv'):
     vid = int(verification_id)
     rows = [[InlineKeyboardButton(f'❌ {label}', callback_data=f'{prefix}_rj_{vid}_{code}')]
             for code, label in REJECT_REASONS.items()]
+    rows.append([InlineKeyboardButton('✍️ نوشتن دلیل رد', callback_data=f'{prefix}_why_{vid}')])
     rows.append([InlineKeyboardButton('↩️ بازگشت', callback_data=f'{prefix}_back_{vid}')])
     return InlineKeyboardMarkup(rows)
 
@@ -615,9 +622,24 @@ async def identity_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         keyboard = (reasons_keyboard(verification_id, prefix) if action == 'no'
                     else review_keyboard(verification_id, prefix))
         try:
-            await query.edit_message_reply_markup(reply_markup=keyboard)
+            await query.edit_message_reply_markup(reply_markup=_keep_links(query, keyboard))
         except Exception:  # noqa: BLE001
             pass
+        return
+    if action == 'why':
+        message = query.message
+        _PENDING_REASON[update.effective_user.id] = {
+            'prefix': prefix, 'id': verification_id, 'at': time.time(),
+            'chat_id': message.chat_id if message else None,
+            'message_id': message.message_id if message else None,
+            'photo': bool(message and (message.photo or message.document)),
+        }
+        await query.answer()
+        await ctx.bot.send_message(
+            chat_id=update.effective_user.id,
+            text=(f'✍️ دلیل رد احراز #{verification_id} را بنویس و بفرست؛ همین متن برای '
+                  'خریدار فرستاده می‌شود تا مشکل را درست کند.\nبرای انصراف بنویس: انصراف'),
+            reply_markup=ForceReply(selective=True, input_field_placeholder='دلیل رد…'))
         return
     approve = action == 'ok'
     reason = '' if approve else REJECT_REASONS.get(code or 'other', REJECT_REASONS['other'])
@@ -626,6 +648,85 @@ async def identity_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _site_review(query, ctx, verification_id, approve, reason, name)
     else:
         await _bot_review(query, ctx, verification_id, approve, reason, name)
+
+
+def _keep_links(query, keyboard):
+    """ردیف‌های دکمهٔ لینک (دیدنِ عکس‌ها) با عوض شدنِ دکمه‌ها از بین نروند."""
+    current = getattr(getattr(query, 'message', None), 'reply_markup', None)
+    links = [list(row) for row in (getattr(current, 'inline_keyboard', None) or [])
+             if row and all(getattr(button, 'url', None) for button in row)]
+    if not links:
+        return keyboard
+    return InlineKeyboardMarkup([list(row) for row in keyboard.inline_keyboard] + links)
+
+
+class _TypedReason:
+    """دلیلِ نوشته‌شده جای کلیک: همان کارهای CallbackQuery روی پیامِ بررسیِ ذخیره‌شده."""
+
+    def __init__(self, bot, message, pending):
+        self._bot = bot
+        self._reply_to = message
+        self._pending = pending
+        self.from_user = message.from_user
+        self.message = SimpleNamespace(photo=pending.get('photo'), document=None,
+                                       chat_id=pending.get('chat_id'))
+
+    async def answer(self, text='', show_alert=False):
+        if text:
+            await self._reply_to.reply_text(text)
+
+    async def edit_message_text(self, text, reply_markup=None):
+        if self._pending.get('message_id'):
+            await self._bot.edit_message_text(chat_id=self._pending['chat_id'],
+                                              message_id=self._pending['message_id'],
+                                              text=text, reply_markup=reply_markup)
+
+    async def edit_message_caption(self, caption, reply_markup=None):
+        if self._pending.get('message_id'):
+            await self._bot.edit_message_caption(chat_id=self._pending['chat_id'],
+                                                 message_id=self._pending['message_id'],
+                                                 caption=caption, reply_markup=reply_markup)
+
+
+class _AwaitingReason(filters.MessageFilter):
+    """فقط پیامِ ادمینی که «نوشتن دلیل» را زده و هنوز دلیلی نفرستاده."""
+
+    def filter(self, message):
+        user = getattr(message, 'from_user', None)
+        pending = _PENDING_REASON.get(getattr(user, 'id', None))
+        if pending and time.time() - pending['at'] > REASON_TTL:
+            _PENDING_REASON.pop(user.id, None)
+            return False
+        return bool(pending)
+
+
+async def identity_reason_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """متنِ ادمین بعد از «نوشتن دلیل»: رد با همین دلیل، و خبرش به خریدار."""
+    message = update.effective_message
+    admin = update.effective_user
+    pending = _PENDING_REASON.pop(admin.id, None)
+    if not pending or not is_admin(admin.id):
+        return
+    reason = ' '.join((message.text or '').split())
+    if reason in ('انصراف', 'لغو', 'cancel'):
+        await message.reply_text('رد لغو شد؛ مدارک هنوز منتظر بررسی است.')
+        raise ApplicationHandlerStop
+    if len(reason) < 3:
+        _PENDING_REASON[admin.id] = pending
+        await message.reply_text('دلیل خیلی کوتاه است؛ یک جملهٔ روشن بنویس (یا: انصراف).')
+        raise ApplicationHandlerStop
+    query = _TypedReason(ctx.bot, message, pending)
+    name = admin_display_name(admin)
+    if pending['prefix'] == 'site_idv':
+        await _site_review(query, ctx, pending['id'], False, reason[:255], name)
+    else:
+        await _bot_review(query, ctx, pending['id'], False, reason[:255], name)
+    raise ApplicationHandlerStop
+
+
+def identity_reason_handler():
+    """در گروهِ ‎-2‎: پیش از قفلِ عضویت و بقیهٔ گفتگوها، فقط برای همان ادمین."""
+    return MessageHandler(filters.TEXT & ~filters.COMMAND & _AwaitingReason(), identity_reason_text)
 
 
 async def _bot_review(query, ctx, verification_id, approve, reason, name):
@@ -785,7 +886,7 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def identity_admin_handlers():
     return [
-        CallbackQueryHandler(identity_review, pattern=r'^(?:site_idv|idv)_(?:ok|no|rj|back)_\d+'),
+        CallbackQueryHandler(identity_review, pattern=r'^(?:site_idv|idv)_(?:ok|no|rj|back|why)_\d+'),
         CallbackQueryHandler(identity_admin, pattern=r'^idva_'),
         CallbackQueryHandler(terms_accept, pattern=r'^terms_ok_\d+$'),
     ]
