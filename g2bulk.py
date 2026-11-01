@@ -516,15 +516,92 @@ def poll_gift_card_delivery(provider_order_id):
     return _normalize_gift_purchase(data, fallback_order_id=provider_id)
 
 
+# خرید انجام شد (پولش از کیف پولِ تامین‌کننده رفت) ولی در جواب چیزِ قابل‌خواندنی
+# نبود. شکست نیست و ریفاند نمی‌شود: مدیر از پنل تامین‌کننده برش می‌دارد.
+GIFT_NO_CODE = 'NO_CODE'
+_GIFT_DONE = ('', 'COMPLETED', 'COMPLETE', 'SUCCESS', 'SUCCEEDED', 'DELIVERED')
+
+# مستندِ قطعیِ شکلِ تحویل در دسترس نیست؛ هر شکلِ معقولی خوانده می‌شود (مثل سایت).
+_GIFT_ITEM_FIELDS = (
+    ('code', 'کد'), ('redeem_code', 'کد'), ('voucher', 'کد'), ('voucher_code', 'کد'),
+    ('card_code', 'کد'), ('gift_code', 'کد'), ('key', 'کلید'), ('pin', 'پین'),
+    ('serial', 'سریال'), ('serial_number', 'سریال'), ('card_number', 'شماره کارت'),
+    ('username', 'نام کاربری'), ('email', 'ایمیل'), ('password', 'رمز'),
+    ('expiry', 'انقضا'), ('expires_at', 'انقضا'), ('expiration_date', 'انقضا'),
+)
+_GIFT_LINK_FIELDS = ('file_url', 'download_url', 'delivery_url', 'url', 'link', 'file', 'image',
+                     'image_url', 'redeem_url', 'claim_url', 'pdf', 'attachment')
+_GIFT_TOP_LINK_FIELDS = ('delivery_file', 'delivery_url', 'file_url', 'download_url', 'files',
+                         'attachments', 'delivery_links', 'redeem_url', 'claim_url')
+
+
+def _gift_links(value):
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text.lower().startswith(('http://', 'https://')) else []
+    if isinstance(value, dict):
+        found = []
+        for key in ('url', 'download_url', 'file_url', 'link', 'href'):
+            found += _gift_links(value.get(key))
+        return found
+    if isinstance(value, (list, tuple)):
+        found = []
+        for item in value:
+            found += _gift_links(item)
+        return found
+    return []
+
+
+def gift_delivery_lines(data):
+    """هر چیزی که تامین‌کننده تحویل داده (کد، کد/پین/سریال، لینکِ فایل) به‌صورت خط‌های خوانا."""
+    if not isinstance(data, dict):
+        return []
+    lines = []
+    for item in data.get('delivery_items') or []:
+        if isinstance(item, dict):
+            parts = [f'{label}: {item[key]}' for key, label in _GIFT_ITEM_FIELDS
+                     if str(item.get(key) or '').strip()]
+            parts += [f'فایل: {link}' for key in _GIFT_LINK_FIELDS
+                      for link in _gift_links(item.get(key))]
+            if not parts:
+                parts = [f'{key}: {value}' for key, value in item.items()
+                         if str(value or '').strip() and not isinstance(value, (dict, list))]
+            if parts:
+                lines.append(' | '.join(parts))
+        elif isinstance(item, (list, tuple)):
+            text = ' | '.join(str(x).strip() for x in item if str(x).strip())
+            if text:
+                lines.append(text)
+        else:
+            text = str(item or '').strip()
+            if text:
+                lines.append(text)
+    for key in _GIFT_TOP_LINK_FIELDS:
+        lines += [f'فایل: {link}' for link in _gift_links(data.get(key))]
+    seen, unique = set(), []
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            unique.append(line)
+    return unique
+
+
+def gift_snapshot(data, limit=1500):
+    """جوابِ تامین‌کننده برای مدیر — بدون کلیدهای داخلی."""
+    if not isinstance(data, dict):
+        return str(data)[:limit]
+    clean = {k: v for k, v in data.items() if not str(k).startswith('_')}
+    try:
+        return json.dumps(clean, ensure_ascii=False, default=str)[:limit]
+    except (TypeError, ValueError):
+        return str(clean)[:limit]
+
+
 def _normalize_gift_purchase(data, fallback_order_id=None):
     status = str(data.get('status') or '').strip().upper()
-    codes = [
-        str(item).strip()
-        for item in (data.get('delivery_items') or [])
-        if str(item).strip()
-    ]
+    codes = gift_delivery_lines(data) if data.get('success') is not False else []
     provider_order_id = data.get('order_id') or fallback_order_id
-    if status == 'COMPLETED' and codes:
+    if codes and status not in ('FAILED', 'REFUNDED', 'CANCELED', 'CANCELLED'):
         return {
             'ok': True,
             'status': 'COMPLETED',
@@ -549,11 +626,21 @@ def _normalize_gift_purchase(data, fallback_order_id=None):
             'order_id': provider_order_id,
             'error': data.get('message') or 'وضعیت خرید گیفت‌کارت نامشخص است.',
         }
+    if data.get('success') and status in _GIFT_DONE:
+        # تامین‌کننده گفت «انجام شد» ولی کدی نداد: ریفاند یعنی ضررِ قطعی.
+        return {
+            'ok': True,
+            'status': GIFT_NO_CODE,
+            'order_id': provider_order_id,
+            'codes': [],
+            'raw': gift_snapshot(data),
+        }
     return {
         'ok': False,
         'status': status or 'FAILED',
         'order_id': provider_order_id,
         'error': data.get('message') or 'خرید گیفت‌کارت از G2Bulk ناموفق بود.',
+        'raw': gift_snapshot(data),
     }
 
 

@@ -833,8 +833,8 @@ def get_gift_card_order(order_id):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","OrderId","Brand","G2ProductId","ProductTitle","FaceLabel",'
-            '"CostUsd","SaleToman","UsdTomanRate","G2OrderId","G2Status","DeliveryCodes" '
-            'FROM "GiftCardOrders" WHERE "OrderId"=%s',
+            '"CostUsd","SaleToman","UsdTomanRate","G2OrderId","G2Status","DeliveryCodes",'
+            'COALESCE("LastError",\'\') FROM "GiftCardOrders" WHERE "OrderId"=%s',
             (int(order_id),),
         )
         row = cur.fetchone()
@@ -855,7 +855,21 @@ def get_gift_card_order(order_id):
         'g2_order_id': row[9],
         'g2_status': str(row[10] or '').upper(),
         'codes': _gift_codes_from_row(row[11]),
+        'last_error': row[12] or '',
     }
+
+
+def claim_gift_issue_notice(order_id):
+    """فقط یک‌بار برای هر سفارش: خبرِ «خرید شد ولی کد نیامد» به مدیر."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "GiftCardOrders" SET "IssueNotifiedAt"=now() '
+            'WHERE "OrderId"=%s AND "IssueNotifiedAt" IS NULL RETURNING "Id"',
+            (int(order_id),),
+        )
+        claimed = bool(cur.fetchone())
+        conn.commit()
+    return claimed
 
 
 def gift_card_user_delivery_text(order_id):
@@ -879,10 +893,13 @@ def gift_card_user_delivery_text(order_id):
     )
 
 
-def update_gift_card_g2(gift_id, *, order_id_g2=None, status=None, codes=None):
+def update_gift_card_g2(gift_id, *, order_id_g2=None, status=None, codes=None, error=None):
     with get_conn() as conn, conn.cursor() as cur:
         fields = ['"UpdatedAt"=now()']
         values = []
+        if error is not None:
+            fields.append('"LastError"=%s')
+            values.append(str(error)[:4000])
         if order_id_g2 is not None:
             fields.append('"G2OrderId"=%s')
             values.append(str(order_id_g2))
@@ -921,7 +938,8 @@ def _fulfill_gift_card(order_id, gift):
     if status == 'COMPLETED' and gift.get('codes'):
         update_order_status(order_id, 'delivered')
         return True, 'delivered'
-    if gift.get('g2_order_id') and status in {'PENDING', 'PROCESSING', 'SUBMITTING'}:
+    if gift.get('g2_order_id') and status in {'PENDING', 'PROCESSING', 'SUBMITTING',
+                                              g2bulk.GIFT_NO_CODE}:
         live = g2bulk.poll_gift_card_delivery(gift['g2_order_id'])
         if live.get('ok') and live.get('status') == 'COMPLETED' and live.get('codes'):
             update_gift_card_g2(
@@ -933,24 +951,22 @@ def _fulfill_gift_card(order_id, gift):
             update_order_status(order_id, 'delivered')
             return True, 'delivered'
         if live.get('refunded') or live.get('status') == 'FAILED':
-            update_gift_card_g2(gift['id'], status='FAILED')
+            update_gift_card_g2(gift['id'], status='FAILED',
+                                error=f'تامین‌کننده برگشت داد: {live.get("error") or "—"}')
             ok_refund, refunded = _refund_failed_order(order_id)
             if ok_refund:
                 return False, f'refunded:{int(refunded)}'
             return False, live.get('error') or 'تحویل گیفت‌کارت ناموفق بود.'
+        if live.get('status') == g2bulk.GIFT_NO_CODE and status != g2bulk.GIFT_NO_CODE:
+            update_gift_card_g2(gift['id'], status=g2bulk.GIFT_NO_CODE,
+                                error=f'جواب تامین‌کننده: {live.get("raw") or "—"}')
         update_order_status(order_id, 'processing')
         return True, 'processing'
 
-    available, cost, _balance, error = g2bulk.can_fulfill_gift_card(
-        gift['product_id'], force=True
-    )
-    if not available:
-        update_gift_card_g2(gift['id'], status='REJECTED')
-        ok_refund, refunded = _refund_failed_order(order_id)
-        if ok_refund:
-            return False, f'refunded:{int(refunded)}'
-        return False, error or 'موجودی گیفت‌کارت کافی نیست.'
-
+    # موجودی پیش از ساختِ سفارش چک شده (create_gift_card_order_atomic). چکِ
+    # دوباره بعد از پرداخت فقط ضرر داشت: هر قطعیِ لحظه‌ایِ کاتالوگ یا تصویرِ
+    # کهنهٔ موجودی، سفارشِ پرداخت‌شده را بی‌آنکه خریدی امتحان شود ریفاند
+    # می‌کرد. حالا مستقیم خرید می‌شود و فقط ردِ صریحِ تامین‌کننده ریفاند دارد.
     if not claim_gift_card_submission(gift['id']):
         update_order_status(order_id, 'processing')
         return True, 'processing'
@@ -968,6 +984,14 @@ def _fulfill_gift_card(order_id, gift):
         )
         update_order_status(order_id, 'delivered')
         return True, 'delivered'
+    if result.get('ok') and result.get('status') == g2bulk.GIFT_NO_CODE:
+        # خرید شد ولی کدی نیامد: نه شکست، نه ریفاند؛ مدیر خبردار می‌شود.
+        update_gift_card_g2(
+            gift['id'], order_id_g2=result.get('order_id'), status=g2bulk.GIFT_NO_CODE,
+            error=f'جواب تامین‌کننده: {result.get("raw") or "—"}',
+        )
+        update_order_status(order_id, 'processing')
+        return True, 'processing'
     if result.get('ok') and result.get('order_id'):
         update_gift_card_g2(
             gift['id'],
@@ -977,10 +1001,12 @@ def _fulfill_gift_card(order_id, gift):
         update_order_status(order_id, 'processing')
         return True, 'processing'
     if result.get('uncertain'):
-        update_gift_card_g2(gift['id'], status='SUBMIT_UNKNOWN')
+        update_gift_card_g2(gift['id'], status='SUBMIT_UNKNOWN',
+                            error=f'نامعلوم: {result.get("error") or "—"}')
         update_order_status(order_id, 'processing')
         return True, 'processing'
-    update_gift_card_g2(gift['id'], status='REJECTED')
+    update_gift_card_g2(gift['id'], status='REJECTED',
+                        error=f'رد تامین‌کننده: {result.get("error") or "—"}')
     ok_refund, refunded = _refund_failed_order(order_id)
     if ok_refund:
         return False, f'refunded:{int(refunded)}'
@@ -3876,6 +3902,9 @@ def ensure_admin_schema():
         )''',
         '''CREATE INDEX IF NOT EXISTS idx_giftcard_orders_status
            ON "GiftCardOrders" ("G2Status")''',
+        # دلیلِ شکست (یا جوابِ خامِ تامین‌کننده) برای مدیر، و یک‌بار خبرِ «کد نیامد».
+        'ALTER TABLE "GiftCardOrders" ADD COLUMN IF NOT EXISTS "LastError" TEXT NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "GiftCardOrders" ADD COLUMN IF NOT EXISTS "IssueNotifiedAt" TIMESTAMPTZ',
         '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
            VALUES ('giftcard_profit_percent','10',now())
            ON CONFLICT ("Key") DO NOTHING''',

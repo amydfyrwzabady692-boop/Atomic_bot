@@ -241,20 +241,59 @@ async def _alert_fulfill_issue(bot, order_id, status, payment_hint='', refunded=
             refund_line = f"\n💰 مبلغ برگشتی به کیف پول: *{amt:,}* ت"
         except (TypeError, ValueError):
             refund_line = '\n💰 مبلغ به کیف پول کاربر برگشت.'
+    reason = _failure_reason(order_id, status)
     await notify_admin(
         bot,
         (
-            f"⚠️ *مشکل تحویل سفارش #{order_id}*\n"
+            f"⚠️ مشکل تحویل سفارش #{order_id}\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"وضعیت: `{status}`\n"
+            f"وضعیت: {status}\n"
             f"پرداخت: {payment_hint or order[4]}\n"
             f"مبلغ سفارش: {order[2]:,} ت"
-            f"{refund_line}\n"
-            f"کاربر: `{tg}`\n\n"
-            f"اگر ریفاند انجام شده، کاربر مطلع شده است."
+            f"{refund_line.replace('*', '')}\n"
+            f"کاربر: {tg}"
+            + (f"\n\nدلیل: {reason}" if reason else '')
+            + "\n\nاگر ریفاند انجام شده، کاربر مطلع شده است."
         ),
         reply_markup=admin_failed_order_keyboard(order_id, str(tg) if tg != '—' else ''),
+        parse_mode=None,
     )
+
+
+def _failure_reason(order_id, status=''):
+    """دلیلِ واقعی (همان که تامین‌کننده گفت) — قبلاً پیام فقط «refunded:…» داشت."""
+    try:
+        from db import get_gift_card_order
+
+        gift = get_gift_card_order(order_id)
+    except Exception:  # noqa: BLE001
+        gift = None
+    if gift and gift.get('last_error'):
+        return str(gift['last_error'])[:900]
+    text = str(status or '')
+    if text and not text.startswith(('refunded:', 'partial_refunded:')) and text not in (
+            'failed', 'processing'):
+        return text[:900]
+    return ''
+
+
+async def _notify_gift_no_code(bot, order_id):
+    """خرید شد ولی کدی نیامد: یک‌بار به مدیر، با جوابِ خامِ تامین‌کننده."""
+    from db import claim_gift_issue_notice, get_gift_card_order
+    from g2bulk import GIFT_NO_CODE
+
+    gift = await asyncio.to_thread(get_gift_card_order, order_id)
+    if not gift or gift.get('g2_status') != GIFT_NO_CODE:
+        return
+    if not await asyncio.to_thread(claim_gift_issue_notice, order_id):
+        return
+    await notify_admin(bot, (
+        f'⚠️ گیفت‌کارت سفارش #{order_id} خریده شد ولی کدی نیامد\n'
+        f'{gift.get("brand_title") or ""} — {gift.get("face_label") or ""}\n'
+        f'سفارش تامین‌کننده: {gift.get("g2_order_id") or "—"}\n'
+        'ریفاند نشد (پولش از کیف پول تامین‌کننده رفته). کد یا فایل را از پنل تامین‌کننده '
+        'بردار و برای خریدار بفرست.\n\n'
+        f'{str(gift.get("last_error") or "")[:900]}'), parse_mode=None)
 
 
 async def _notify_sense_sale(bot, order_id):
@@ -570,6 +609,11 @@ async def _handle_fulfill_result(
         return 'delivered'
 
     if success and status in ('paid', 'processing', 'sense_manual', 'manual_star'):
+        if status == 'processing':
+            try:
+                await _notify_gift_no_code(bot, order_id)
+            except Exception:  # noqa: BLE001 — خبرِ مدیر نباید پیامِ خریدار را بخواباند
+                log.exception('gift no-code notice failed order=%s', order_id)
         if status == 'sense_manual':
             await _notify_sense_sale(bot, order_id)
         elif status == 'manual_star':
