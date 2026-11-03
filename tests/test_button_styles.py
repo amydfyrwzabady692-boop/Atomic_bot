@@ -68,8 +68,8 @@ class ButtonStyleTests(unittest.TestCase):
         rows = main_menu().keyboard
         self.assertEqual(rows[0][0].to_dict().get('style'), 'primary')
         self.assertEqual(rows[0][1].to_dict().get('style'), 'success')
-        self.assertEqual(rows[1][0].to_dict().get('style'), 'primary')
-        self.assertEqual(rows[2][0].to_dict().get('style'), 'success')
-        self.assertEqual(rows[3][0].to_dict().get('style'), 'primary')
-        self.assertEqual(rows[3][1].to_dict().get('style'), 'success')
-        self.assertEqual(rows[4][0].to_dict().get('style'), 'danger')
+        self.assertEqual(rows[2][0].to_dict().get('style'), 'primary')
+        self.assertEqual(rows[3][0].to_dict().get('style'), 'success')
+        self.assertEqual(rows[4][0].to_dict().get('style'), 'primary')
+        self.assertEqual(rows[4][1].to_dict().get('style'), 'success')
+        self.assertEqual(rows[5][0].to_dict().get('style'), 'danger')

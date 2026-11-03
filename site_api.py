@@ -239,3 +239,9 @@ def call_site_identity_review(verification_id, action, admin_tg, admin_name, not
             'note': str(note or '')[:255],
         },
     )
+
+
+def fetch_site_games():
+    """فهرست بازی‌های فعال سایت (نام فارسی، واحد، سرورها و نام بسته‌ها) — بی‌قیمت."""
+    return _site_request('/internal/bot/games/', timeout=30)
+

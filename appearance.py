@@ -94,6 +94,7 @@ HUBS = {
                 'title': '📱 منوی پایین',
                 'items': (
                     ('b.menu.ff', 'محصولات فری‌فایر', False),
+                    ('b.menu.games', 'شارژ بازی‌ها', False),
                     ('b.menu.wal', 'کیف پول', False),
                     ('b.menu.ord', 'سفارش‌های من', False),
                     ('b.menu.acc', 'حساب من', False),
@@ -270,6 +271,7 @@ DEFAULTS = {
         "بعد از انتخاب، آیدی اکانتی که می‌خوای استارز بزنی روش را می‌فرستی."
     ),
     'b.menu.ff': '🎮 محصولات فری‌فایر',
+    'b.menu.games': '🕹 شارژ بازی‌ها | پابجی، کالاف و…',
     'b.menu.wal': '💰 کیف پول',
     'b.menu.ord': '📦 سفارش‌های من',
     'b.menu.acc': '👤 حساب من',
@@ -307,6 +309,7 @@ DEFAULTS = {
 
 MENU_KEYS = {
     'b.menu.ff': 'ff',
+    'b.menu.games': 'games',
     'b.menu.wal': 'wallet',
     'b.menu.ord': 'orders',
     'b.menu.acc': 'account',
@@ -429,6 +432,7 @@ _EMOJI_TYPES = {
     'b.menu.se': ('🎯', '🎮'),
     'b.menu.stars': ('⭐', '🌟', '👑'),
     'b.menu.prem': ('💎', '✨'),
+    'b.menu.games': ('🕹', '🎮'),
     'b.menu.gc': ('🎁', '🎀'),
     'b.menu.su': ('🎧', '💬', '🆘'),
     'b.menu.ref': ('🎁', '🏆', '👥'),

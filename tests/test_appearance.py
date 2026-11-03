@@ -91,9 +91,9 @@ class AppearanceTests(unittest.TestCase):
         with patch.object(appearance, '_CACHE', {}):
             rows = main_menu().keyboard
             self.assertEqual(rows[0][0].text, '🎮 محصولات فری‌فایر')
-            self.assertEqual(rows[3][0].text, '⭐ خرید استارز')
-            self.assertEqual(rows[3][1].text, '🎁 خرید گیفت کارت')
-            self.assertEqual(rows[4][0].text, '🎧 پشتیبانی')
+            self.assertEqual(rows[4][0].text, '⭐ خرید استارز')
+            self.assertEqual(rows[4][1].text, '🎁 خرید گیفت کارت')
+            self.assertEqual(rows[5][0].text, '🎧 پشتیبانی')
 
     def test_icon_for_prefers_product_then_section(self):
         appearance._CACHE = {
@@ -128,8 +128,8 @@ class AppearanceTests(unittest.TestCase):
         }
         rows = main_menu().keyboard
         self.assertEqual(rows[0][0].to_dict().get('icon_custom_emoji_id'), '777')
-        self.assertEqual(rows[3][0].to_dict().get('icon_custom_emoji_id'), '777')
-        self.assertEqual(rows[3][1].to_dict().get('icon_custom_emoji_id'), '777')
+        self.assertEqual(rows[4][0].to_dict().get('icon_custom_emoji_id'), '777')
+        self.assertEqual(rows[4][1].to_dict().get('icon_custom_emoji_id'), '777')
 
     def test_pack_picks_related_emoji_types(self):
         pack = {

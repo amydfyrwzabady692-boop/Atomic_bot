@@ -120,7 +120,7 @@ def _request(method, path, body=None, idempotency_key=None):
         }
 
 
-def check_player_id(user_id, game=None):
+def check_player_id(user_id, game=None, server_id=None):
     """تایید آیدی بازیکن. خروجی: {ok, name, error}"""
     if not is_configured():
         return {'ok': False, 'error': 'سرویس تایید آیدی پیکربندی نشده است.'}
@@ -128,6 +128,8 @@ def check_player_id(user_id, game=None):
     code = str(game or _game_code()).strip() or _game_code()
     player = str(user_id or '').strip()
     body = {'game': code, 'user_id': player, 'userid': player}
+    if server_id:
+        body['server_id'] = str(server_id).strip()
     data = _request('POST', '/games/checkPlayerId', body)
     if data.get('valid') == 'valid' and data.get('name'):
         return {'ok': True, 'name': data['name']}
@@ -730,7 +732,7 @@ def verify_callback_token(order_pk, gem_info_pk, token):
 
 def place_game_order(
     catalogue_name, player_id, remark='', idempotency_key=None,
-    callback_url='', game_code=None,
+    callback_url='', game_code=None, server_id=None,
 ):
     """ثبت سفارش شارژ. خروجی: {ok, order_id, status, player_name, error}"""
     if not is_configured():
@@ -740,6 +742,8 @@ def place_game_order(
         'catalogue_name': str(catalogue_name),
         'player_id': str(player_id).strip(),
     }
+    if server_id:
+        body['server_id'] = str(server_id).strip()
     if remark:
         body['remark'] = remark
     if callback_url:
@@ -1059,3 +1063,74 @@ def can_fulfill_stars(catalogue_name, force=False):
     return available, cost, snapshot['balance'], (
         None if available else 'موجودی این بسته در حال حاضر کافی نیست.'
     )
+
+
+# ── شارژ بازی‌ها (پابجی، کالاف و …) ─────────────────────────────────────
+_game_catalogue_cache = {}
+_GAME_CATALOGUE_SECONDS = 300
+_balance_cache = {'at': 0.0, 'value': None}
+
+
+def game_idempotency_key(order_pk, row_pk):
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f'atomicbot-game-{order_pk}-{row_pk}'))
+
+
+def get_game_catalogue(code, force=False):
+    """کاتالوگ دلاریِ یک بازی: {ok, items: [{name, cost_usd}], prices_by_name}."""
+    if not is_configured():
+        return {'ok': False, 'error': 'API key not configured'}
+    code = str(code or '').strip()
+    now = time.monotonic()
+    cached = _game_catalogue_cache.get(code)
+    if cached and not force and now - cached[0] < _GAME_CATALOGUE_SECONDS:
+        return cached[1]
+    data = _request('GET', f'/games/{urllib.parse.quote(code, safe="")}/catalogue')
+    if not data.get('success'):
+        result = {'ok': False, 'error': data.get('message') or 'دریافت کاتالوگ بازی ناموفق بود.'}
+        _game_catalogue_cache[code] = (now - _GAME_CATALOGUE_SECONDS + 60, result)
+        return result
+    items, prices = [], {}
+    for item in data.get('catalogues') or []:
+        name = str(item.get('name') or '').strip()
+        try:
+            cost = Decimal(str(item.get('amount')))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if not name or cost <= 0:
+            continue
+        items.append({'name': name, 'cost_usd': cost})
+        prices[_normalise_catalogue_name(name)] = cost
+    result = {'ok': True, 'items': items, 'prices_by_name': prices}
+    _game_catalogue_cache[code] = (now, result)
+    return result
+
+
+def get_balance_usd(force=False):
+    """موجودی دلاری کیف پول تامین‌کننده (یک دقیقه کش)."""
+    now = time.monotonic()
+    if not force and _balance_cache['value'] is not None and now - _balance_cache['at'] < 60:
+        return _balance_cache['value']
+    me = _request('GET', '/getMe')
+    try:
+        value = Decimal(str(me['balance'])) if me.get('success') else None
+    except (InvalidOperation, TypeError, ValueError, KeyError):
+        value = None
+    if value is not None:
+        _balance_cache.update(at=now, value=value)
+    return value
+
+
+def can_fulfill_game(code, catalogue_name, force=False):
+    """(available, cost, balance, error) — مثل can_fulfill_stars، برای هر بازی."""
+    catalogue = get_game_catalogue(code, force=force)
+    if not catalogue.get('ok'):
+        return False, None, None, catalogue.get('error')
+    cost = catalogue['prices_by_name'].get(_normalise_catalogue_name(catalogue_name))
+    if cost is None:
+        return False, None, None, 'این بسته در کاتالوگ زندهٔ تامین‌کننده نیست.'
+    balance = get_balance_usd(force=force)
+    if balance is None:
+        return False, cost, None, 'موجودی تامین‌کننده در دسترس نیست.'
+    available = balance >= cost
+    return available, cost, balance, None if available else 'موجودی این بسته در حال حاضر کافی نیست.'
+

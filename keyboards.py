@@ -102,6 +102,8 @@ def main_menu():
     rows = [
         [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary'),
          _kbtn('b.menu.wal', '💰 کیف پول', 'success')],
+        # همهٔ بازی‌های دیگر (پابجی، کالاف، …) پشت یک دکمه، نه یک دکمه برای هر بازی.
+        [_kbtn('b.menu.games', '🕹 شارژ بازی‌ها | پابجی، کالاف و…', 'success')],
         [_kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
          _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
         [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
@@ -112,7 +114,7 @@ def main_menu():
          _kbtn('b.menu.prem', '💎 تلگرام پرمیوم', 'primary')],
     ]
     if _referral_menu_visible():
-        rows.insert(4, [_kbtn('b.menu.ref', appearance.DEFAULTS['b.menu.ref'], 'success')])
+        rows.insert(5, [_kbtn('b.menu.ref', appearance.DEFAULTS['b.menu.ref'], 'success')])
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
@@ -773,6 +775,7 @@ def admin_home_keyboard(counts=None):
             InlineKeyboardButton(support_label, callback_data='admx_hub_support'),
         ],
         [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
+        [InlineKeyboardButton('👥 گروه‌ها و تبلیغ ۱۲ ساعته', callback_data='grp_home')],
         [InlineKeyboardButton('🆕 رویداد جدید بازی · انتشار در چنل', callback_data='gev_home')],
         [InlineKeyboardButton('⚙️ تنظیمات سیستم', callback_data='admx_hub_system')],
         [InlineKeyboardButton('🔄 بروزرسانی پنل', callback_data='adm_home')],

@@ -1213,7 +1213,9 @@ def star_user_delivery_text(order_id):
 
 
 def auto_delivery_user_text(order_id):
-    return gift_card_user_delivery_text(order_id) or star_user_delivery_text(order_id)
+    import games_db
+    return (gift_card_user_delivery_text(order_id) or star_user_delivery_text(order_id)
+            or games_db.game_user_delivery_text(order_id))
 
 
 def update_star_g2(star_id, *, order_id_g2=None, status=None, player_name=None):
@@ -1731,11 +1733,19 @@ def sync_gift_and_star_catalogs(force=False):
         stars = sync_star_packages(force=force)
     except Exception:
         _LOG.exception('stars catalog sync crashed')
+    games = 0
+    try:
+        import games_db
+        # همیشه با فاصلهٔ ۲۴ ساعته (برای هر بازی یک درخواست کاتالوگ)؛ استارتِ ربات
+        # منتظرش نمی‌ماند مگر از آخرین بار یک روز گذشته باشد.
+        games = games_db.sync_game_packages(force=False)
+    except Exception:
+        _LOG.exception('game top-up catalog sync crashed')
     try:
         _copy_premium_emoji_to_product_keys()
     except Exception:
         _LOG.exception('product premium emoji copy after catalog sync failed')
-    return gift + stars
+    return gift + stars + games
 
 
 def set_order_authority(order_id, authority, payment_method='zarinpal',
@@ -2999,6 +3009,10 @@ def fulfill_order(order_id):
             gift = get_gift_card_order(order_id)
             if star and not infos:
                 return _fulfill_star_order(order_id, star)
+            import games_db
+            game_topup = games_db.get_game_topup_order(order_id)
+            if game_topup and not infos:
+                return games_db.fulfill_game_topup(order_id, game_topup)
             if gift and not infos:
                 return _fulfill_gift_card(order_id, gift)
             if not infos and is_sense_order(order_id):
@@ -4126,6 +4140,71 @@ def ensure_admin_schema():
         'ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "LastError" TEXT NOT NULL DEFAULT \'\'',
         '''ALTER TABLE "StarOrders" ADD COLUMN IF NOT EXISTS "IsManual" BOOLEAN NOT NULL DEFAULT false''',
         '''UPDATE "StarPackages" SET "IsManual"=true WHERE "StarsAmount" IN (1500, 2500) OR "CatalogueName" IN ('1.5K Stars', '2.5K Stars')''',
+        # شارژ بازی‌ها (پابجی، کالاف و …): فهرست از سایت، بها از تامین‌کننده.
+        '''CREATE TABLE IF NOT EXISTS "BotGames" (
+            "Id" SERIAL PRIMARY KEY,
+            "Code" VARCHAR(64) NOT NULL UNIQUE,
+            "TitleFa" VARCHAR(190) NOT NULL,
+            "Unit" VARCHAR(60) NOT NULL DEFAULT '',
+            "NeedsServer" BOOLEAN NOT NULL DEFAULT false,
+            "Servers" TEXT NOT NULL DEFAULT '',
+            "Warning" TEXT NOT NULL DEFAULT '',
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "GameTopupPackages" (
+            "Id" SERIAL PRIMARY KEY,
+            "GameId" INTEGER NOT NULL REFERENCES "BotGames"("Id") ON DELETE CASCADE,
+            "CatalogueName" VARCHAR(160) NOT NULL,
+            "Title" VARCHAR(190) NOT NULL,
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "Price" INTEGER NOT NULL CHECK ("Price" > 0),
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "SortOrder" INTEGER NOT NULL DEFAULT 0,
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE ("GameId", "CatalogueName")
+        )''',
+        '''CREATE TABLE IF NOT EXISTS "GameTopupOrders" (
+            "Id" SERIAL PRIMARY KEY,
+            "OrderId" INTEGER NOT NULL UNIQUE REFERENCES "Orders"("Id") ON DELETE CASCADE,
+            "OrderItemId" INTEGER REFERENCES "OrderItems"("Id") ON DELETE SET NULL,
+            "PackageId" INTEGER REFERENCES "GameTopupPackages"("Id") ON DELETE SET NULL,
+            "GameCode" VARCHAR(64) NOT NULL,
+            "GameTitle" VARCHAR(190) NOT NULL DEFAULT '',
+            "CatalogueName" VARCHAR(160) NOT NULL,
+            "Title" VARCHAR(190) NOT NULL DEFAULT '',
+            "PlayerId" VARCHAR(64) NOT NULL,
+            "ServerId" VARCHAR(120) NOT NULL DEFAULT '',
+            "PlayerName" VARCHAR(255) NOT NULL DEFAULT '',
+            "CostUsd" NUMERIC(18,6) NOT NULL,
+            "SaleToman" INTEGER NOT NULL CHECK ("SaleToman" > 0),
+            "UsdTomanRate" INTEGER,
+            "G2OrderId" VARCHAR(50),
+            "G2Status" VARCHAR(30) NOT NULL DEFAULT '',
+            "LastError" TEXT NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_game_topup_orders_status
+           ON "GameTopupOrders" ("G2Status")''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('game_profit_percent','10',now())
+           ON CONFLICT ("Key") DO NOTHING''',
+        # گروه‌هایی که ربات عضوشان است و تبلیغ ۱۲ ساعته.
+        '''CREATE TABLE IF NOT EXISTS "BotGroups" (
+            "ChatId" BIGINT PRIMARY KEY,
+            "Title" VARCHAR(255) NOT NULL DEFAULT '',
+            "Username" VARCHAR(64) NOT NULL DEFAULT '',
+            "ChatType" VARCHAR(20) NOT NULL DEFAULT '',
+            "IsMember" BOOLEAN NOT NULL DEFAULT true,
+            "AdsEnabled" BOOLEAN NOT NULL DEFAULT true,
+            "LastAdMessageId" BIGINT,
+            "LastAdAt" TIMESTAMPTZ,
+            "LastError" TEXT NOT NULL DEFAULT '',
+            "AddedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "UpdatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+        )''',
         # احراز کارت بانکی: کارت‌به‌کارت فقط از کارتِ تاییدشده.
         '''CREATE TABLE IF NOT EXISTS "CardVerifications" (
             "Id" SERIAL PRIMARY KEY,
@@ -6767,6 +6846,10 @@ def list_processing_auto_orders(limit=50):
             'SELECT DISTINCT o."Id" FROM "Orders" o '
             'JOIN "StarOrders" s ON s."OrderId"=o."Id" '
             'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
+            'UNION '
+            'SELECT DISTINCT o."Id" FROM "Orders" o '
+            'JOIN "GameTopupOrders" t ON t."OrderId"=o."Id" '
+            'WHERE o."Status"=\'processing\' AND o."PaymentVerifiedAt" IS NOT NULL '
             'ORDER BY 1 LIMIT %s',
             (max(1, min(int(limit), 100)),),
         )
@@ -6844,6 +6927,17 @@ def list_unnotified_auto_deliveries(limit=50):
             'WHERE o."Status" IN (\'delivered\',\'completed\') '
             'AND o."PaymentVerifiedAt" IS NOT NULL '
             'AND s."G2Status"=\'COMPLETED\' '
+            'AND (o."DeliveryUserNotifiedAt" IS NULL '
+            'OR o."DeliveryAdminNotifiedAt" IS NULL) '
+            'UNION '
+            'SELECT DISTINCT o."Id",o."TelegramId",'
+            '(o."DeliveryUserNotifiedAt" IS NOT NULL),'
+            '(o."DeliveryAdminNotifiedAt" IS NOT NULL) '
+            'FROM "Orders" o '
+            'JOIN "GameTopupOrders" t ON t."OrderId"=o."Id" '
+            'WHERE o."Status" IN (\'delivered\',\'completed\') '
+            'AND o."PaymentVerifiedAt" IS NOT NULL '
+            'AND t."G2Status"=\'COMPLETED\' '
             'AND (o."DeliveryUserNotifiedAt" IS NULL '
             'OR o."DeliveryAdminNotifiedAt" IS NULL) '
             'ORDER BY 1 LIMIT %s',

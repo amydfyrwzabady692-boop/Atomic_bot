@@ -211,6 +211,15 @@ def _delivery_preflight(order_id, force=True):
         if not available:
             return False, error or 'موجودی استارز کافی نیست.', cost, balance
         return True, None, cost, balance
+    import games_db
+    game_topup = games_db.get_game_topup_order(order_id)
+    if game_topup:
+        available, cost, balance, error = g2bulk.can_fulfill_game(
+            game_topup['game_code'], game_topup['catalogue'], force=force
+        )
+        if not available:
+            return False, error or 'موجودی این بسته کافی نیست.', cost, balance
+        return True, None, cost, balance
     for info in get_gem_infos_for_order(order_id):
         (_info_id, _pkg_id, _uid, _name, auto_deliver,
          catalogue, _g2_id, amount, _g2_status) = info
@@ -278,6 +287,14 @@ def _failure_reason(order_id, status=''):
         star_error = ''
     if star_error:
         return str(star_error)[:900]
+    try:
+        import games_db
+
+        game_error = games_db.game_order_error(order_id)
+    except Exception:  # noqa: BLE001
+        game_error = ''
+    if game_error:
+        return str(game_error)[:900]
     text = str(status or '')
     if text and not text.startswith(('refunded:', 'partial_refunded:')) and text not in (
             'failed', 'processing'):

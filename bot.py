@@ -38,6 +38,10 @@ from handlers.gem_credentials import (
 from handlers.sensitivity import sens_menu, sens_pc_menu, sens_mobile_menu, sens_buy
 from handlers.cart import show_cart
 from handlers.giftcards import giftcard_menu, giftcard_brand, giftcard_show, giftcard_buy
+from handlers.group_ads import group_ads_handlers
+from handlers.games import (
+    games_callback_handlers, games_conversation_handler, games_menu,
+)
 from handlers.stars import (
     premium_menu, stars_menu, show_star, stars_conversation_handler,
 )
@@ -127,6 +131,7 @@ MENU_ACTIONS = {
     'sense': sens_menu,
     'stars': stars_menu,
     'premium': premium_menu,
+    'games': games_menu,
     'giftcards': giftcard_menu,
     'cart': show_cart,
     'referral': referral_menu,
@@ -293,13 +298,17 @@ async def post_init(app):
     app.bot_data['_site_outbox_task'] = asyncio.create_task(
         site_outbox_loop(app), name='site-outbox'
     )
+    import group_ads
+    app.bot_data['_group_ads_task'] = asyncio.create_task(
+        group_ads.group_ads_loop(app), name='group-ads'
+    )
     _log_startup_checks()
 
 
 async def post_shutdown(app):
     for key in (
         '_g2_reconcile_task', '_payment_expiry_task', '_admin_alert_task',
-        '_price_sync_task', '_site_outbox_task',
+        '_price_sync_task', '_site_outbox_task', '_group_ads_task',
     ):
         task = app.bot_data.pop(key, None)
         if not task:
@@ -922,6 +931,9 @@ def main():
     # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
     app.add_handler(identity_reason_handler(), group=-2)
     app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
+    # گروه‌هایی که ربات عضوشان است + پنل تبلیغ ۱۲ ساعته.
+    for handler, group in group_ads_handlers():
+        app.add_handler(handler, group=group)
 
     # دکمه «خرید جم» پست‌های رویداد (/start evgem_<id>) — باید قبل از /start عمومی باشد.
     app.add_handler(game_events.start_link_handler())
@@ -944,6 +956,7 @@ def main():
 
     app.add_handler(gem_conversation_handler())
     app.add_handler(stars_conversation_handler())
+    app.add_handler(games_conversation_handler())
     app.add_handler(credential_conversation_handler())
     app.add_handler(payment_conversation_handler())
     app.add_handler(identity_conversation_handler())
@@ -984,6 +997,8 @@ def main():
     app.add_handler(CallbackQueryHandler(stars_menu, pattern=r'^(?:st_home|st_page_\d+)$'))
     app.add_handler(CallbackQueryHandler(show_star, pattern=r'^st_\d+$'))
     app.add_handler(CallbackQueryHandler(premium_menu, pattern=r'^pr_home$'))
+    for handler in games_callback_handlers():
+        app.add_handler(handler)
     app.add_handler(CallbackQueryHandler(giftcard_menu, pattern=r'^gc_home$'))
     app.add_handler(CallbackQueryHandler(giftcard_brand, pattern=r'^gc_b_(?:gplay_us|itunes_us|itunes_tr|gplay_tr)$'))
     app.add_handler(CallbackQueryHandler(giftcard_show, pattern=r'^gc_p_\d+$'))

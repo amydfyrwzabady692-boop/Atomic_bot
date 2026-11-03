@@ -316,7 +316,7 @@ class SettingsAndMenuTests(unittest.TestCase):
             rows = main_menu().keyboard
         labels = [btn.text for row in rows for btn in row]
         self.assertNotIn(appearance.DEFAULTS['b.menu.ref'], labels)
-        self.assertEqual(rows[4][0].text, '🎧 پشتیبانی')
+        self.assertEqual(rows[5][0].text, '🎧 پشتیبانی')
 
     def test_menu_shows_green_referral_row_when_enabled(self):
         cache = {'at': time.monotonic(), 'values': _enabled_settings()}
@@ -324,9 +324,9 @@ class SettingsAndMenuTests(unittest.TestCase):
                 patch.object(db, '_POOL', object()), \
                 patch.dict(rdb._settings_cache, cache):
             rows = main_menu().keyboard
-        self.assertEqual(rows[4][0].text, appearance.DEFAULTS['b.menu.ref'])
-        self.assertEqual(rows[4][0].to_dict().get('style'), 'success')
-        self.assertEqual(rows[5][0].text, '🎧 پشتیبانی')
+        self.assertEqual(rows[5][0].text, appearance.DEFAULTS['b.menu.ref'])
+        self.assertEqual(rows[5][0].to_dict().get('style'), 'success')
+        self.assertEqual(rows[6][0].text, '🎧 پشتیبانی')
         with patch.object(appearance, '_CACHE', {}):
             self.assertEqual(appearance.menu_action(appearance.DEFAULTS['b.menu.ref']), 'referral')
 
