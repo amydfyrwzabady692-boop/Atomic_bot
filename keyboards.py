@@ -816,10 +816,9 @@ def admin_hub_pay_keyboard(counts=None, state=None):
             InlineKeyboardButton(_count_label('🌐 رسیدهای سایت', c.get('site_receipts')),
                                  callback_data='admx_sitereceipts'),
         ],
-        [InlineKeyboardButton(_count_label('💰 برگشت به کیف پول', c.get('refunds')),
-                              callback_data='admx_refunds')],
         [
-            InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
+            InlineKeyboardButton(_count_label('💰 برگشت به کیف پول', c.get('refunds')),
+                                 callback_data='admx_refunds'),
             InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed'),
         ],
         [
@@ -840,14 +839,18 @@ def admin_hub_pay_keyboard(counts=None, state=None):
 
 
 def admin_hub_users_keyboard():
+    """همهٔ کارهای کاربران در یک صفحه؛ پیام همگانی در «تبلیغ و کانال‌ها» است."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('🔎 جستجوی کاربر', callback_data='adm_find')],
         [
             InlineKeyboardButton('📋 آخرین کاربران', callback_data='adm_users'),
             InlineKeyboardButton('💰 دارای موجودی', callback_data='adm_users_balance'),
         ],
-        [InlineKeyboardButton('📨 پیام همگانی و شارژ همگانی', callback_data='admx_actions')],
-        [InlineKeyboardButton('🎁 رفرال و برترین دعوت‌کننده‌ها', callback_data='radm_home')],
+        [
+            InlineKeyboardButton('👥 دارای زیرمجموعه', callback_data='admx_users_referral'),
+            InlineKeyboardButton('💳 کارت‌های فعال', callback_data='admx_users_card'),
+        ],
+        [InlineKeyboardButton('💸 شارژ همگانی کیف پول', callback_data='admi_masscharge')],
         _home_row(),
     ])
 
@@ -858,7 +861,7 @@ def admin_hub_promo_keyboard():
         [InlineKeyboardButton('🆕 رویداد جدید بازی · انتشار در چنل', callback_data='gev_home')],
         [InlineKeyboardButton('📢 جوین اجباری کانال', callback_data='admx_forcedjoin')],
         [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
-        [InlineKeyboardButton('📨 پیام همگانی', callback_data='admx_actions')],
+        [InlineKeyboardButton('📣 پیام همگانی به کاربران', callback_data='admi_broadcast')],
         _home_row(),
     ])
 
@@ -875,9 +878,8 @@ def admin_hub_reports_keyboard():
         ],
         [
             InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
-            InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed'),
+            InlineKeyboardButton('🧭 لاگ کارهای مدیران', callback_data='admx_audit'),
         ],
-        [InlineKeyboardButton('🧭 لاگ کارهای مدیران', callback_data='admx_audit')],
         _home_row(),
     ])
 
@@ -900,17 +902,24 @@ def admin_hub_system_keyboard(state=None):
     st = state or {}
     return InlineKeyboardMarkup([
         [InlineKeyboardButton('🏪 نام فروشگاه، خوش‌آمد و متن‌ها', callback_data='admx_settings')],
+        [InlineKeyboardButton('🎨 ظاهر ربات (متن، دکمه، ایموجی)', callback_data='admx_hub_look')],
         [
-            InlineKeyboardButton('✨ ظاهر متن و دکمه‌ها', callback_data='ap_home'),
-            InlineKeyboardButton('🎨 تم ایموجی پریمیوم', callback_data='th_home:text'),
+            InlineKeyboardButton('🪪 سقف احراز هویت', callback_data='admx_idvsettings'),
+            InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins'),
         ],
-        [InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home')],
-        [InlineKeyboardButton('🪪 سقف احراز هویت', callback_data='admx_idvsettings')],
-        [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
         [InlineKeyboardButton(_on_off('اعلان خودکار به مدیر', st.get('alerts', True)),
                               callback_data='admx_toggle_alerts')],
-        [InlineKeyboardButton('🔄 سینک قیمت جم از G2B', callback_data='admx_pricesync')],
         _home_row(),
+    ])
+
+
+def admin_hub_look_keyboard():
+    """ظاهرِ ربات: سه ابزار که قبلاً کنار هم در «تنظیمات» پخش بودند."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✨ ظاهر متن و دکمه‌ها', callback_data='ap_home')],
+        [InlineKeyboardButton('🎨 تم ایموجی پریمیوم', callback_data='th_home:text')],
+        [InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home')],
+        [InlineKeyboardButton('🔙 تنظیمات', callback_data='admx_hub_system')],
     ])
 
 

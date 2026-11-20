@@ -79,10 +79,10 @@ def _main_hub_kb(target_type: str = "text") -> InlineKeyboardMarkup:
         ])
 
     actions = [
-        [InlineKeyboardButton("📦 استخراج و ست خودکار تمام پک‌ها (Auto-Sync Packs)", callback_data="th_sync")],
-        [InlineKeyboardButton("⚡ تخصیص خودکار دسته‌ای (Bulk Auto-Assign)", callback_data=f"th_bulk:{target_type}")],
+        [InlineKeyboardButton("📦 ست خودکار ایموجی همهٔ پک‌ها", callback_data="th_sync")],
+        [InlineKeyboardButton("⚡ تخصیص خودکار دسته‌ای", callback_data=f"th_bulk:{target_type}")],
         [InlineKeyboardButton("🔄 بروزرسانی حافظه کش", callback_data=f"th_ref:{target_type}")],
-        [InlineKeyboardButton("🔙 پنل اصلی ادمین", callback_data="adm_home")],
+        [InlineKeyboardButton("🔙 ظاهر ربات", callback_data="admx_hub_look")],
     ]
     return InlineKeyboardMarkup([type_row] + cat_rows + actions)
 

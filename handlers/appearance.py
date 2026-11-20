@@ -37,7 +37,7 @@ def _home_kb():
         [InlineKeyboardButton(
             appearance.HUBS['b']['title'], callback_data='ap_h:b'
         )],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [InlineKeyboardButton('🔙 ظاهر ربات', callback_data='admx_hub_look')],
     ])
 
 

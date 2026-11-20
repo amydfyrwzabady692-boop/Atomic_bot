@@ -44,7 +44,7 @@ def _keyboard(user_id=None):
     ]
     if user_id is not None and is_admin(user_id):
         rows.append([
-            InlineKeyboardButton('🔙 پنل اصلی ادمین', callback_data='adm_home')
+            InlineKeyboardButton('🔙 ظاهر ربات', callback_data='admx_hub_look')
         ])
     return InlineKeyboardMarkup(rows)
 

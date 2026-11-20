@@ -123,11 +123,39 @@ class AdminOperationsTests(unittest.TestCase):
                         'admx_hub_users', 'admx_shop', 'admx_hub_support', 'admx_hub_promo',
                         'admx_hub_reports', 'admx_hub_system'):
             self.assertIn(section, home)
-        # ظاهر و متون یک لایه پایین‌تر، در «تنظیمات»
+        # ظاهر یک لایه پایین‌تر: «تنظیمات» ← «ظاهر ربات»
+        from keyboards import admin_hub_look_keyboard
+
         system = [b.callback_data for row in admin_hub_system_keyboard().inline_keyboard
                   for b in row]
-        self.assertIn('ap_home', system)
+        self.assertIn('admx_hub_look', system)
         self.assertIn('admx_idvsettings', system)
+        look = [b.callback_data for row in admin_hub_look_keyboard().inline_keyboard
+                for b in row]
+        for screen in ('ap_home', 'th_home:text', 'studio_home'):
+            self.assertIn(screen, look)
+
+    def test_no_option_sits_in_two_sections(self):
+        """هر گزینه فقط در یک بخش؛ قبلاً «گزارش پرداخت» و «پیام همگانی» دو جا بودند."""
+        import keyboards as kb
+
+        hubs = {
+            'orders': kb.admin_hub_orders_keyboard(), 'pay': kb.admin_hub_pay_keyboard(),
+            'users': kb.admin_hub_users_keyboard(), 'promo': kb.admin_hub_promo_keyboard(),
+            'reports': kb.admin_hub_reports_keyboard(), 'support': kb.admin_hub_support_keyboard(),
+            'system': kb.admin_hub_system_keyboard(), 'shop': kb.admin_shop_keyboard(),
+            'look': kb.admin_hub_look_keyboard(), 'pricing': kb.admin_pricing_keyboard(),
+        }
+        navigation = {'adm_home', 'admx_hub_system', 'admx_shop', 'admx_hub_pay'}
+        where = {}
+        for name, markup in hubs.items():
+            for row in markup.inline_keyboard:
+                for button in row:
+                    data = button.callback_data
+                    if data and data not in navigation:
+                        where.setdefault(data, set()).add(name)
+        repeated = {data: sorted(names) for data, names in where.items() if len(names) > 1}
+        self.assertEqual(repeated, {})
 
     def test_payment_toggles_show_their_state(self):
         from keyboards import admin_hub_pay_keyboard

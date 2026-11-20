@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import uuid
+from text_safety import markdown_safe
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ from keyboards import (
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
     admin_hub_pay_keyboard, admin_hub_promo_keyboard, admin_identity_settings_keyboard,
+    admin_hub_look_keyboard,
     admin_pricing_keyboard, main_menu, credential_admin_home_keyboard,
 )
 
@@ -815,7 +817,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'admx_hub_users':
         await query.edit_message_text(
             '👥 *مدیریت کاربران*\n'
-            'جستجو · موجودی · پیام همگانی',
+            'جستجو · موجودی · زیرمجموعه · کارت‌ها · شارژ همگانی',
             parse_mode='Markdown',
             reply_markup=admin_hub_users_keyboard(),
         )
@@ -842,9 +844,17 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == 'admx_hub_system':
         await query.edit_message_text(
             '⚙️ *تنظیمات*\n'
-            'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها · سینک قیمت',
+            'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها',
             parse_mode='Markdown',
             reply_markup=admin_hub_system_keyboard(_system_state()),
+        )
+        return
+    if data == 'admx_hub_look':
+        await query.edit_message_text(
+            '🎨 *ظاهر ربات*\n'
+            'متن و دکمه‌ها · تم ایموجی پریمیوم · استودیو ظاهر',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_look_keyboard(),
         )
         return
     if data == 'admx_hub_pay':
@@ -1973,10 +1983,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         existing_chat_ids = set()
         for channel_id, chat_id, title, invite_url, active in channels:
             existing_chat_ids.add(str(chat_id).lower())
+            # نام و لینکِ کانال «_» دارند (t.me/Omid_AtomicFF)؛ بی‌escape کلِ پیام بی‌قالب می‌شد.
             lines.append(
-                f'{"✅" if active else "❌"} *{title or chat_id}*\n'
-                f'شناسه: `{chat_id}`\n'
-                f'لینک: {invite_url}\n'
+                f'{"✅" if active else "❌"} {markdown_safe(title or chat_id, 60)}\n'
+                f'شناسه: `{str(chat_id).replace("`", "")}`\n'
+                f'لینک: {markdown_safe(invite_url or "—", 120)}\n'
             )
             buttons.append([InlineKeyboardButton(
                 f'🗑 حذف {title or chat_id}',
@@ -2094,7 +2105,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'card': 'شماره کارت فعال',
         }
         if kind not in titles:
-            await _edit(query, 'فیلتر نامعتبر است.', [_back('admx_actions')])
+            await _edit(query, 'فیلتر نامعتبر است.', [_back('admx_hub_users')])
             return
         try:
             rows = await asyncio.to_thread(list_users_filtered, kind, 12)
@@ -2102,7 +2113,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _edit(
                 query,
                 f'❌ دریافت لیست ممکن نشد:\n{exc}',
-                [_back('admx_actions')],
+                [_back('admx_hub_users')],
             )
             return
         lines = [f'👥 کاربران {titles[kind]}', '━━━━━━━━━━━━━━━']
@@ -2144,7 +2155,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             lines.append('موردی ثبت نشده است.')
         else:
             lines.append('\nحداکثر ۱۲ مورد — برای بقیه از جستجوی کاربر استفاده کن.')
-        buttons.append(_back('admx_actions'))
+        buttons.append(_back('admx_hub_users'))
         # بدون Markdown تا نام/یوزرنیم عجیب پیام را خراب نکند
         await _edit(query, '\n'.join(lines), buttons, markdown=False)
     elif data == 'admx_receipts':
@@ -2909,7 +2920,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         'بله، شارژ همگانی انجام شود',
                         callback_data=f'admx_massconfirm_{amount}',
                     ),
-                    InlineKeyboardButton('انصراف', callback_data='admx_actions'),
+                    InlineKeyboardButton('انصراف', callback_data='admx_hub_users'),
                 ]]),
             )
         elif action == 'ordersearch':
