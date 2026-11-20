@@ -1681,9 +1681,14 @@ async def admin_review_order_prompt(update: Update, ctx: ContextTypes.DEFAULT_TY
         'action': action, 'order_id': order_id, 'armed_at': time.time(),
     }
     await query.answer(label, show_alert=True)
-    await query.edit_message_reply_markup(
-        reply_markup=admin_card_confirm_keyboard(order_id, action)
-    )
+    if action == 'no':
+        from handlers.receipt_reasons import reasons_keyboard
+
+        # رد فقط با دلیل؛ همان دلیل برای خریدار می‌رود.
+        keyboard = reasons_keyboard('o', order_id)
+    else:
+        keyboard = admin_card_confirm_keyboard(order_id, action)
+    await query.edit_message_reply_markup(reply_markup=keyboard)
 
 
 async def admin_review_order_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1704,7 +1709,9 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
-    order_id = int(query.data.split('_')[-1])
+    from handlers.receipt_reasons import parse_reject
+
+    order_id, reason = parse_reject(query.data)
     review = ctx.user_data.pop('admin_order_review', None) or {}
     if (
         review.get('action') != 'no' or review.get('order_id') != order_id
@@ -1716,6 +1723,13 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     await query.answer()
+    await reject_order_receipt(ctx.bot, update.effective_user, order_id, reason, query)
+
+
+async def reject_order_receipt(bot, admin_user, order_id, reason, query):
+    """ردِ رسیدِ سفارشِ ربات با دلیل؛ از دکمهٔ دلیل یا دلیلِ نوشته‌شده."""
+    from handlers.receipt_reasons import reason_line
+
     order = get_order(order_id)
     if not order:
         await _edit_review_message(query, "❌ سفارش پیدا نشد.")
@@ -1725,30 +1739,30 @@ async def admin_reject(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not rejected:
         await _edit_review_message(query, f"❌ رد امن انجام نشد: {reject_error}")
         return
-    reviewer = admin_display_name(update.effective_user)
+    reviewer = admin_display_name(admin_user)
     await broadcast_reviewed(
-        ctx.bot, 'order', order_id,
+        bot, 'order', order_id,
         approved=False,
         reviewer_name=reviewer,
-        result_text=f'❌ سفارش #{order_id} رد شد.',
+        result_text=f'❌ سفارش #{order_id} رد شد.{reason_line(reason)}',
     )
     log_payment_attempt(
         provider='card_transfer', event='card_rejected', status='rejected',
         amount=expected_amount or order[2],
         order_id=order_id, telegram_id=order[6],
-        message=f'rejected by {update.effective_user.id}',
+        message=f'rejected by {admin_user.id}: {reason}'[:250],
     )
     log_admin_action(
-        update.effective_user.id, 'card_order_rejected', 'order', order_id,
-        f'amount={expected_amount or order[2]} refunded={refunded}',
+        admin_user.id, 'card_order_rejected', 'order', order_id,
+        f'amount={expected_amount or order[2]} refunded={refunded} reason={reason}',
     )
-    await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.")
+    await _edit_review_message(query, f"❌ سفارش #{order_id} رد شد.{reason_line(reason)}")
     if order and order[6]:
         extra = f"\n💰 {refunded:,} تومان به کیف پول برگشت." if refunded else ""
         await _notify_user(
-            ctx.bot,
+            bot,
             order[6],
-            f"❌ سفارش #{order_id} رد شد.{extra}\n"
+            f"❌ رسید سفارش #{order_id} تایید نشد و سفارش رد شد.{reason_line(reason)}{extra}\n"
             f"اگر مبلغی واریز کردی با پشتیبانی در ارتباط باش.",
         )
 

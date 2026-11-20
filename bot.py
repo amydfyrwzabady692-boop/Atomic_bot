@@ -904,11 +904,28 @@ def _install_premium_glyph_hook(application=None) -> None:
     ExtBot._premium_glyph_hooked = True
 
 
+def ensure_theme_tables():
+    """جدول‌های «تم ایموجی پریمیوم» را اگر نیستند بساز (مایگریشنِ اپ game).
+
+    Dockerfile فقط bot.py را اجرا می‌کند و هیچ‌جا manage.py migrate صدا زده
+    نمی‌شد؛ روی سرورِ تازه جدولِ emoji_overrides وجود نداشت، کش‌ها بی‌صدا خالی
+    می‌ماندند و دکمه‌های «حذف و بازگشت به پیش‌فرض» و «ست خودکار پک‌ها» خطا
+    می‌دادند. fake_initial: اگر کسی قبلاً جدول را دستی ساخته، فقط ثبت می‌شود.
+    """
+    try:
+        from django.core.management import call_command
+
+        call_command('migrate', 'game', fake_initial=True, interactive=False, verbosity=0)
+    except Exception:  # noqa: BLE001 — تم اختیاری است؛ فروش نباید بخوابد
+        log.exception('theme tables could not be prepared; premium emoji theme stays off')
+
+
 def main():
     token = os.getenv('BOT_TOKEN')
     if not token or token in ('YOUR_TOKEN_HERE', 'YOUR_TELEGRAM_BOT_TOKEN'):
         raise RuntimeError("توکن ربات را در .env تنظیم کن: BOT_TOKEN=...")
 
+    ensure_theme_tables()
     # warm caches BEFORE building the app (sync context) — never lazily in async handlers
     emoji.refresh_cache()
     button_emoji.refresh_cache()
@@ -930,6 +947,11 @@ def main():
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
     # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
     app.add_handler(identity_reason_handler(), group=-2)
+    # دلیلِ نوشته‌شده برای ردِ رسید (و دکمهٔ «نوشتن دلیل دیگر»).
+    from handlers.receipt_reasons import receipt_reason_handlers
+
+    for handler, group in receipt_reason_handlers():
+        app.add_handler(handler, group=group)
     app.add_handler(TypeHandler(Update, force_join_guard), group=-1)
     # گروه‌هایی که ربات عضوشان است + پنل تبلیغ ۱۲ ساعته.
     for handler, group in group_ads_handlers():
@@ -1011,7 +1033,7 @@ def main():
     app.add_handler(CallbackQueryHandler(change_payment_method, pattern=r'^change_pay_\d+$'))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern=r'^cancel_order_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_approve, pattern=r'^admin_ok_\d+$'))
-    app.add_handler(CallbackQueryHandler(admin_reject, pattern=r'^admin_no_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_reject, pattern=r'^admin_no_\d+(?:_[a-z]+)?$'))
     app.add_handler(CallbackQueryHandler(
         admin_review_order_prompt, pattern=r'^admin_review_(?:ok|no)_\d+$'
     ))
@@ -1029,7 +1051,7 @@ def main():
     for handler in identity_admin_handlers():
         app.add_handler(handler)
     app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
-    app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+$'))
+    app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+(?:_[a-z]+)?$'))
 
     app.add_handler(CallbackQueryHandler(wallet_menu, pattern='^wallet$'))
     app.add_handler(CallbackQueryHandler(wallet_charge_preset, pattern=r'^wchg_\d+$'))
@@ -1037,7 +1059,7 @@ def main():
     app.add_handler(CallbackQueryHandler(wallet_pay_card, pattern=r'^wpay_card_\d+$'))
     app.add_handler(CallbackQueryHandler(wallet_check, pattern=r'^wchk_'))
     app.add_handler(CallbackQueryHandler(admin_wallet_card_ok, pattern=r'^wadmin_ok_\d+$'))
-    app.add_handler(CallbackQueryHandler(admin_wallet_card_no, pattern=r'^wadmin_no_\d+$'))
+    app.add_handler(CallbackQueryHandler(admin_wallet_card_no, pattern=r'^wadmin_no_\d+(?:_[a-z]+)?$'))
     app.add_handler(CallbackQueryHandler(
         admin_wallet_review_prompt, pattern=r'^wadmin_review_(?:ok|no)_\d+$'
     ))

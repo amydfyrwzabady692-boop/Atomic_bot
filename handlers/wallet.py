@@ -697,9 +697,13 @@ async def admin_wallet_review_prompt(update: Update, ctx: ContextTypes.DEFAULT_T
         'action': action, 'tx_id': tx_id, 'armed_at': time.time(),
     }
     await query.answer(label, show_alert=True)
-    await query.edit_message_reply_markup(
-        reply_markup=admin_wallet_card_confirm_keyboard(tx_id, action)
-    )
+    if action == 'no':
+        from handlers.receipt_reasons import reasons_keyboard
+
+        keyboard = reasons_keyboard('w', tx_id)
+    else:
+        keyboard = admin_wallet_card_confirm_keyboard(tx_id, action)
+    await query.edit_message_reply_markup(reply_markup=keyboard)
 
 
 async def admin_wallet_review_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -720,7 +724,9 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
-    tx_id = int(query.data.replace('wadmin_no_', ''))
+    from handlers.receipt_reasons import parse_reject
+
+    tx_id, reason = parse_reject(query.data)
     review = ctx.user_data.pop('admin_wallet_review', None) or {}
     if (
         review.get('action') != 'no' or review.get('tx_id') != tx_id
@@ -732,48 +738,59 @@ async def admin_wallet_card_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     await query.answer()
+    await reject_wallet_receipt(ctx.bot, update.effective_user, tx_id, reason, query)
+
+
+async def _edit_receipt(query, text):
+    try:
+        if query.message and (query.message.photo or query.message.document):
+            await query.edit_message_caption(caption=text)
+        else:
+            await query.edit_message_text(text)
+    except Exception:  # noqa: BLE001 — همان پیام قبلاً ویرایش شده
+        await query.answer(text[:190], show_alert=True)
+
+
+async def reject_wallet_receipt(bot, admin_user, tx_id, reason, query):
+    """ردِ رسیدِ شارژِ کیف پول با دلیل؛ از دکمهٔ دلیل یا دلیلِ نوشته‌شده."""
+    from handlers.receipt_reasons import reason_line
+
     row = get_wallet_tx(tx_id)
     if not row:
-        await query.edit_message_text("❌ تراکنش پیدا نشد.")
+        await _edit_receipt(query, "❌ تراکنش پیدا نشد.")
         return
     _id, amount, authority, is_paid, user_id, tg_id, _bal = row
     if is_paid:
-        await query.edit_message_text("این شارژ قبلاً اعمال شده؛ قابل رد نیست.")
+        await _edit_receipt(query, "این شارژ قبلاً اعمال شده؛ قابل رد نیست.")
         return
     rejected, reject_error = reject_wallet_card_charge(tx_id)
     if not rejected:
-        await query.edit_message_text(f"❌ رد شارژ انجام نشد: {reject_error}")
+        await _edit_receipt(query, f"❌ رد شارژ انجام نشد: {reject_error}")
         return
-    reviewer = admin_display_name(update.effective_user)
-    result_text = f"❌ شارژ کیف پول #{tx_id} رد شد."
+    reviewer = admin_display_name(admin_user)
+    result_text = f"❌ شارژ کیف پول #{tx_id} رد شد.{reason_line(reason)}"
     await broadcast_reviewed(
-        ctx.bot, 'wallet', tx_id,
+        bot, 'wallet', tx_id,
         approved=False, reviewer_name=reviewer, result_text=result_text,
     )
     log_payment_attempt(
         provider='card_transfer', event='wallet_card_rejected',
         status='rejected', amount=amount, wallet_tx_id=tx_id,
         telegram_id=tg_id,
-        message=f'rejected by {update.effective_user.id}',
+        message=f'rejected by {admin_user.id}: {reason}'[:250],
     )
     log_admin_action(
-        update.effective_user.id, 'wallet_card_rejected',
-        'wallet_transaction', tx_id, f'amount={amount}',
+        admin_user.id, 'wallet_card_rejected',
+        'wallet_transaction', tx_id, f'amount={amount} reason={reason}',
     )
-    try:
-        await query.edit_message_caption(caption=f"❌ شارژ کیف پول #{tx_id} رد شد.")
-    except Exception:
-        try:
-            await query.edit_message_text(f"❌ شارژ کیف پول #{tx_id} رد شد.")
-        except Exception:
-            await query.answer("رسید رد شد", show_alert=True)
+    await _edit_receipt(query, result_text)
     if tg_id:
         try:
-            await ctx.bot.send_message(
+            await bot.send_message(
                 chat_id=int(tg_id),
                 text=(
-                    f"❌ شارژ کیف پول ({amount:,} ت) رد شد.\n"
-                    f"اگر اشتباه شده، دوباره از کیف پول شارژ کن."
+                    f"❌ رسید شارژ کیف پول ({amount:,} ت) تایید نشد.{reason_line(reason)}\n"
+                    f"اگر اشتباه شده، دوباره از کیف پول شارژ کن یا به پشتیبانی پیام بده."
                 ),
                 reply_markup=wallet_keyboard(),
             )
