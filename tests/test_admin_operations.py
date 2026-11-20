@@ -84,7 +84,7 @@ class AdminOperationsTests(unittest.TestCase):
         self.assertIn('ops_action_total(ops, extra)', ops_src)
         self.assertIn('mark_wallet_refunds_seen()', ops_src)
         self.assertIn('count_unseen_wallet_refunds', ops_src)
-        self.assertIn('ops_action_total(ops, ready_creds)', home_src)
+        self.assertIn('ops_action_total(ops, ready_creds + idv_pending)', home_src)
         self.assertNotIn('failed_payments_24h', home_src)
         self.assertNotIn('failed_payments_24h', loop_src)
         self.assertIn('ops_action_total(ops)', loop_src)
@@ -108,14 +108,36 @@ class AdminOperationsTests(unittest.TestCase):
     def test_admin_home_shows_alert_counts(self):
         first = admin_home_keyboard({'ops_alerts': 4}).inline_keyboard[0][0]
         self.assertIn('(4)', first.text)
-        orders = admin_home_keyboard({'orders_action': 2}).inline_keyboard[3][0]
+        orders = admin_home_keyboard({'orders_action': 2}).inline_keyboard[1][0]
         self.assertEqual(orders.callback_data, 'admx_hub_orders')
         self.assertIn('(2)', orders.text)
-        inquiry = admin_home_keyboard().inline_keyboard[1]
-        self.assertEqual(inquiry[0].callback_data, 'admi_ordersearch')
-        self.assertEqual(inquiry[1].callback_data, 'admx_allorders')
-        appear = admin_home_keyboard().inline_keyboard[2][0]
-        self.assertEqual(appear.callback_data, 'ap_home')
+        receipts = admin_home_keyboard({'receipts': 3}).inline_keyboard[1][1]
+        self.assertEqual(receipts.callback_data, 'admx_hub_pay')
+        self.assertIn('(3)', receipts.text)
+
+    def test_every_section_is_one_tap_from_home(self):
+        from keyboards import admin_hub_system_keyboard
+
+        home = [b.callback_data for row in admin_home_keyboard().inline_keyboard for b in row]
+        for section in ('admx_ops', 'admx_hub_orders', 'admx_hub_pay', 'idva_home',
+                        'admx_hub_users', 'admx_shop', 'admx_hub_support', 'admx_hub_promo',
+                        'admx_hub_reports', 'admx_hub_system'):
+            self.assertIn(section, home)
+        # ظاهر و متون یک لایه پایین‌تر، در «تنظیمات»
+        system = [b.callback_data for row in admin_hub_system_keyboard().inline_keyboard
+                  for b in row]
+        self.assertIn('ap_home', system)
+        self.assertIn('admx_idvsettings', system)
+
+    def test_payment_toggles_show_their_state(self):
+        from keyboards import admin_hub_pay_keyboard
+
+        rows = admin_hub_pay_keyboard(state={'zp': False, 'card': True,
+                                             'sales': True, 'payments': False}).inline_keyboard
+        labels = {b.callback_data: b.text for row in rows for b in row}
+        self.assertIn('خاموش', labels['admx_toggle_zp'])
+        self.assertIn('روشن', labels['admx_toggle_card'])
+        self.assertIn('متوقف', labels['admx_toggle_payments'])
 
     def test_orders_hub_has_inquiry_and_full_list(self):
         from keyboards import admin_hub_orders_keyboard

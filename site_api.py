@@ -243,6 +243,34 @@ def call_site_identity_review(verification_id, action, admin_tg, admin_name, not
     )
 
 
+def call_site_held_order_action(order_id, action, admin_tg, admin_name, reason=''):
+    """تصمیمِ مدیر برای سفارشِ منتظرِ احرازِ سایت: release | refund | keep."""
+    return _site_request(
+        f'/internal/bot/held-order/{int(order_id)}/action/',
+        method='POST',
+        payload={
+            'action': action,
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+            'reason': str(reason or '')[:255],
+        },
+    )
+
+
+def call_site_review_with_reason(payment_id, admin_tg, admin_name, reason=''):
+    """ردِ رسیدِ سایت با دلیلی که برای خریدار فرستاده می‌شود."""
+    return _site_request(
+        f'/internal/bot/card-transfer/{int(payment_id)}/review/',
+        method='POST',
+        payload={
+            'action': 'reject',
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+            'reason': str(reason or '')[:255],
+        },
+    )
+
+
 def fetch_site_games():
     """فهرست بازی‌های فعال سایت (نام فارسی، واحد، سرورها و نام بسته‌ها) — بی‌قیمت."""
     return _site_request('/internal/bot/games/', timeout=30)

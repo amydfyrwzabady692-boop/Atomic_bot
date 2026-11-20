@@ -49,16 +49,22 @@ def _want_action(data: str) -> str:
 
 
 async def site_review_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """تایید یک‌کلیکی است؛ رد اول دلیل می‌خواهد (همان برای خریدار فرستاده می‌شود)."""
     query = update.callback_query
-    if not is_admin(update.effective_user.id):
-        await query.answer("دسترسی نداری", show_alert=True)
-        return
-    data = str(query.data or '')
-    if '_no_' in data:
-        payment_id = _payment_id(data)
-        await query.answer()
+    if _want_action(query.data) == 'no':
+        if not is_admin(update.effective_user.id):
+            await query.answer("دسترسی نداری", show_alert=True)
+            return
+        from handlers.receipt_reasons import reasons_keyboard
+
+        payment_id = _payment_id(query.data)
+        rows = [list(row) for row in reasons_keyboard('s', payment_id).inline_keyboard]
+        # پیام به خریدار بدون رد (تیکت در داشبورد سایت) — پیش از دکمهٔ بازگشت.
+        rows.insert(len(rows) - 1, [InlineKeyboardButton(
+            '💬 ارسال پیام به کاربر (بدون رد)', callback_data=f'site_rcpt_msg_{payment_id}')])
+        await query.answer('دلیل رد را انتخاب کن')
         try:
-            await query.edit_message_reply_markup(reply_markup=receipt_reasons_keyboard(payment_id))
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
         except Exception:
             pass
         return
@@ -92,7 +98,7 @@ async def site_receipt_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         payment_id = int(parts[3])
         code = parts[4] if len(parts) > 4 else 'other'
         reason = RECEIPT_REJECT_REASONS.get(code, 'رسید مورد تایید نیست.')
-        await _finalize_site(update, ctx, want_action='no', reason=reason)
+        await reject_site_receipt(ctx.bot, update.effective_user, payment_id, reason, query)
         return
     if data.startswith('site_rcpt_why_'):
         payment_id = int(data.rsplit('_', 1)[-1])
@@ -135,25 +141,40 @@ async def _finalize_site(update: Update, ctx: ContextTypes.DEFAULT_TYPE, *, want
     if not is_admin(update.effective_user.id):
         await query.answer("دسترسی نداری", show_alert=True)
         return
-    payment_id = _payment_id(query.data)
-    name = admin_display_name(update.effective_user)
-    api_action = 'approve' if want_action == 'ok' else 'reject'
-    result = await asyncio.to_thread(
-        call_site_review,
-        payment_id, api_action, update.effective_user.id, name, note=reason,
-    )
+    if want_action == 'no':
+        from handlers.receipt_reasons import parse_reject
+
+        payment_id, reason = parse_reject(query.data)
+        await reject_site_receipt(ctx.bot, update.effective_user, payment_id, reason, query)
+        return
+    await _apply_site(ctx.bot, update.effective_user, _payment_id(query.data), 'approve', '', query)
+
+
+async def reject_site_receipt(bot, admin_user, payment_id, reason, query):
+    await _apply_site(bot, admin_user, payment_id, 'reject', reason, query)
+
+
+async def _apply_site(bot, admin_user, payment_id, api_action, reason, query):
+    from handlers.receipt_reasons import reason_line
+    from site_api import call_site_review_with_reason
+
+    name = admin_display_name(admin_user)
+    if api_action == 'reject':
+        result = await asyncio.to_thread(call_site_review_with_reason, payment_id,
+                                         admin_user.id, name, reason)
+    else:
+        result = await asyncio.to_thread(call_site_review, payment_id, api_action,
+                                         admin_user.id, name)
     approved = api_action == 'approve' or result.get('status') == 'approved'
     reviewed_by = result.get('reviewed_by') or name
     if result.get('ok') or result.get('already'):
         await query.answer('انجام شد')
         footer = review_footer(approved=approved, reviewer_name=reviewed_by)
-        if approved:
-            text = footer
-        else:
-            reason_text = f'\nعلت رد: {reason}' if reason else ''
-            text = f'❌ رسید سایت #{payment_id} رد شد.{reason_text}\n\n{footer}'
+        text = result.get('message') or footer if result.get('already') else footer
+        if not approved and not result.get('already'):
+            text += reason_line(reason)
         await broadcast_reviewed(
-            ctx.bot, 'site', payment_id,
+            bot, 'site', payment_id,
             approved=approved,
             reviewer_name=reviewed_by,
             result_text='',

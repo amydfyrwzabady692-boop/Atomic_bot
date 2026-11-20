@@ -743,95 +743,111 @@ def support_cancel_keyboard():
     ])
 
 
+def _count_label(label, value):
+    value = int(value or 0)
+    return f'{label} ({value})' if value else label
+
+
+def _on_off(label, enabled, on='روشن', off='خاموش'):
+    """دکمهٔ روشن/خاموش که وضعیتِ فعلی را نشان می‌دهد؛ زدنش وضعیت را برعکس می‌کند."""
+    return f'{"🟢" if enabled else "🔴"} {label}: {on if enabled else off}'
+
+
 def admin_home_keyboard(counts=None):
-    """منوی اصلی پنل — گروه‌بندی شفاف با نشانگر موارد نیازمند اقدام."""
+    """منوی اصلی پنل: ده بخشِ ثابت. عددِ داخل پرانتز یعنی کارِ منتظر در همان بخش.
+
+    هر گزینهٔ پنل فقط در یک بخش است (به‌جز کارهای فوری که میان‌بُرِ کارهای منتظر است).
+    """
     c = counts or {}
-    ops_n = int(c.get('ops_alerts') or 0)
-    orders_n = int(c.get('orders_action') or 0)
-    tickets_n = int(c.get('open_tickets') or 0)
-    manual_stars = int(c.get('manual_stars') or 0)
-    ops_label = f'🚨 مرکز عملیات ({ops_n})' if ops_n else '🚨 مرکز عملیات'
-    orders_label = f'📦 سفارش‌ها ({orders_n})' if orders_n else '📦 سفارش‌ها'
-    support_label = f'🎧 پشتیبانی ({tickets_n})' if tickets_n else '🎧 پشتیبانی'
-    manual_stars_label = (
-        f'⭐ سفارش‌های استارز دستی ({manual_stars})'
-        if manual_stars else
-        '⭐ استارز دستی'
-    )
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton(_count_label('⚡ کارهای فوری', c.get('ops_alerts')),
+                              callback_data='admx_ops')],
         [
-            InlineKeyboardButton(manual_stars_label, callback_data='admx_manual_stars'),
-            InlineKeyboardButton('⚙️ تنظیم استارز', callback_data='admx_stars'),
-        ],
-        [InlineKeyboardButton(ops_label, callback_data='admx_ops')],
-        [InlineKeyboardButton(
-            '🔎 استعلام سفارش', callback_data='admi_ordersearch'
-        ), InlineKeyboardButton(
-            '📋 همه سفارش‌ها', callback_data='admx_allorders'
-        )],
-        [
-            InlineKeyboardButton('✨ ظاهر و متون', callback_data='ap_home'),
-            InlineKeyboardButton('🎨 تم ایموجی پریمیوم', callback_data='th_home:text'),
+            InlineKeyboardButton(_count_label('📦 سفارش‌ها', c.get('orders_action')),
+                                 callback_data='admx_hub_orders'),
+            InlineKeyboardButton(_count_label('🧾 پرداخت و رسید', c.get('receipts')),
+                                 callback_data='admx_hub_pay'),
         ],
         [
-            InlineKeyboardButton(orders_label, callback_data='admx_hub_orders'),
+            InlineKeyboardButton(_count_label('🪪 احراز هویت', c.get('identity')),
+                                 callback_data='idva_home'),
             InlineKeyboardButton('👥 کاربران', callback_data='admx_hub_users'),
         ],
         [
-            InlineKeyboardButton('🛍 کاتالوگ فروش', callback_data='admx_shop'),
-            InlineKeyboardButton('💳 مالی و درگاه', callback_data='admx_finance'),
+            InlineKeyboardButton('🛍 محصولات و قیمت', callback_data='admx_shop'),
+            InlineKeyboardButton(_count_label('🎧 پشتیبانی', c.get('open_tickets')),
+                                 callback_data='admx_hub_support'),
         ],
-        [InlineKeyboardButton('💱 قیمت‌گذاری و سود', callback_data='admx_pricing')],
         [
+            InlineKeyboardButton('📣 تبلیغ و کانال‌ها', callback_data='admx_hub_promo'),
             InlineKeyboardButton('📊 گزارش‌ها', callback_data='admx_hub_reports'),
-            InlineKeyboardButton(support_label, callback_data='admx_hub_support'),
         ],
-        [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
-        [InlineKeyboardButton('👥 گروه‌ها و تبلیغ ۱۲ ساعته', callback_data='grp_home')],
-        [InlineKeyboardButton('🆕 رویداد جدید بازی · انتشار در چنل', callback_data='gev_home')],
-        [InlineKeyboardButton('⚙️ تنظیمات سیستم', callback_data='admx_hub_system')],
+        [InlineKeyboardButton('⚙️ تنظیمات', callback_data='admx_hub_system')],
         [InlineKeyboardButton('🔄 بروزرسانی پنل', callback_data='adm_home')],
     ])
 
 
+def _home_row():
+    return [InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home')]
+
+
 def admin_hub_orders_keyboard(counts=None):
     c = counts or {}
-    cred = int(c.get('ready_creds') or 0)
-    site_cred = int(c.get('site_ready_creds') or 0)
-    manual_stars = int(c.get('manual_stars') or 0)
-    stuck = int(c.get('stuck') or 0)
-    failed = int(c.get('failed_g2') or 0)
-    receipts = int(c.get('receipts') or 0)
-    site_receipts = int(c.get('site_receipts') or 0)
-    cred_label = f'🔐 جم با اطلاعات ربات ({cred})' if cred else '🔐 جم با اطلاعات ربات'
-    site_cred_label = (
-        f'🌐 جم با اطلاعات سایت ({site_cred})' if site_cred else '🌐 جم با اطلاعات سایت'
-    )
-    manual_stars_label = (
-        f'⭐ استارز دستی ({manual_stars})' if manual_stars else '⭐ استارز دستی'
-    )
-    stuck_label = f'⏳ گیرکرده ({stuck})' if stuck else '⏳ گیرکرده در پردازش'
-    failed_label = f'❌ تحویل ناموفق G2B ({failed})' if failed else '❌ تحویل ناموفق G2B'
-    receipt_label = f'🧾 رسیدهای ربات ({receipts})' if receipts else '🧾 رسیدهای ربات'
-    site_receipt_label = (
-        f'🌐 رسیدهای سایت ({site_receipts})' if site_receipts else '🌐 رسیدهای سایت'
-    )
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            '🔎 استعلام سفارش', callback_data='admi_ordersearch'
-        ), InlineKeyboardButton(
-            '📋 همه سفارش‌ها', callback_data='admx_allorders'
-        )],
-        [InlineKeyboardButton(cred_label, callback_data='admx_credentials')],
-        [InlineKeyboardButton(site_cred_label, callback_data='admx_sitecreds')],
-        [InlineKeyboardButton(manual_stars_label, callback_data='admx_manual_stars')],
-        [InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open')],
-        [InlineKeyboardButton(failed_label, callback_data='adm_failed')],
-        [InlineKeyboardButton(stuck_label, callback_data='admx_stuck')],
-        [InlineKeyboardButton('💰 برگشت به کیف پول', callback_data='admx_refunds')],
-        [InlineKeyboardButton(receipt_label, callback_data='admx_receipts')],
-        [InlineKeyboardButton(site_receipt_label, callback_data='admx_sitereceipts')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [
+            InlineKeyboardButton('🔎 استعلام سفارش', callback_data='admi_ordersearch'),
+            InlineKeyboardButton('📋 همه سفارش‌ها', callback_data='admx_allorders'),
+        ],
+        [
+            InlineKeyboardButton('📂 سفارش‌های باز', callback_data='adm_open'),
+            InlineKeyboardButton(_count_label('⏳ گیرکرده', c.get('stuck')),
+                                 callback_data='admx_stuck'),
+        ],
+        [InlineKeyboardButton(_count_label('❌ تحویل ناموفق G2B', c.get('failed_g2')),
+                              callback_data='adm_failed')],
+        [
+            InlineKeyboardButton(_count_label('🔐 جم با اطلاعات ربات', c.get('ready_creds')),
+                                 callback_data='admx_credentials'),
+            InlineKeyboardButton(_count_label('🌐 جم با اطلاعات سایت', c.get('site_ready_creds')),
+                                 callback_data='admx_sitecreds'),
+        ],
+        [InlineKeyboardButton(_count_label('⭐ استارز دستی', c.get('manual_stars')),
+                              callback_data='admx_manual_stars')],
+        _home_row(),
+    ])
+
+
+def admin_hub_pay_keyboard(counts=None, state=None):
+    """رسیدها، برگشت پول، گزارش پرداخت، و روشن/خاموشِ درگاه‌ها با وضعیتِ فعلی."""
+    c = counts or {}
+    st = state or {}
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(_count_label('🧾 رسیدهای ربات', c.get('receipts')),
+                                 callback_data='admx_receipts'),
+            InlineKeyboardButton(_count_label('🌐 رسیدهای سایت', c.get('site_receipts')),
+                                 callback_data='admx_sitereceipts'),
+        ],
+        [InlineKeyboardButton(_count_label('💰 برگشت به کیف پول', c.get('refunds')),
+                              callback_data='admx_refunds')],
+        [
+            InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
+            InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed'),
+        ],
+        [
+            InlineKeyboardButton(_on_off('زرین‌پال', st.get('zp', True)),
+                                 callback_data='admx_toggle_zp'),
+            InlineKeyboardButton(_on_off('کارت‌به‌کارت', st.get('card', True)),
+                                 callback_data='admx_toggle_card'),
+        ],
+        [
+            InlineKeyboardButton(_on_off('فروش', st.get('sales', True), 'فعال', 'متوقف'),
+                                 callback_data='admx_toggle_sales'),
+            InlineKeyboardButton(_on_off('پرداخت جدید', st.get('payments', True), 'فعال', 'متوقف'),
+                                 callback_data='admx_toggle_payments'),
+        ],
+        [InlineKeyboardButton('💳 کارت مقصد و تنظیمات درگاه', callback_data='admx_finance')],
+        _home_row(),
     ])
 
 
@@ -842,107 +858,120 @@ def admin_hub_users_keyboard():
             InlineKeyboardButton('📋 آخرین کاربران', callback_data='adm_users'),
             InlineKeyboardButton('💰 دارای موجودی', callback_data='adm_users_balance'),
         ],
-        [InlineKeyboardButton('📨 پیام همگانی', callback_data='admx_actions')],
+        [InlineKeyboardButton('📨 پیام همگانی و شارژ همگانی', callback_data='admx_actions')],
         [InlineKeyboardButton('🎁 رفرال و برترین دعوت‌کننده‌ها', callback_data='radm_home')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        _home_row(),
+    ])
+
+
+def admin_hub_promo_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('👥 گروه‌ها و تبلیغ ۱۲ ساعته', callback_data='grp_home')],
+        [InlineKeyboardButton('🆕 رویداد جدید بازی · انتشار در چنل', callback_data='gev_home')],
+        [InlineKeyboardButton('📢 جوین اجباری کانال', callback_data='admx_forcedjoin')],
+        [InlineKeyboardButton('🎁 دعوت دوستان و مسابقه', callback_data='radm_home')],
+        [InlineKeyboardButton('📨 پیام همگانی', callback_data='admx_actions')],
+        _home_row(),
     ])
 
 
 def admin_hub_reports_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('📈 آمار کلی', callback_data='admx_stats')],
-        [InlineKeyboardButton('📅 فروش امروز', callback_data='admx_daily')],
+        [
+            InlineKeyboardButton('📈 آمار کلی', callback_data='admx_stats'),
+            InlineKeyboardButton('📅 فروش امروز', callback_data='admx_daily'),
+        ],
         [
             InlineKeyboardButton('💎 سود جم', callback_data='admx_profit'),
             InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health'),
         ],
-        [InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [
+            InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
+            InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed'),
+        ],
+        [InlineKeyboardButton('🧭 لاگ کارهای مدیران', callback_data='admx_audit')],
+        _home_row(),
     ])
 
 
 def admin_hub_support_keyboard(counts=None):
     tickets = int((counts or {}).get('open_tickets') or 0)
-    ticket_label = f'🎫 تیکت‌های باز ({tickets})' if tickets else '🎫 تیکت‌های باز'
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(ticket_label, callback_data='adm_tickets')],
-        [InlineKeyboardButton(
-            '🔐 تیکت‌های جم با اطلاعات', callback_data='adm_cred_tickets'
-        )],
-        [InlineKeyboardButton('🏢 دپارتمان‌ها', callback_data='admx_departments')],
-        [InlineKeyboardButton('👤 پشتیبان‌ها و متن‌ها', callback_data='admx_support')],
-        [InlineKeyboardButton(
-            '🔐 افزودن پشتیبان جم با اطلاعات', callback_data='admi_credentialadmin'
-        )],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [InlineKeyboardButton(_count_label('🎫 تیکت‌های باز', tickets), callback_data='adm_tickets')],
+        [InlineKeyboardButton('🔐 تیکت‌های جم با اطلاعات', callback_data='adm_cred_tickets')],
+        [
+            InlineKeyboardButton('🏢 دپارتمان‌ها', callback_data='admx_departments'),
+            InlineKeyboardButton('👤 آیدی‌ها و متن پشتیبانی', callback_data='admx_support'),
+        ],
+        [InlineKeyboardButton('🔐 افزودن پشتیبان جم با اطلاعات', callback_data='admi_credentialadmin')],
+        _home_row(),
     ])
 
 
-def admin_hub_system_keyboard():
+def admin_hub_system_keyboard(state=None):
+    st = state or {}
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✨ ظاهر متن و دکمه‌ها', callback_data='ap_home')],
-        [InlineKeyboardButton('🏪 ظاهر و متن فروشگاه', callback_data='admx_settings')],
-        [InlineKeyboardButton('📢 جوین اجباری کانال', callback_data='admx_forcedjoin')],
-        [InlineKeyboardButton('🔑 کلیدهای API ربات‌ها (جوین اجباری)', callback_data='admx_partner_keys')],
-        [InlineKeyboardButton('🔄 سینک قیمت جم از G2B', callback_data='admx_pricesync')],
+        [InlineKeyboardButton('🏪 نام فروشگاه، خوش‌آمد و متن‌ها', callback_data='admx_settings')],
         [
-            InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home'),
-            InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins'),
+            InlineKeyboardButton('✨ ظاهر متن و دکمه‌ها', callback_data='ap_home'),
+            InlineKeyboardButton('🎨 تم ایموجی پریمیوم', callback_data='th_home:text'),
         ],
-        [InlineKeyboardButton('➕ افزودن مدیر جدید', callback_data='admi_admin')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [InlineKeyboardButton('⭐ استودیو ظاهر', callback_data='studio_home')],
+        [InlineKeyboardButton('🪪 سقف احراز هویت', callback_data='admx_idvsettings')],
+        [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
+        [InlineKeyboardButton(_on_off('اعلان خودکار به مدیر', st.get('alerts', True)),
+                              callback_data='admx_toggle_alerts')],
+        [InlineKeyboardButton('🔄 سینک قیمت جم از G2B', callback_data='admx_pricesync')],
+        _home_row(),
+    ])
+
+
+def admin_identity_settings_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✏️ سقف عکس مدارک', callback_data='admi_idvlimit')],
+        [InlineKeyboardButton('✏️ سقف ویدیو', callback_data='admi_idvvideo')],
+        [InlineKeyboardButton('🪪 صف احراز هویت', callback_data='idva_home')],
+        [InlineKeyboardButton('🔙 تنظیمات', callback_data='admx_hub_system')],
     ])
 
 
 def admin_shop_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('💎 بسته‌های جم با آیدی', callback_data='admx_gems')],
-        [InlineKeyboardButton('💱 قیمت‌گذاری هفتگی/ماهانه', callback_data='admx_pricing')],
-        [InlineKeyboardButton('🎯 پک‌های سنس', callback_data='admx_sense')],
+        [
+            InlineKeyboardButton('💎 جم با آیدی', callback_data='admx_gems'),
+            InlineKeyboardButton('🎯 پک‌های سنس', callback_data='admx_sense'),
+        ],
         [
             InlineKeyboardButton('📦 اکانت‌های فروشگاه', callback_data='admx_products'),
             InlineKeyboardButton('🗂 دسته‌بندی‌ها', callback_data='admx_categories'),
         ],
         [
+            InlineKeyboardButton('🎁 گیفت‌کارت G2B', callback_data='admx_giftcards'),
+            InlineKeyboardButton('⭐ استارز و پریمیوم', callback_data='admx_stars'),
+        ],
+        [
             InlineKeyboardButton('🎁 کد هدیه', callback_data='admx_gift'),
             InlineKeyboardButton('🏷 کد تخفیف', callback_data='admx_discount'),
         ],
-        [InlineKeyboardButton('🎁 گیفت‌کارت G2B', callback_data='admx_giftcards')],
-        [
-            InlineKeyboardButton('⭐ سفارش‌های دستی استارز', callback_data='admx_manual_stars'),
-            InlineKeyboardButton('⭐ تنظیم استارز', callback_data='admx_stars'),
-        ],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [InlineKeyboardButton('💱 قیمت‌گذاری و سود', callback_data='admx_pricing')],
+        _home_row(),
     ])
 
 
 def admin_finance_keyboard():
+    """کارت مقصد و تنظیمات درگاه؛ روشن/خاموش‌ها در «پرداخت و رسید» است."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('💱 قیمت‌گذاری و سود', callback_data='admx_pricing')],
-        [InlineKeyboardButton('🚦 توقف/فعال فروش', callback_data='admx_toggle_sales')],
-        [InlineKeyboardButton('🛡 توقف/فعال پرداخت', callback_data='admx_toggle_payments')],
-        [
-            InlineKeyboardButton('🟢/🔴 زرین‌پال', callback_data='admx_toggle_zp'),
-            InlineKeyboardButton('🟢/🔴 کارت‌به‌کارت', callback_data='admx_toggle_card'),
-        ],
-        [InlineKeyboardButton('✏️ مرچنت زرین‌پال', callback_data='admi_zpmerchant')],
-        [InlineKeyboardButton('✏️ آدرس callback', callback_data='admi_callback')],
         [
             InlineKeyboardButton('✏️ شماره کارت', callback_data='admi_cardnumber'),
             InlineKeyboardButton('✏️ صاحب کارت', callback_data='admi_cardholder'),
         ],
         [InlineKeyboardButton('✏️ نام بانک', callback_data='admi_cardbank')],
         [
-            InlineKeyboardButton('🧾 رسید ربات', callback_data='admx_receipts'),
-            InlineKeyboardButton('🌐 رسید سایت', callback_data='admx_sitereceipts'),
-            InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
+            InlineKeyboardButton('✏️ مرچنت زرین‌پال', callback_data='admi_zpmerchant'),
+            InlineKeyboardButton('✏️ آدرس callback', callback_data='admi_callback'),
         ],
-        [
-            InlineKeyboardButton('🩺 سلامت مالی', callback_data='admx_health'),
-            InlineKeyboardButton('🧭 لاگ مدیران', callback_data='admx_audit'),
-        ],
-        [InlineKeyboardButton('📈 گزارش سود جم', callback_data='admx_profit')],
-        [InlineKeyboardButton('🔙 منوی اصلی', callback_data='adm_home')],
+        [InlineKeyboardButton('🔙 پرداخت و رسید', callback_data='admx_hub_pay')],
+        _home_row(),
     ])
 
 
@@ -966,7 +995,7 @@ def admin_pricing_keyboard():
         [InlineKeyboardButton('🔄 اعمال الان روی قیمت‌های فروش', callback_data='admx_pricesync')],
         [InlineKeyboardButton('📊 نرخ زنده و بهای پک‌ها', callback_data='admx_g2balance')],
         [
-            InlineKeyboardButton('🔙 مالی', callback_data='admx_finance'),
+            InlineKeyboardButton('🔙 محصولات و قیمت', callback_data='admx_shop'),
             InlineKeyboardButton('🏠 منوی اصلی', callback_data='adm_home'),
         ],
     ])

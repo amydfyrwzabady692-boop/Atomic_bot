@@ -225,6 +225,8 @@ class HoldNoticeTests(unittest.TestCase):
             patch.object(identity, 'identity_state', return_value='none'),
             patch.object(identity, 'identity_threshold_toman', return_value=1_000_000),
             patch.object(identity, 'identity_window_days', return_value=4),
+            patch.object(identity, 'identity_what_to_ask',
+                         return_value={'photos': True, 'video': False, 'level': 1}),
         ]
         for p in self.patches:
             p.start()
@@ -239,11 +241,24 @@ class HoldNoticeTests(unittest.TestCase):
             run(identity.announce_identity_hold(self.bot, 9))
         kwargs = self.bot.send_message.call_args.kwargs
         self.assertEqual(kwargs['chat_id'], 555)
-        self.assertIn('برای تکمیل این سفارش یک‌بار احراز هویت لازم است', kwargs['text'])
+        self.assertIn('برای تکمیل این سفارش احراز هویت لازم است', kwargs['text'])
         for mark in RULE_MARKS:
             self.assertNotIn(mark, kwargs['text'])
         self.assertEqual(kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'idv_start')
         self.assertIn('منتظر احراز هویت', admin.call_args.args[1])
+        actions = [row[0].callback_data for row in admin.call_args.kwargs['reply_markup'].inline_keyboard]
+        self.assertEqual(actions, ['idva_rel_9', 'idva_ref_9', 'idva_keep_9'])
+
+    def test_a_video_order_asks_for_the_video_without_amounts(self):
+        with patch.object(identity, 'identity_what_to_ask',
+                          return_value={'photos': False, 'video': True, 'level': 2}), \
+                patch.object(identity, 'claim_identity_hold_notice', return_value=True), \
+                patch.object(identity, 'notify_admin', new=AsyncMock()):
+            run(identity.announce_identity_hold(self.bot, 9))
+        text = self.bot.send_message.call_args.kwargs['text']
+        self.assertIn('ویدیو', text)
+        for mark in RULE_MARKS + ('۳٬۰۰۰٬۰۰۰', '3,000,000', 'میلیون'):
+            self.assertNotIn(mark, text)
 
     def test_a_repeat_from_a_background_loop_is_silent(self):
         with patch.object(identity, 'claim_identity_hold_notice', return_value=False), \
@@ -304,9 +319,26 @@ class AdminReviewTests(unittest.TestCase):
 
     def test_approval_releases_the_held_orders(self):
         with patch.object(identity, 'review_identity_verification', return_value=('555', CARD)), \
+                patch.object(identity, 'identity_what_to_ask',
+                             return_value={'photos': False, 'video': False, 'level': 1}), \
+                patch.object(identity, 'identity_level', return_value=1), \
                 patch.object(identity, 'release_and_deliver', new=AsyncMock(return_value=[7, 8])):
             self.review('idv_ok_5')
-        self.assertIn('۲ سفارش', self.ctx.bot.send_message.call_args.kwargs['text'])
+        text = self.ctx.bot.send_message.call_args.kwargs['text']
+        self.assertIn('۲ سفارش', text)
+        # سطح ۱ هیچ قولی دربارهٔ خریدهای بعدی نمی‌دهد (قاعده گفته نمی‌شود).
+        self.assertNotIn('از این به بعد', text)
+
+    def test_photo_approval_with_a_video_order_left_asks_for_the_video(self):
+        with patch.object(identity, 'review_identity_verification', return_value=('555', CARD)), \
+                patch.object(identity, 'identity_what_to_ask',
+                             return_value={'photos': False, 'video': True, 'level': 2}), \
+                patch.object(identity, 'identity_level', return_value=1), \
+                patch.object(identity, 'release_and_deliver', new=AsyncMock(return_value=[7])):
+            self.review('idv_ok_5')
+        kwargs = self.ctx.bot.send_message.call_args.kwargs
+        self.assertIn('ویدیو', kwargs['text'])
+        self.assertEqual(kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'idv_start')
 
     def test_a_second_decision_is_refused(self):
         with patch.object(identity, 'review_identity_verification', return_value=None), \
@@ -409,15 +441,19 @@ class ConversationTests(unittest.TestCase):
         return SimpleNamespace(message=message, effective_user=user, effective_message=message,
                                callback_query=None)
 
-    def _start(self, state, held):
+    def _start(self, state, held, ask=None, pending_row=None):
         update = self._update()
         update.effective_user = SimpleNamespace(id=42, username='buyer', first_name='علی',
                                                 last_name='', full_name='علی')
         ctx = SimpleNamespace(user_data={}, bot=None)
+        ask = ask or {'photos': True, 'video': False, 'level': 1}
         with patch.object(identity, 'get_or_create_user', return_value=(7, False)), \
                 patch.object(identity, 'identity_state', return_value=state), \
+                patch.object(identity, 'identity_what_to_ask', return_value=ask), \
+                patch('db.get_identity_verification_by_tg', return_value=pending_row), \
                 patch.object(identity, 'list_identity_held_orders', return_value=held):
             result = run(identity.idv_start(update, ctx))
+        self.last_ctx = ctx
         return result, update.message.reply_text
 
     def test_nothing_is_asked_when_no_order_waits(self):
@@ -430,9 +466,49 @@ class ConversationTests(unittest.TestCase):
         result, reply = self._start('none', [(9, '42', 1_200_000, 0, 'card_transfer', None)])
         self.assertEqual(result, identity.WAIT_PHONE)
         intro = reply.call_args_list[0].args[0]
-        self.assertIn('برای تکمیل سفارشت یک‌بار احراز هویت لازم است', intro)
+        self.assertIn('برای تکمیل سفارشت احراز هویت لازم است', intro)
         for mark in RULE_MARKS:
             self.assertNotIn(mark, intro)
+
+    def test_a_photo_verified_buyer_goes_straight_to_the_video(self):
+        result, reply = self._start('none', [(9, '42', 3_200_000, 0, 'card_transfer', None, 2)],
+                                    ask={'photos': False, 'video': True, 'level': 2})
+        self.assertEqual(result, identity.WAIT_VIDEO)
+        self.assertTrue(self.last_ctx.user_data['idv']['video_only'])
+        text = reply.call_args.args[0]
+        self.assertIn('ویدیو', text)
+        for mark in RULE_MARKS + ('میلیون',):
+            self.assertNotIn(mark, text)
+
+    def test_the_video_step_sends_photos_and_video_for_review(self):
+        bot = SimpleNamespace(send_media_group=AsyncMock(), send_video=AsyncMock(),
+                              send_message=AsyncMock(return_value=SimpleNamespace(message_id=77)))
+        ctx = SimpleNamespace(bot=bot, user_data={'idv': {'video_only': True}})
+        update = self._update()
+        update.message.video = SimpleNamespace(file_id='V1', duration=20)
+        update.message.video_note = None
+        row = (5, '42', CARD, '09125550000', 'F1', 'F2', '', 'pending', 'bot', '', '', None, None,
+               2, 1, 'V1')
+        with patch.object(identity, 'submit_identity_verification', return_value=(5, 'pending')) as sub, \
+                patch('db.get_identity_verification_by_tg', return_value=row), \
+                patch.object(identity, 'get_identity_verification', return_value=row), \
+                patch.object(identity, 'list_identity_held_orders',
+                             return_value=[(9, '42', 3_200_000, 0, 'card_transfer', None, 2)]), \
+                patch.object(identity, 'identity_card_owned_by_other', return_value=False), \
+                patch.object(identity, 'admin_ids', return_value=[1]), \
+                patch.object(identity, 'remember_notices'):
+            state = run(identity.idv_video(update, ctx))
+        self.assertEqual(state, identity.ConversationHandler.END)
+        self.assertEqual(sub.call_args.args[6:], ('V1', identity.LEVEL_VIDEO))
+        self.assertEqual(bot.send_video.call_args.kwargs['video'], 'V1')
+        self.assertIn('سطح ۲', bot.send_message.call_args.kwargs['text'])
+
+    def test_a_photo_instead_of_the_video_is_asked_again(self):
+        ctx = SimpleNamespace(user_data={'idv': {'video_only': True}}, bot=None)
+        update = self._update(photo=[SimpleNamespace(file_id='P')])
+        update.message.video = None
+        update.message.video_note = None
+        self.assertEqual(run(identity.idv_video(update, ctx)), identity.WAIT_VIDEO)
 
     def test_someone_elses_contact_is_refused(self):
         ctx = SimpleNamespace(user_data={'idv': {}}, bot=None)
@@ -448,7 +524,7 @@ class ConversationTests(unittest.TestCase):
                 patch.object(identity, 'release_and_deliver', new=AsyncMock(return_value=[3])):
             state = run(identity.idv_phone(self._update(contact_user_id=42), ctx))
         fetch.assert_called_once_with('09125550000', 42)
-        imp.assert_called_once_with(42, CARD, '09125550000')
+        imp.assert_called_once_with(42, CARD, '09125550000', 1)
         self.assertEqual(state, identity.ConversationHandler.END)
 
     def test_no_site_verification_continues_with_the_card(self):
@@ -494,15 +570,19 @@ class ConversationTests(unittest.TestCase):
         ctx = SimpleNamespace(bot=bot, user_data={'idv': {
             'phone': '09125550000', 'number': CARD, 'card': 'F1'}})
         update = self._update(photo=[SimpleNamespace(file_id='F2')])
+        row = (5, '42', CARD, '09125550000', 'F1', 'F2', '', 'pending', 'bot', '', '', None, None,
+               1, 0, '')
         with patch.object(identity, 'submit_identity_verification', return_value=(5, 'pending')) as sub, \
+                patch.object(identity, 'get_identity_verification', return_value=row), \
                 patch.object(identity, 'list_identity_held_orders',
-                             return_value=[(9, '42', 1_200_000, 0, 'card_transfer', None)]), \
+                             return_value=[(9, '42', 1_200_000, 0, 'card_transfer', None, 1)]), \
                 patch.object(identity, 'identity_card_owned_by_other', return_value=False), \
                 patch.object(identity, 'admin_ids', return_value=[1, 2]), \
                 patch.object(identity, 'remember_notices') as remember:
             state = run(identity.idv_national(update, ctx))
         self.assertEqual(state, identity.ConversationHandler.END)
-        sub.assert_called_once_with(42, CARD, '09125550000', 'F1', 'F2')
+        sub.assert_called_once_with(42, CARD, '09125550000', 'F1', 'F2', '', '',
+                                    identity.LEVEL_PHOTOS)
         self.assertEqual(bot.send_media_group.await_count, 2)
         media = bot.send_media_group.call_args.kwargs['media']
         self.assertEqual([m.media for m in media], ['F1', 'F2'])

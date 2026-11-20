@@ -62,6 +62,7 @@ from keyboards import (
     admin_hub_orders_keyboard, admin_hub_users_keyboard,
     admin_hub_reports_keyboard, admin_hub_support_keyboard,
     admin_hub_system_keyboard, admin_shop_keyboard, admin_finance_keyboard,
+    admin_hub_pay_keyboard, admin_hub_promo_keyboard, admin_identity_settings_keyboard,
     admin_pricing_keyboard, main_menu, credential_admin_home_keyboard,
 )
 
@@ -753,6 +754,9 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         or data.startswith('admx_massconfirm_')
         or data.startswith('admx_adminremove_')
         or data.startswith('admx_gemtoggle_')
+        or data.startswith('admx_gemmove_')
+        or data.startswith('admx_sensemove_')
+        or data.startswith('admx_toggle_')
         or data.startswith('admx_zpcredit_')
         or data.startswith('admx_stardone_')
         or data.startswith('admx_startoggle_')
@@ -906,10 +910,38 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if data == 'admx_hub_system':
         await query.edit_message_text(
-            '⚙️ *تنظیمات سیستم*\n'
-            'ظاهر فروشگاه · جوین · مدیران · سینک قیمت',
+            '⚙️ *تنظیمات*\n'
+            'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها · سینک قیمت',
             parse_mode='Markdown',
-            reply_markup=admin_hub_system_keyboard(),
+            reply_markup=admin_hub_system_keyboard(_system_state()),
+        )
+        return
+    if data == 'admx_hub_pay':
+        await _show_pay_hub(query)
+        return
+    if data == 'admx_hub_promo':
+        await query.edit_message_text(
+            '📣 *تبلیغ و کانال‌ها*\n'
+            'گروه‌ها و تبلیغ خودکار · انتشار رویداد در چنل · جوین اجباری · مسابقهٔ دعوت · پیام همگانی',
+            parse_mode='Markdown',
+            reply_markup=admin_hub_promo_keyboard(),
+        )
+        return
+    if data == 'admx_idvsettings':
+        from db import (identity_threshold_toman, identity_topup_window_days,
+                        identity_video_threshold_toman, identity_window_days)
+
+        await query.edit_message_text(
+            '🪪 *سقف احراز هویت* (فقط سفارش‌های ربات)\n'
+            '━━━━━━━━━━━━━━━\n'
+            f'عکس مدارک از: *{identity_threshold_toman():,}* تومان\n'
+            f'عکس مدارک + ویدیو از: *{identity_video_threshold_toman():,}* تومان\n'
+            f'مبلغ = بیشترینِ خریدهای {identity_window_days()} روز (با همین سفارش) و '
+            f'شارژهای کیف پولِ {identity_topup_window_days()} روزِ اخیر.\n\n'
+            'خریدار این اعداد را هیچ‌جا نمی‌بیند؛ فقط بعد از پرداختِ موفق، همان مدرکی که لازم '
+            'است از او خواسته می‌شود. سقف‌های سایت جدا و در تنظیمات سایت است.',
+            parse_mode='Markdown',
+            reply_markup=admin_identity_settings_keyboard(),
         )
         return
 
@@ -1416,8 +1448,8 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data == 'admx_shop':
         await query.edit_message_text(
-            '🛍 *کاتالوگ فروش*\n'
-            'جم با آیدی · قیمت‌گذاری هفتگی/ماهانه · سنس · اکانت · کدها',
+            '🛍 *محصولات و قیمت*\n'
+            'جم · سنس · اکانت · گیفت‌کارت · استارز · کدها · قیمت‌گذاری و سود',
             parse_mode='Markdown',
             reply_markup=admin_shop_keyboard(),
         )
@@ -1999,10 +2031,6 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'📦 حد هشدار موجودی: {_low_stock_threshold()}',
                 callback_data='admi_lowstock',
             )],
-            [InlineKeyboardButton(
-                '📢 مدیریت جوین اجباری', callback_data='admx_forcedjoin'
-            )],
-            [InlineKeyboardButton('👮 مدیران ربات', callback_data='admx_admins')],
             _back('admx_hub_system'),
         ])
     elif data == 'admx_partner_keys':
@@ -2119,7 +2147,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 '🔑 کلیدهای API ربات‌ها (جوین اجباری)',
                 callback_data='admx_partner_keys',
             )],
-            _back('admx_hub_system'),
+            _back('admx_hub_promo'),
         ])
         await _edit(query, '\n'.join(lines), buttons, markdown=True)
     elif data.startswith('admx_fjdel_'):
@@ -2442,20 +2470,25 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 _back('admx_gems'),
             ])
     elif data.startswith('admx_gemmove_'):
+        # همین صفحه می‌ماند تا با چند کلیک پشت‌سرهم جابه‌جا شود؛ نتیجه پیامِ کوتاه است.
         _, _, direction, gid = data.split('_', 3)
-        move_catalogue_item('gem', int(gid), direction)
-        await query.edit_message_text(
-            '✅ ترتیب بسته جم تغییر کرد.',
-            reply_markup=_kb([_back('admx_gems')]),
-        )
+        try:
+            moved = move_catalogue_item('gem', int(gid), direction)
+        except ValueError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+        await query.answer(('⬆️ یک رده بالاتر رفت.' if direction == 'up' else '⬇️ یک رده پایین‌تر رفت.')
+                           if moved else 'همین حالا در اول/آخر فهرست است.')
     elif data.startswith('admx_gemtoggle_'):
         gid = int(data.rsplit('_', 1)[1])
         g = get_gem_admin(gid)
         if not g:
+            await query.answer()
             await _edit(query, 'بسته پیدا نشد.', [_back('admx_gems')])
         else:
             update_gem_package(gid, 'IsActive', not bool(g[12]))
             g = get_gem_admin(gid)
+            await query.answer('✅ فعال شد' if g[12] else '⛔ غیرفعال شد')
             await _edit(query, (
                 f'💎 {g[1]}\nشناسه: {g[0]}\nمقدار: {g[2]}\n'
                 f'قیمت: {g[4]:,} تومان\nموجودی: {g[10]}\n'
@@ -2502,11 +2535,13 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ])
     elif data.startswith('admx_sensemove_'):
         _, _, direction, sid = data.split('_', 3)
-        move_catalogue_item('sense', int(sid), direction)
-        await query.edit_message_text(
-            '✅ ترتیب پک سنس تغییر کرد.',
-            reply_markup=_kb([_back('admx_sense')]),
-        )
+        try:
+            moved = move_catalogue_item('sense', int(sid), direction)
+        except ValueError as exc:
+            await query.answer(str(exc), show_alert=True)
+            return
+        await query.answer(('⬆️ یک رده بالاتر رفت.' if direction == 'up' else '⬇️ یک رده پایین‌تر رفت.')
+                           if moved else 'همین حالا در اول/آخر فهرست است.')
     elif data.startswith('admx_sensetoggle_'):
         sid = int(data.rsplit('_', 1)[1])
         p = get_sense_package(sid)
@@ -2616,8 +2651,22 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log_admin_action(
             update.effective_user.id, 'record_deleted', kind, rid, ''
         )
+        await query.answer('حذف شد')
         await query.edit_message_text('✅ حذف شد.', reply_markup=_kb([_back(backs[kind])]))
     elif data.startswith('admx_adminremove_'):
+        # قبلاً یک لمسِ اشتباه روی نامِ مدیر، دسترسی‌اش را بی‌سؤال حذف می‌کرد.
+        if not await _owner_guard(update):
+            return
+        tg = data.rsplit('_', 1)[1]
+        if admin_id() and str(admin_id()) == tg:
+            await query.answer('مدیر اصلی env قابل حذف نیست.', show_alert=True)
+            return
+        await query.answer()
+        await _edit(query, f'دسترسی مدیر {tg} حذف شود؟', [
+            [InlineKeyboardButton('🗑 بله، حذف کن', callback_data=f'admx_adminremok_{tg}')],
+            _back('admx_admins'),
+        ])
+    elif data.startswith('admx_adminremok_'):
         if not await _owner_guard(update):
             return
         tg = data.rsplit('_', 1)[1]
@@ -2626,6 +2675,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         remove_bot_admin(tg)
         invalidate_role_cache(tg)
+        log_admin_action(update.effective_user.id, 'bot_admin_removed', 'admin', tg, '')
         await query.edit_message_text('✅ دسترسی مدیر حذف شد.', reply_markup=_kb([_back('admx_admins')]))
     elif data.startswith('admx_massconfirm_'):
         raw_amount = data.rsplit('_', 1)[1]
@@ -2641,6 +2691,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
         amount = int(raw_amount)
+        await query.answer('در حال ثبت…')
         await query.edit_message_text('⏳ شارژ همگانی در حال ثبت است…')
         count = await asyncio.to_thread(mass_charge_wallets, amount)
         log_admin_action(
@@ -2669,12 +2720,64 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             update.effective_user.id, 'setting_toggle', 'setting', key,
             f'value={new_value}',
         )
-        back = 'admx_ops' if data == 'admx_toggle_alerts' else 'admx_finance'
-        await query.edit_message_text(
-            '✅ وضعیت تغییر کرد.', reply_markup=_kb([_back(back)])
-        )
+        # همان صفحه با وضعیتِ تازه دوباره کشیده می‌شود؛ قبلاً فقط «وضعیت تغییر کرد»
+        # می‌آمد و معلوم نبود حالا روشن است یا خاموش.
+        names = {'zarinpal_enabled': 'زرین‌پال', 'card_transfer_enabled': 'کارت‌به‌کارت',
+                 'sales_enabled': 'فروش', 'payments_enabled': 'پرداخت جدید',
+                 'admin_alerts_enabled': 'اعلان خودکار'}
+        # اول جواب (تا چرخ‌دندهٔ تلگرام بایستد)، بعد صفحه با وضعیتِ تازه.
+        await _toast(query, f'{names[key]}: {"روشن" if new_value == "1" else "خاموش"}')
+        if data == 'admx_toggle_alerts':
+            await query.edit_message_text(
+                '⚙️ *تنظیمات*\n'
+                'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها · سینک قیمت',
+                parse_mode='Markdown',
+                reply_markup=admin_hub_system_keyboard(_system_state()))
+        else:
+            await _show_pay_hub(query)
     else:
         await query.answer('این گزینه پنل شناخته نشد یا منقضی شده.', show_alert=True)
+
+
+def _system_state():
+    return {'alerts': get_setting('admin_alerts_enabled', '1') != '0'}
+
+
+async def _show_pay_hub(query):
+    """پرداخت و رسید: شمارش‌ها و وضعیتِ زندهٔ درگاه‌ها."""
+    ops = admin_operations_snapshot(_low_stock_threshold())
+    site = await asyncio.to_thread(site_ops_counts)
+    try:
+        refunds = await asyncio.to_thread(count_unseen_wallet_refunds)
+    except Exception:  # noqa: BLE001
+        refunds = 0
+    state = {
+        'zp': get_setting('zarinpal_enabled', '1') != '0',
+        'card': get_setting('card_transfer_enabled', '1') != '0',
+        'sales': get_setting('sales_enabled', '1') != '0',
+        'payments': get_setting('payments_enabled', '1') != '0',
+    }
+    text = ('🧾 *پرداخت و رسید*\n'
+            '━━━━━━━━━━━━━━━\n'
+            f'رسید ربات منتظر: *{ops["pending_receipts"]:,}* · رسید سایت: *{site["site_receipts"]:,}*\n'
+            f'برگشت کیف پولِ دیده‌نشده: *{refunds:,}*\n\n'
+            'روشن/خاموشِ هر درگاه را با دکمهٔ خودش عوض کن؛ رنگ و متن، وضعیتِ فعلی است.')
+    keyboard = admin_hub_pay_keyboard({'receipts': ops['pending_receipts'],
+                                       'site_receipts': site['site_receipts'],
+                                       'refunds': refunds}, state)
+    try:
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+    except Exception as exc:  # noqa: BLE001
+        if 'not modified' not in str(exc).lower():
+            raise
+
+
+async def _toast(query, text):
+    """پیامِ کوتاه بعد از کار؛ اگر کوئری قبلاً جواب گرفته بود، بی‌صدا."""
+    try:
+        await query.answer(text)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _show_simple_list(query, data):
@@ -2776,7 +2879,7 @@ INPUT_ACTIONS = {
     'admi_giftsupportid': (
         'setting:gift_support_id',
         'آیدی پشتیبان سفارش‌های بویاه پس گیفتی را با @ بفرست.\n'
-        'مثال: @omid_1797',
+        'مثال: @omid\\_1797',
     ),
     'admi_shopname': ('setting:shop_name', 'نام فروشگاه را بفرست.'),
     'admi_welcome': ('setting:welcome_text', 'متن کامل خوش‌آمد را بفرست. Markdown مجاز است.'),
@@ -2784,6 +2887,16 @@ INPUT_ACTIONS = {
     'admi_lowstock': (
         'setting:low_stock_threshold',
         'حد هشدار موجودی کم را بفرست (مثلاً 5).',
+    ),
+    'admi_idvlimit': (
+        'setting:identity_threshold_toman',
+        'از چه مبلغی (تومان، جمع خریدهای چند روز یا شارژ کیف پول) *عکس مدارک* خواسته شود؟\n'
+        'مثال: 1000000 — صفر یعنی همیشه.',
+    ),
+    'admi_idvvideo': (
+        'setting:identity_video_threshold_toman',
+        'از چه مبلغی (تومان) *ویدیوی احراز* هم خواسته شود؟ باید از سقف عکس مدارک کمتر نباشد.\n'
+        'مثال: 3000000',
     ),
     'admi_gemprofit': (
         'setting:gem_profit_percent',
@@ -2851,9 +2964,9 @@ INPUT_ACTIONS = {
     'admi_forcedjoin': (
         'forcedjoinadd',
         '📢 *افزودن کانال به جوین اجباری*\n\n'
-        '1️⃣ ابتدا ربات (@atomicshoporg_bot) را در کانال خود «ادمین» کنید (با دسترسی مشاهده اعضا).\n\n'
+        '1️⃣ ابتدا همین ربات را در کانال خود «ادمین» کنید (با دسترسی مشاهده اعضا).\n\n'
         '2️⃣ سپس یکی از کارهای زیر را انجام دهید:\n'
-        '• یک پیام از کانال را به اینجا **فوروارد (Forward)** کنید.\n'
+        '• یک پیام از کانال را به اینجا *فوروارد (Forward)* کنید.\n'
         '• یا آیدی یا لینک کانال را بفرستید (مثلاً @channel یا https://t.me/channel).\n'
         '• برای کانال خصوصی: شناسه عددی (-100...) همراه با لینک دعوت.',
     ),
@@ -3032,6 +3145,16 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if not 0 <= threshold <= 10_000:
                     raise ValueError('حد موجودی باید بین ۰ تا ۱۰٬۰۰۰ باشد.')
                 raw = str(threshold)
+            if key in ('identity_threshold_toman', 'identity_video_threshold_toman'):
+                digits = ''.join(ch for ch in raw.translate(_DIGIT_TRANS) if ch.isdigit())
+                if not digits or int(digits) > 10_000_000_000:
+                    raise ValueError('مبلغ را به تومان و فقط با عدد بفرست (مثلاً 3000000).')
+                amount = int(digits)
+                from db import identity_threshold_toman
+
+                if key == 'identity_video_threshold_toman' and amount < identity_threshold_toman():
+                    raise ValueError('سقف ویدیو نباید از سقف عکس مدارک کمتر باشد.')
+                raw = str(amount)
             if key in (
                 'gem_profit_percent',
                 'giftcard_profit_percent',

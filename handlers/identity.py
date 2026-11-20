@@ -27,6 +27,7 @@ from telegram import (
     ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton,
     ReplyKeyboardMarkup, ReplyKeyboardRemove, Update,
 )
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, filters,
@@ -34,10 +35,11 @@ from telegram.ext import (
 
 from admin_notify import admin_ids, is_admin, notify_admin
 from db import (
-    accept_terms, claim_identity_hold_notice, count_identity_queue, get_identity_verification,
-    get_or_create_user, get_order, identity_card_owned_by_other, identity_state,
-    identity_threshold_toman, identity_window_days, import_site_identity,
-    list_identity_held_orders, list_pending_identity_verifications, release_identity_hold_order,
+    LEVEL_PHOTOS, LEVEL_VIDEO, accept_terms, claim_identity_hold_notice, count_identity_queue,
+    get_identity_verification, get_or_create_user, get_order, identity_card_owned_by_other,
+    identity_level, identity_state, identity_threshold_toman, identity_video_threshold_toman,
+    identity_what_to_ask, identity_window_days, import_site_identity, list_identity_held_orders,
+    list_pending_identity_verifications, reject_identity_hold_order, release_identity_hold_order,
     release_identity_holds, review_identity_verification, submit_identity_verification,
     terms_accepted,
 )
@@ -50,7 +52,9 @@ SAMPLES = Path(__file__).resolve().parent.parent / 'assets' / 'identity_samples'
 # file_idِ نمونه‌ها بعد از اولین ارسال؛ آپلودِ دوباره لازم نیست.
 _SAMPLE_IDS: dict[str, str] = {}
 
-WAIT_PHONE, WAIT_NUMBER, WAIT_CARD, WAIT_NATIONAL = range(4)
+WAIT_PHONE, WAIT_NUMBER, WAIT_CARD, WAIT_NATIONAL, WAIT_VIDEO = range(5)
+# ویدیوی ۳۰ ثانیه‌ای؛ تا یک دقیقه هم پذیرفته می‌شود.
+VIDEO_MAX_SECONDS = 30
 
 REJECT_REASONS = {
     'blur': 'عکس‌ها تار یا ناخوانا است',
@@ -62,6 +66,13 @@ REJECT_REASONS = {
 
 _FA = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
 _REVIEW_RE = re.compile(r'^(site_idv|idv)_(ok|no|rj|back|why|msg)_(\d+)(?:_([a-z]+))?$')
+# ردِ سفارشِ منتظرِ احراز (ربات و سایت) — دلیل برای خریدار فرستاده می‌شود.
+HOLD_REJECT_REASONS = {
+    'card': 'کارت پرداخت متعلق به خریدار نیست',
+    'fake': 'مدارک جعلی یا دستکاری‌شده است',
+    'none': 'خریدار احراز هویت را کامل نکرد',
+    'other': 'سفارش پس از بررسی رد شد',
+}
 # ادمینی که «نوشتن دلیل» را زده: پیامِ متنیِ بعدی‌اش دلیلِ رد است.
 # {آیدی ادمین: {prefix, id, chat_id, message_id, photo, at}}
 _PENDING_REASON: dict[int, dict] = {}
@@ -78,9 +89,27 @@ def fa_money(amount) -> str:
 
 def rule_text() -> str:
     """فقط برای ادمین‌ها — خریدار قاعده را نمی‌بیند."""
-    return (f'اگر جمع خریدهایت در {fa(identity_window_days())} روز به '
-            f'{fa_money(identity_threshold_toman())} تومان برسد، سفارش بعد از احراز هویت '
-            'تکمیل می‌شود.')
+    return (f'سطح ۱ (عکس مدارک): خرید یا شارژِ اخیر از {fa_money(identity_threshold_toman())} '
+            f'تومان · سطح ۲ (عکس + ویدیو): از {fa_money(identity_video_threshold_toman())} تومان. '
+            f'خریدها در {fa(identity_window_days())} روز جمع می‌شوند.')
+
+
+LEVEL_LABELS = {LEVEL_PHOTOS: 'عکس مدارک', LEVEL_VIDEO: 'عکس مدارک + ویدیو'}
+
+
+def needs_sentence(ask) -> str:
+    """چه چیزی از خریدار خواسته می‌شود — بدون هیچ حرفی از مبلغ و سقف (مثل سایت)."""
+    if ask.get('photos') and ask.get('video'):
+        return ('عکس کارت بانکی، عکس کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه، و یک '
+                'ویدیوی کوتاه از خودت')
+    if ask.get('video'):
+        return 'یک ویدیوی کوتاه از خودت (عکس‌های مدارکت را قبلاً فرستاده‌ای)'
+    return 'عکس کارت بانکی، و عکس کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه'
+
+
+def video_sentence(day=None) -> str:
+    return (f'من [نام و نام خانوادگی]، امروز {note_date(day)}، برای خرید از اتومیک شاپ '
+            'احراز هویت می‌کنم و این خرید را خودم انجام داده‌ام.')
 
 
 # دست‌نوشته‌ای که با تاریخِ چند روز پیش‌تر نوشته شده هنوز پذیرفته است (مثل سایت).
@@ -193,14 +222,24 @@ def start_keyboard():
     ])
 
 
-def hold_user_text(order_id, state) -> str:
-    # سقف و بازه به خریدار گفته نمی‌شود؛ فقط اینکه این سفارش احراز می‌خواهد.
+def hold_user_text(order_id, state, ask=None) -> str:
+    # سقف و بازه به خریدار گفته نمی‌شود؛ فقط همان مدرکی که کم دارد.
     head = f'✅ پرداخت سفارش #{order_id} انجام شد.\n\n'
     if state == 'pending':
         return head + '⏳ مدارک احراز هویتت در صف بررسی است؛ بعد از تایید، سفارش خودکار تحویل می‌شود.'
-    return head + ('برای تکمیل این سفارش یک‌بار احراز هویت لازم است: عکس کارت بانکی، و '
-                   'عکس کارت ملی یا شناسنامه کنار یک دست‌نوشتهٔ کوتاه.\n'
+    ask = ask or {'photos': True, 'video': False}
+    return head + (f'برای تکمیل این سفارش احراز هویت لازم است: {needs_sentence(ask)}.\n'
                    'پولت محفوظ است و موجودی سفارش برایت کنار گذاشته شده.')
+
+
+def held_order_admin_keyboard(order_id, prefix='idva'):
+    """سه تصمیم برای سفارشِ منتظرِ احراز؛ prefix=skyc برای سفارش‌های سایت."""
+    oid = int(order_id)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('▶️ آزادسازی بدون احراز', callback_data=f'{prefix}_rel_{oid}')],
+        [InlineKeyboardButton('↩️ رد + برگشت پول به کیف پول', callback_data=f'{prefix}_ref_{oid}')],
+        [InlineKeyboardButton('⛔ رد بدون بازگشت وجه', callback_data=f'{prefix}_keep_{oid}')],
+    ])
 
 
 async def announce_identity_hold(bot, order_id, *, tg_id=None, edit_message=None):
@@ -209,6 +248,8 @@ async def announce_identity_hold(bot, order_id, *, tg_id=None, edit_message=None
     order = await asyncio.to_thread(get_order, order_id)
     tg = tg_id or (order[6] if order else None)
     state = await asyncio.to_thread(identity_state, tg) if tg else 'none'
+    ask = await asyncio.to_thread(identity_what_to_ask, tg) if tg else {'photos': True,
+                                                                       'video': False, 'level': 1}
     if edit_message:
         try:
             await edit_message(f'✅ پرداخت سفارش #{order_id} انجام شد — منتظر احراز هویت.\n'
@@ -217,7 +258,7 @@ async def announce_identity_hold(bot, order_id, *, tg_id=None, edit_message=None
             pass
     if tg and (first or edit_message):
         try:
-            await bot.send_message(chat_id=int(tg), text=hold_user_text(order_id, state),
+            await bot.send_message(chat_id=int(tg), text=hold_user_text(order_id, state, ask),
                                    reply_markup=None if state == 'pending' else start_keyboard())
         except Exception as exc:  # noqa: BLE001 — خریدار ربات را بسته
             log.warning('identity hold notice not delivered tg=%s order=%s: %s', tg, order_id, exc)
@@ -227,9 +268,10 @@ async def announce_identity_hold(bot, order_id, *, tg_id=None, edit_message=None
         await notify_admin(bot, (
             f'⏸ سفارش #{order_id} منتظر احراز هویت\n'
             f'مبلغ: {int(order[2] or 0) if order else 0:,} تومان · کاربر: {tg or "—"}\n'
-            f'وضعیت احراز: {label}\n\n'
+            f'وضعیت احراز: {label}\n'
+            f'مدرک لازم: {LEVEL_LABELS.get(int(ask.get("level") or 1), "عکس مدارک")}\n\n'
             'پول رسیده؛ تا تایید مدارک چیزی تحویل نده. با تایید احراز، تحویل خودکار است.'),
-            parse_mode=None)
+            parse_mode=None, reply_markup=held_order_admin_keyboard(order_id))
     return state
 
 
@@ -256,17 +298,31 @@ def _cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton('❌ انصراف', callback_data='idv_cancel')]])
 
 
-def _intro_text() -> str:
+def _intro_text(with_video=False) -> str:
+    steps = 4 if with_video else 3
     return (
-        '🪪 *احراز هویت — یک‌بار برای همیشه*\n'
+        '🪪 *احراز هویت*\n'
         '━━━━━━━━━━━━━━━\n'
-        'برای تکمیل سفارشت یک‌بار احراز هویت لازم است:\n'
+        'برای تکمیل سفارشت احراز هویت لازم است:\n'
         '۱. شمارهٔ موبایلِ همین حساب تلگرام\n'
         '۲. شماره و عکس کارت بانکی\n'
-        '۳. کارت ملی یا شناسنامه کنار یک دست‌نوشته\n\n'
-        '🔒 مدارک فقط برای مدیران فروشگاه فرستاده می‌شود.\n\n'
-        '📱 *قدم ۱ از ۳* — دکمهٔ «اشتراک شماره» پایین صفحه را بزن.'
+        '۳. کارت ملی یا شناسنامه کنار یک دست‌نوشته\n'
+        + ('۴. یک ویدیوی کوتاه از خودت\n' if with_video else '')
+        + '\n🔒 مدارک فقط برای مدیران فروشگاه فرستاده می‌شود.\n\n'
+        f'📱 *قدم ۱ از {fa(steps)}* — دکمهٔ «اشتراک شماره» پایین صفحه را بزن.'
     )
+
+
+def _video_intro_text(only=False) -> str:
+    # Markdownِ قدیمی «[» را شروعِ لینک می‌داند.
+    sentence = video_sentence().replace('[', '\\[')
+    head = ('🎥 *یک قدم مانده — ویدیوی کوتاه احراز*\n' if only
+            else '🎥 *قدم آخر — ویدیوی کوتاه احراز*\n')
+    return (head
+            + f'با دوربین جلوی گوشی یک ویدیوی حداکثر {fa(VIDEO_MAX_SECONDS)} ثانیه‌ای از صورتت بگیر. '
+            'کارت ملی و کارت بانکی را کنار صورتت نگه دار تا خوانا دیده شوند و این جمله را بلند '
+            f'بخوان:\n\n«{sentence}»\n\n'
+            'ویدیو را همین‌جا بفرست (ویدیوی معمولی یا ویدیوی دایره‌ای تلگرام).')
 
 
 async def _left_for_menu(update, ctx) -> bool:
@@ -303,7 +359,7 @@ async def idv_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     state = await asyncio.to_thread(identity_state, user.id)
     if state == 'approved':
         released = await release_and_deliver(ctx.bot, user.id)
-        await _reply(update, '✅ احراز هویتت تایید شده است؛ خریدهایت بدون انتظار تحویل می‌شوند.'
+        await _reply(update, '✅ احراز هویتت تایید شده است.'
                      + (f'\n{fa(len(released))} سفارش منتظر در حال تحویل است.' if released else ''),
                      reply_markup=main_menu())
         return ConversationHandler.END
@@ -313,6 +369,19 @@ async def idv_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _reply(update, 'فعلاً نیازی به احراز هویت نداری.', reply_markup=main_menu())
         return ConversationHandler.END
     resend = bool(query and query.data == 'idv_resend')
+    ask = await asyncio.to_thread(identity_what_to_ask, user.id)
+    pending_row = None
+    if state == 'pending':
+        from db import get_identity_verification_by_tg
+
+        pending_row = await asyncio.to_thread(get_identity_verification_by_tg, user.id)
+    # عکس‌ها قبلاً تایید شده یا در صف است و فقط ویدیو کم است: مستقیم قدمِ ویدیو.
+    video_missing = ask['video'] and not (pending_row and pending_row[15])
+    if video_missing and (not ask['photos'] or pending_row):
+        ctx.user_data['idv'] = {'video_only': True}
+        await _reply(update, _video_intro_text(only=True), parse_mode='Markdown',
+                     reply_markup=_cancel_kb())
+        return WAIT_VIDEO
     if state == 'pending' and not resend:
         await _reply(update, '⏳ مدارکت در صف بررسی است. بعد از تایید همین‌جا خبرت می‌کنیم.',
                      reply_markup=InlineKeyboardMarkup([
@@ -320,8 +389,8 @@ async def idv_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                          [InlineKeyboardButton('🏠 منوی اصلی', callback_data='home')],
                      ]))
         return ConversationHandler.END
-    ctx.user_data['idv'] = {}
-    await _reply(update, _intro_text(), parse_mode='Markdown')
+    ctx.user_data['idv'] = {'with_video': bool(ask['video'])}
+    await _reply(update, _intro_text(with_video=bool(ask['video'])), parse_mode='Markdown')
     await _reply(update, 'برای ادامه دکمهٔ زیر را بزن 👇', reply_markup=ReplyKeyboardMarkup(
         [[KeyboardButton('📱 اشتراک شماره موبایل', request_contact=True)]],
         resize_keyboard=True, one_time_keyboard=True))
@@ -369,7 +438,8 @@ async def _import_from_site(update, ctx, phone) -> bool:
         return False
     if not data.get('approved'):
         return False
-    if not await asyncio.to_thread(import_site_identity, user.id, data.get('card_number'), phone):
+    if not await asyncio.to_thread(import_site_identity, user.id, data.get('card_number'), phone,
+                                   int(data.get('level') or 1)):
         log.warning('site identity for tg=%s not imported: card is on another account', user.id)
         return False
     ctx.user_data.pop('idv', None)
@@ -482,11 +552,13 @@ def reasons_keyboard(verification_id, prefix='idv'):
 
 
 def admin_caption(verification_id, user, number, phone, held, other_account,
-                  sent_at=None, legacy_selfie=False) -> str:
+                  sent_at=None, legacy_selfie=False, level=1, video_only=False) -> str:
     uname = f'@{user.username}' if getattr(user, 'username', None) else '—'
     held_total = sum(max(0, int(row[2] or 0) - int(row[3] or 0)) for row in held)
+    level = int(level or 1)
     lines = [
-        f'🪪 احراز هویت #{verification_id} — ربات',
+        f'🪪 احراز هویت #{verification_id} — ربات'
+        + (' · سطح ۲ (با ویدیو)' if level >= LEVEL_VIDEO else ''),
         '━━━━━━━━━━━━━━━',
         f'شماره کارت: {_pretty(number)}',
         f'📞 موبایلِ حساب تلگرام: {phone or "—"}',
@@ -498,13 +570,19 @@ def admin_caption(verification_id, user, number, phone, held, other_account,
         lines.append('⚠️ این کارت روی حساب دیگری هم ثبت شده است.')
     lines += ['', 'عکس‌ها به ترتیب: کارت بانکی، کارت ملی یا شناسنامه کنار دست‌نوشته'
               + ('، سلفی (مدارک قدیمی).' if legacy_selfie else '.')]
+    if video_only:
+        lines.append('عکس‌ها قبلاً تایید شده‌اند؛ این بار فقط ویدیو آمده.')
     lines += [f'✓ {line}' for line in review_checklist(sent_at)]
+    if level >= LEVEL_VIDEO:
+        lines.append('✓ ویدیو: همان صورتِ کارت ملی، هر دو کارت خوانا کنار صورت، و جملهٔ احراز '
+                     'با تاریخِ همین روزها بلند خوانده شود.')
     lines.append('با تایید، سفارش‌های منتظرِ این خریدار خودکار تحویل می‌شوند.')
     return '\n'.join(lines)
 
 
-async def send_for_review(bot, verification_id, caption, file_ids, recipients=None):
-    """آلبوم سه عکس + متن و دکمه‌ها برای هر ادمین. خروجی: notices."""
+async def send_for_review(bot, verification_id, caption, file_ids, recipients=None,
+                          video_file_id=''):
+    """آلبوم عکس‌ها، ویدیو (اگر هست) + متن و دکمه‌ها برای هر ادمین. خروجی: notices."""
     media = [InputMediaPhoto(media=file_id) for file_id in file_ids if file_id]
     notices = []
     for aid in (recipients if recipients is not None else admin_ids()):
@@ -513,6 +591,13 @@ async def send_for_review(bot, verification_id, caption, file_ids, recipients=No
                 await bot.send_media_group(chat_id=aid, media=media)
             elif media:
                 await bot.send_photo(chat_id=aid, photo=media[0].media)
+            if video_file_id:
+                try:
+                    await bot.send_video(chat_id=aid, video=video_file_id,
+                                         caption=f'🎥 ویدیوی احراز #{int(verification_id)}')
+                except BadRequest:
+                    # ویدیوی دایره‌ای با sendVideo فرستاده نمی‌شود.
+                    await bot.send_video_note(chat_id=aid, video_note=video_file_id)
             msg = await bot.send_message(chat_id=aid, text=caption,
                                          reply_markup=review_keyboard(verification_id))
             notices.append({'chat_id': int(aid), 'message_id': msg.message_id})
@@ -536,10 +621,58 @@ async def idv_national(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('اطلاعات ناقص ماند؛ از اول شروع کن.',
                                         reply_markup=start_keyboard())
         return ConversationHandler.END
+    if data.get('with_video'):
+        await update.message.reply_text(_video_intro_text(), parse_mode='Markdown',
+                                        reply_markup=_cancel_kb())
+        return WAIT_VIDEO
+    return await _submit_documents(update, ctx, data)
+
+
+def _video_file_id(message):
+    """file_idِ ویدیو، ویدیوی دایره‌ای یا فایلِ ویدیویی؛ وگرنه None."""
+    if message.video:
+        return message.video.file_id
+    if message.video_note:
+        return message.video_note.file_id
+    document = message.document
+    if document and str(document.mime_type or '').startswith('video/'):
+        return document.file_id
+    return None
+
+
+async def idv_video(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """قدمِ ویدیو: بعدش مدارک (با ویدیو) برای بررسی می‌رود."""
+    if await _left_for_menu(update, ctx):
+        return ConversationHandler.END
+    message = update.message
+    file_id = _video_file_id(message)
+    if not file_id:
+        await message.reply_text('🎥 لطفاً *ویدیو* بفرست؛ با دوربین جلوی گوشی فیلم بگیر.',
+                                 parse_mode='Markdown', reply_markup=_cancel_kb())
+        return WAIT_VIDEO
+    duration = getattr(message.video or message.video_note, 'duration', 0) or 0
+    if duration and duration > VIDEO_MAX_SECONDS * 2:
+        await message.reply_text(f'ویدیو طولانی است؛ یک ویدیوی حداکثر {fa(VIDEO_MAX_SECONDS)} '
+                                 'ثانیه‌ای بفرست.', reply_markup=_cancel_kb())
+        return WAIT_VIDEO
+    data = ctx.user_data.get('idv') or {}
+    data['video'] = file_id
+    if data.get('video_only'):
+        from db import get_identity_verification_by_tg
+
+        row = await asyncio.to_thread(get_identity_verification_by_tg, update.effective_user.id)
+        data.update({'number': (row[2] if row else '') or '', 'phone': (row[3] if row else '') or '',
+                     'card': '', 'national': ''})
+    return await _submit_documents(update, ctx, data)
+
+
+async def _submit_documents(update, ctx, data):
     user = update.effective_user
+    video = data.get('video') or ''
     verification_id, status = await asyncio.to_thread(
-        submit_identity_verification, user.id, data['number'], data['phone'], data['card'],
-        data['national'])
+        submit_identity_verification, user.id, data.get('number') or '', data.get('phone') or '',
+        data.get('card') or '', data.get('national') or '', '', video,
+        LEVEL_VIDEO if video else LEVEL_PHOTOS)
     ctx.user_data.pop('idv', None)
     if status == 'approved':
         released = await release_and_deliver(ctx.bot, user.id)
@@ -549,9 +682,15 @@ async def idv_national(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu())
         return ConversationHandler.END
     held = await asyncio.to_thread(list_identity_held_orders, user.id, 20)
-    other = await asyncio.to_thread(identity_card_owned_by_other, user.id, data['number'])
-    caption = admin_caption(verification_id, user, data['number'], data['phone'], held, other)
-    await send_for_review(ctx.bot, verification_id, caption, [data['card'], data['national']])
+    row = await asyncio.to_thread(get_identity_verification, verification_id)
+    number = (row[2] if row else '') or data.get('number') or ''
+    other = await asyncio.to_thread(identity_card_owned_by_other, user.id, number) if number else False
+    level = int(row[13] or 1) if row else (LEVEL_VIDEO if video else LEVEL_PHOTOS)
+    photos = [row[4], row[5]] if row else [data.get('card'), data.get('national')]
+    caption = admin_caption(verification_id, user, number, row[3] if row else data.get('phone'),
+                            held, other, level=level, video_only=bool(data.get('video_only')))
+    await send_for_review(ctx.bot, verification_id, caption, photos,
+                          video_file_id=(row[15] if row else video) or video)
     await update.message.reply_text(
         '✅ مدارکت ثبت شد و در صف بررسی است. بعد از تایید همین‌جا خبرت می‌کنیم'
         + (' و سفارش‌های منتظرت خودکار تحویل می‌شوند.' if held else '.'),
@@ -584,6 +723,7 @@ def identity_conversation_handler():
             WAIT_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, idv_number)],
             WAIT_CARD: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_card_photo)],
             WAIT_NATIONAL: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_national)],
+            WAIT_VIDEO: [MessageHandler(filters.ALL & ~filters.COMMAND, idv_video)],
         },
         fallbacks=[
             CommandHandler('cancel', idv_cancel),
@@ -785,10 +925,21 @@ async def _bot_review(query, ctx, verification_id, approve, reason, name):
     try:
         if approve:
             released = await release_and_deliver(ctx.bot, tg)
-            await ctx.bot.send_message(chat_id=int(tg), text=(
-                '✅ احراز هویتت در اتومیک شاپ تایید شد.'
-                + (f'\n{fa(len(released))} سفارش منتظرت در حال تحویل است.' if released else '')
-                + '\nاز این به بعد خریدهایت بدون انتظار تحویل می‌شوند.'), reply_markup=main_menu())
+            ask = await asyncio.to_thread(identity_what_to_ask, tg)
+            level = await asyncio.to_thread(identity_level, tg)
+            if ask['video']:
+                # سفارشی هنوز ویدیو می‌خواهد؛ بدون حرفی از مبلغ، فقط قدمِ بعد.
+                await ctx.bot.send_message(chat_id=int(tg), text=(
+                    '✅ مدارک احراز هویتت تایید شد.'
+                    + (f'\n{fa(len(released))} سفارش منتظرت در حال تحویل است.' if released else '')
+                    + f'\nبرای سفارش‌های دیگرت یک مرحلهٔ دیگر مانده: {needs_sentence(ask)}.'),
+                    reply_markup=start_keyboard())
+            else:
+                await ctx.bot.send_message(chat_id=int(tg), text=(
+                    '✅ احراز هویتت در اتومیک شاپ تایید شد.'
+                    + (f'\n{fa(len(released))} سفارش منتظرت در حال تحویل است.' if released else '')
+                    + ('\nاز این به بعد خریدهایت بدون انتظار تحویل می‌شوند.'
+                       if level >= LEVEL_VIDEO else '')), reply_markup=main_menu())
         else:
             await ctx.bot.send_message(chat_id=int(tg), text=(
                 f'❌ احراز هویتت تایید نشد.\nدلیل: {reason}\n'
@@ -854,15 +1005,21 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'سفارشِ ربات منتظر احراز: {held_count}\n'
                 f'مدارکِ سایت منتظر بررسی: {site_pending} (در پنل سایت یا پیام‌های بالا)\n'
                 f'سفارشِ سایت منتظر احراز: {site_held}')
-        buttons = [[InlineKeyboardButton(f'🪪 #{r[0]} · {_masked(r[2])} · {r[1]}',
-                                         callback_data=f'idva_open_{r[0]}')] for r in rows]
-        buttons += [[InlineKeyboardButton(f'⏸ سفارش #{o[0]} · {max(0, int(o[2] or 0) - int(o[3] or 0)):,} ت',
-                                          callback_data=f'idva_order_{o[0]}')] for o in held]
+        buttons = [[InlineKeyboardButton(
+            f'🪪 #{r[0]} · {_masked(r[2])} · {r[1]}' + (' · 🎥' if int(r[5] or 1) >= LEVEL_VIDEO else ''),
+            callback_data=f'idva_open_{r[0]}')] for r in rows]
+        buttons += [[InlineKeyboardButton(
+            f'⏸ سفارش #{o[0]} · {max(0, int(o[2] or 0) - int(o[3] or 0)):,} ت'
+            + (' · 🎥' if int(o[6] or 1) >= LEVEL_VIDEO else ''),
+            callback_data=f'idva_order_{o[0]}')] for o in held]
         buttons.append([InlineKeyboardButton('🔄 بروزرسانی', callback_data='idva_home'),
                         InlineKeyboardButton('🚨 مرکز عملیات', callback_data='admx_ops')])
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
-    kind, _, raw = data[len('idva_'):].partition('_')
+    parts = data.split('_')
+    kind = parts[1] if len(parts) > 1 else ''
+    raw = parts[2] if len(parts) > 2 else ''
+    code = parts[3] if len(parts) > 3 else ''
     if not raw.isdigit():
         return
     pk = int(raw)
@@ -881,20 +1038,23 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             full_name = ''
 
         caption = admin_caption(pk, _Who, row[2], row[3], held, other, sent_at=row[12],
-                                legacy_selfie=bool(row[6]))
+                                legacy_selfie=bool(row[6]), level=int(row[13] or 1))
         await send_for_review(ctx.bot, pk, caption, [row[4], row[5], row[6]],
-                              recipients=[update.effective_user.id])
+                              recipients=[update.effective_user.id], video_file_id=row[15] or '')
     elif kind == 'order':
         order = await asyncio.to_thread(get_order, pk)
         if not order or order[3] != 'kyc_hold':
             await query.edit_message_text('این سفارش دیگر منتظر احراز نیست.', reply_markup=back)
             return
+        held_rows = await asyncio.to_thread(list_identity_held_orders, order[6], 50)
+        level = next((int(r[6] or 1) for r in held_rows if int(r[0]) == pk), 1)
+        keyboard = held_order_admin_keyboard(pk)
         await query.edit_message_text(
             f'⏸ سفارش #{pk} منتظر احراز هویت\nمبلغ: {int(order[2] or 0):,} تومان · '
-            f'کاربر: {order[6] or "—"}\n\n'
-            'اگر خریدار را می‌شناسی یا هویتش جای دیگری تایید شده، می‌توانی بدون احراز آزادش کنی.',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton('▶️ آزادسازی بدون احراز', callback_data=f'idva_rel_{pk}')],
+            f'کاربر: {order[6] or "—"}\nمدرک لازم: {LEVEL_LABELS.get(level, "عکس مدارک")}\n\n'
+            'آزادسازی: اگر خریدار را می‌شناسی. رد + برگشت پول: سفارش لغو و پول به کیف پولش '
+            'برمی‌گردد. رد بدون بازگشت وجه: برای تقلب یا کارتِ مالِ کس دیگر؛ پول برنمی‌گردد.',
+            reply_markup=InlineKeyboardMarkup(list(keyboard.inline_keyboard) + [
                 [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
             ]))
     elif kind == 'rel':
@@ -904,6 +1064,46 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton('✅ بله، تحویل بده', callback_data=f'idva_relok_{pk}')],
                 [InlineKeyboardButton('↩️ نه', callback_data=f'idva_order_{pk}')],
             ]))
+    elif kind in ('ref', 'keep'):
+        refund = kind == 'ref'
+        await query.edit_message_text(
+            (f'سفارش #{pk} رد شود و پولش به کیف پول خریدار برگردد؟' if refund else
+             f'⛔ سفارش #{pk} رد شود و پولش برنگردد؟ (فقط برای تقلب یا کارتِ مالِ کس دیگر)')
+            + '\n\nدلیل را انتخاب کن؛ همین برای خریدار فرستاده می‌شود:',
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(label, callback_data=f'idva_{"rr" if refund else "rk"}_{pk}_{c}')]
+                 for c, label in HOLD_REJECT_REASONS.items()]
+                + [[InlineKeyboardButton('↩️ نه', callback_data=f'idva_order_{pk}')]]))
+    elif kind in ('rr', 'rk'):
+        refund = kind == 'rr'
+        reason = HOLD_REJECT_REASONS.get(code, HOLD_REJECT_REASONS['other'])
+        order = await asyncio.to_thread(get_order, pk)
+        name = admin_display_name(update.effective_user)
+        ok, refunded, error = await asyncio.to_thread(
+            reject_identity_hold_order, pk, refund=refund, reason=reason, reviewer=name)
+        if not ok:
+            await query.edit_message_text(f'انجام نشد: {error}', reply_markup=back)
+            return
+        try:
+            from db import log_admin_action
+
+            await asyncio.to_thread(log_admin_action, update.effective_user.id,
+                                    'identity_hold_rejected', 'order', pk,
+                                    f'refund={refund} amount={refunded} reason={reason}')
+        except Exception:  # noqa: BLE001
+            log.exception('admin action log failed order=%s', pk)
+        await query.edit_message_text(
+            (f'↩️ سفارش #{pk} رد شد و {refunded:,} تومان به کیف پول خریدار برگشت.' if refund else
+             f'⛔ سفارش #{pk} بدون بازگشت وجه رد شد.') + f'\nدلیل: {reason}', reply_markup=back)
+        tg = order[6] if order else None
+        if tg:
+            text = (f'❌ سفارش #{pk} پس از بررسی احراز هویت رد شد.\nدلیل: {reason}\n'
+                    + (f'{fa_money(refunded)} تومان به کیف پولت برگشت.' if refund and refunded else
+                       'برای پیگیری با پشتیبانی تماس بگیر.'))
+            try:
+                await ctx.bot.send_message(chat_id=int(tg), text=text)
+            except Exception as exc:  # noqa: BLE001 — خریدار ربات را بسته
+                log.warning('hold rejection notice not delivered tg=%s: %s', tg, exc)
     elif kind == 'relok':
         order = await asyncio.to_thread(get_order, pk)
         if not await asyncio.to_thread(release_identity_hold_order, pk):
@@ -922,9 +1122,89 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await release_and_deliver(ctx.bot, order[6] if order else None, order_ids=[pk])
 
 
+# ── سفارشِ منتظرِ احرازِ سایت (دکمه‌های پیامِ صفِ سایت) ─────────────────
+
+_SITE_ACTIONS = {'rel': 'release', 'ref': 'refund', 'keep': 'keep'}
+
+
+async def site_held_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """skyc_<rel|ref|keep>_<id> → تایید/دلیل؛ skyc_do_<rel|ref|keep>_<id>[_<code>] → انجام."""
+    query = update.callback_query
+    if not is_admin(update.effective_user.id):
+        await query.answer('دسترسی نداری', show_alert=True)
+        return
+    parts = str(query.data or '').split('_')
+    if len(parts) >= 3 and parts[1] == 'back' and parts[2].isdigit():
+        await query.answer()
+        await _swap_keyboard(query, held_order_admin_keyboard(int(parts[2]), prefix='skyc'))
+        return
+    if len(parts) == 3 and parts[1] in _SITE_ACTIONS and parts[2].isdigit():
+        await query.answer()
+        pk, action = int(parts[2]), parts[1]
+        if action == 'rel':
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ بله، بدون احراز آزاد کن', callback_data=f'skyc_do_rel_{pk}')],
+                [InlineKeyboardButton('↩️ نه', callback_data=f'skyc_back_{pk}')],
+            ])
+        else:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton(('↩️ ' if action == 'ref' else '⛔ ') + label,
+                                       callback_data=f'skyc_do_{action}_{pk}_{c}')]
+                 for c, label in HOLD_REJECT_REASONS.items()]
+                + [[InlineKeyboardButton('↩️ نه', callback_data=f'skyc_back_{pk}')]])
+        await _swap_keyboard(query, keyboard)
+        return
+    if len(parts) >= 4 and parts[1] == 'do' and parts[2] in _SITE_ACTIONS and parts[3].isdigit():
+        from site_api import call_site_held_order_action
+
+        pk, action = int(parts[3]), _SITE_ACTIONS[parts[2]]
+        code = parts[4] if len(parts) > 4 else ''
+        reason = HOLD_REJECT_REASONS.get(code, '') if action != 'release' else ''
+        name = admin_display_name(update.effective_user)
+        result = await asyncio.to_thread(call_site_held_order_action, pk, action,
+                                         update.effective_user.id, name, reason)
+        if not result.get('ok'):
+            err = result.get('message') or result.get('error') or 'خطای سایت'
+            await query.answer(f'انجام نشد: {err}', show_alert=True)
+            if result.get('already'):
+                await _swap_keyboard(query, None)
+            return
+        await query.answer('انجام شد')
+        label = {'release': '▶️ آزاد شد و تحویلش شروع شد',
+                 'refund': '↩️ رد شد و پول به کیف پول برگشت',
+                 'keep': '⛔ بدون بازگشت وجه رد شد'}[action]
+        await _append_result(query, f'{label} — {name}' + (f'\nدلیل: {reason}' if reason else ''))
+        return
+    await query.answer('دادهٔ نامعتبر', show_alert=True)
+
+
+async def _swap_keyboard(query, keyboard):
+    try:
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    except BadRequest as exc:
+        if 'not modified' not in str(exc).lower():
+            raise
+
+
+async def _append_result(query, line):
+    """نتیجه زیر همان پیام می‌نشیند و دکمه‌ها برداشته می‌شوند."""
+    message = query.message
+    try:
+        if message and (message.photo or message.document):
+            await query.edit_message_caption(
+                caption=f'{(message.caption or "")[:900]}\n\n{line}', reply_markup=None)
+        else:
+            await query.edit_message_text(text=f'{(message.text or "")[:3500]}\n\n{line}',
+                                          reply_markup=None)
+    except BadRequest as exc:
+        if 'not modified' not in str(exc).lower():
+            log.warning('could not show the held-order result: %s', exc)
+
+
 def identity_admin_handlers():
     return [
         CallbackQueryHandler(identity_review, pattern=r'^(?:site_idv|idv)_(?:ok|no|rj|back|why|msg)_\d+'),
         CallbackQueryHandler(identity_admin, pattern=r'^idva_'),
+        CallbackQueryHandler(site_held_order, pattern=r'^skyc_'),
         CallbackQueryHandler(terms_accept, pattern=r'^terms_ok_\d+$'),
     ]

@@ -3226,8 +3226,12 @@ def admin_mark_order_delivered(order_id):
             )
 
 
-def admin_cancel_stuck_order(order_id):
+def admin_cancel_stuck_order(order_id, *, refund=True, allow_kyc_hold=False, note=''):
     """لغو ایمن سفارش گیرکرده و بازپرداخت مبلغ به کیف پول کاربر.
+
+    refund=False: سفارش لغو می‌شود ولی هیچ پولی به کیف پول برنمی‌گردد (ردِ
+    سفارشِ منتظرِ احراز به‌خاطر تقلب). allow_kyc_hold: سفارشِ «kyc_hold» هم لغو
+    می‌شود؛ note روی سفارش می‌نشیند.
 
     فقط روی وضعیت pending/paid/processing اجرا می‌شود؛ سفارش نهایی‌شده
     (delivered/completed/cancelled/canceled) را رد می‌کند تا بازپرداخت دوباره
@@ -3259,7 +3263,8 @@ def admin_cancel_stuck_order(order_id):
                 _oid, user_db_id, status, method, wallet_paid, expected, verified_at = order
                 if status in ('delivered', 'completed', 'cancelled', 'canceled'):
                     return False, 0, 'این سفارش قبلاً نهایی شده است.'
-                if status not in ('pending', 'paid', 'processing'):
+                allowed = ('pending', 'paid', 'processing') + (('kyc_hold',) if allow_kyc_hold else ())
+                if status not in allowed:
                     return False, 0, 'وضعیت سفارش قابل لغو نیست.'
 
                 # محاسبه مبلغ قابل بازپرداخت.
@@ -3286,6 +3291,8 @@ def admin_cancel_stuck_order(order_id):
                      f'لغو توسط ادمین سفارش #{order_id}'),
                 )
                 if cur.fetchone():
+                    total_paid = 0
+                if not refund:
                     total_paid = 0
 
                 # بازپرداخت به کیف پول
@@ -3336,9 +3343,12 @@ def admin_cancel_stuck_order(order_id):
                 )
                 cur.execute(
                     'UPDATE "Orders" SET "Status"=\'cancelled\',"WalletPaid"=0,'
-                    '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL '
+                    '"PaymentAuthority"=NULL,"PaymentExpectedAmount"=NULL,'
+                    '"KycRejectedAt"=CASE WHEN %s THEN now() ELSE "KycRejectedAt" END,'
+                    '"KycRejectionNote"=CASE WHEN %s<>\'\' THEN %s ELSE "KycRejectionNote" END '
                     'WHERE "Id"=%s',
-                    (order_id,),
+                    (status == 'kyc_hold' and not refund, (note or '')[:255], (note or '')[:255],
+                     order_id),
                 )
                 conn.commit()
                 return True, refunded, None
@@ -4270,6 +4280,16 @@ def ensure_admin_schema():
         """CREATE INDEX IF NOT EXISTS idx_orders_kyc_hold
            ON "Orders" ("TelegramId") WHERE "Status"='kyc_hold'""",
         'ALTER TABLE "Users" ADD COLUMN IF NOT EXISTS "TermsAcceptedVersion" INTEGER NOT NULL DEFAULT 0',
+        # احراز دو سطحی: ۱ = عکس مدارک، ۲ = عکس مدارک + ویدیو. «ApprovedLevel» سطحی
+        # است که تایید شده؛ «Level» سطحِ آخرین ارسال (ممکن است هنوز در صف باشد).
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycLevel" SMALLINT',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycRejectedAt" TIMESTAMPTZ',
+        'ALTER TABLE "Orders" ADD COLUMN IF NOT EXISTS "KycRejectionNote" VARCHAR(255) NOT NULL DEFAULT \'\'',
+        'ALTER TABLE "IdentityVerifications" ADD COLUMN IF NOT EXISTS "Level" SMALLINT NOT NULL DEFAULT 1',
+        'ALTER TABLE "IdentityVerifications" ADD COLUMN IF NOT EXISTS "ApprovedLevel" SMALLINT NOT NULL DEFAULT 0',
+        'ALTER TABLE "IdentityVerifications" ADD COLUMN IF NOT EXISTS "VideoFileId" VARCHAR(255) NOT NULL DEFAULT \'\'',
+        # تاییدهای پیش از سطح‌ها همان سطح ۱ (عکس مدارک) بودند.
+        'UPDATE "IdentityVerifications" SET "ApprovedLevel"=1 WHERE "Status"=\'approved\' AND "ApprovedLevel"=0',
     ]
     failures = []
     with get_conn() as conn, conn.cursor() as cur:
@@ -7062,10 +7082,17 @@ def move_catalogue_item(kind, item_id, direction):
     table = 'GemPackages' if kind == 'gem' else 'SensePackages'
     with get_conn() as conn, conn.cursor() as cur:
         if kind == 'gem':
+            # هر نوع خرید (با آیدی، با اطلاعات، …) فهرستِ جدای خودش را دارد؛ قبلاً
+            # فقط «با آیدی» دیده می‌شد و جابه‌جاییِ بقیه خطای «پیدا نشد» می‌داد.
+            cur.execute('SELECT "PurchaseType" FROM "GemPackages" WHERE "Id"=%s FOR UPDATE',
+                        (int(item_id),))
+            selected = cur.fetchone()
+            if not selected:
+                raise ValueError('بستهٔ جم پیدا نشد.')
             cur.execute(
-                'SELECT "Id" FROM "GemPackages" '
-                'WHERE "PurchaseType"=\'by_id\' '
-                'ORDER BY "SortOrder","Id" FOR UPDATE'
+                'SELECT "Id" FROM "GemPackages" WHERE "PurchaseType"=%s '
+                'ORDER BY "SortOrder","Id" FOR UPDATE',
+                (selected[0],),
             )
         else:
             cur.execute(
@@ -7782,15 +7809,73 @@ def identity_window_days():
         return 4
 
 
-def _identity_approved_cur(cur, tg):
-    cur.execute('SELECT 1 FROM "IdentityVerifications" WHERE "TelegramId"=%s '
-                'AND "Status"=\'approved\'', (tg,))
-    if cur.fetchone():
-        return True
-    # احرازِ قدیمیِ درگاه (کارت ملی + کارت بانکی + دست‌نوشته) هم احراز است.
+LEVEL_PHOTOS = 1
+LEVEL_VIDEO = 2
+
+
+def identity_video_threshold_toman():
+    """از این مبلغِ در خطر، ویدیوی احراز هم لازم است (هیچ‌وقت پایین‌تر از سطح ۱)."""
+    raw = (get_setting('identity_video_threshold_toman', '')
+           or os.getenv('IDENTITY_VIDEO_THRESHOLD_TOMAN', ''))
+    try:
+        value = int(str(raw or '3000000').replace(',', '').strip())
+    except ValueError:
+        value = 3_000_000
+    return max(identity_threshold_toman(), value)
+
+
+def identity_topup_window_days():
+    raw = get_setting('identity_topup_window_days', '') or os.getenv('IDENTITY_TOPUP_WINDOW_DAYS', '')
+    try:
+        return max(1, int(str(raw or '30').strip()))
+    except ValueError:
+        return 30
+
+
+def identity_level_for_amount(amount):
+    amount = int(amount or 0)
+    if amount >= identity_video_threshold_toman():
+        return LEVEL_VIDEO
+    if amount >= identity_threshold_toman():
+        return LEVEL_PHOTOS
+    return 0
+
+
+def _identity_level_cur(cur, tg):
+    """سطحِ تاییدشدهٔ خریدار: ۰، ۱ (عکس) یا ۲ (عکس + ویدیو)."""
+    cur.execute('SELECT "ApprovedLevel","Status" FROM "IdentityVerifications" WHERE "TelegramId"=%s',
+                (tg,))
+    row = cur.fetchone()
+    level = 0
+    if row:
+        level = int(row[0] or 0) or (LEVEL_PHOTOS if row[1] == 'approved' else 0)
+    if level:
+        return level
+    # احرازِ قدیمیِ درگاه (کارت ملی + کارت بانکی + دست‌نوشته) هم سطح ۱ است.
     cur.execute('SELECT 1 FROM "Users" WHERE "TelegramId"=%s AND "KycStatus"=\'approved\' LIMIT 1',
                 (tg,))
-    return cur.fetchone() is not None
+    return LEVEL_PHOTOS if cur.fetchone() else 0
+
+
+def _identity_approved_cur(cur, tg):
+    return _identity_level_cur(cur, tg) >= LEVEL_PHOTOS
+
+
+def _identity_topups_cur(cur, tg, days):
+    """شارژهای پرداخت‌شدهٔ کیف پول که خودِ خریدار آورده (درگاه یا کارت‌به‌کارت).
+
+    فقط ردیف‌هایی که مبلغِ مورد انتظارِ پرداخت دارند؛ برگشتِ سفارش و شارژِ دستیِ
+    ادمین این ستون را ندارند.
+    """
+    cur.execute(
+        'SELECT COALESCE(SUM(wt."Amount"),0) FROM "WalletTransactions" wt '
+        'JOIN "Wallets" w ON w."Id"=wt."WalletId" JOIN "Users" u ON u."Id"=w."UserId" '
+        'WHERE u."TelegramId"=%s AND wt."Kind"=\'charge\' AND wt."IsPaid" '
+        'AND wt."PaymentExpectedAmount" IS NOT NULL '
+        'AND wt."CreatedAt">=now()-make_interval(days => %s)',
+        (tg, int(days)),
+    )
+    return int(cur.fetchone()[0] or 0)
 
 
 def _identity_spent_cur(cur, tg, days, exclude_order_id=None):
@@ -7803,15 +7888,51 @@ def _identity_spent_cur(cur, tg, days, exclude_order_id=None):
     return int(cur.fetchone()[0] or 0)
 
 
-def identity_state(telegram_id) -> str:
-    """approved | pending | rejected | none"""
-    tg = str(telegram_id)
+def identity_needed_level(telegram_id) -> int:
+    """سطحی که سفارش‌های منتظرِ این خریدار می‌خواهند (۰ اگر سفارشی منتظر نیست)."""
     with get_conn() as conn, conn.cursor() as cur:
-        if _identity_approved_cur(cur, tg):
-            return 'approved'
-        cur.execute('SELECT "Status" FROM "IdentityVerifications" WHERE "TelegramId"=%s', (tg,))
+        cur.execute('SELECT MAX(COALESCE("KycLevel",1)) FROM "Orders" '
+                    'WHERE "TelegramId"=%s AND "Status"=\'kyc_hold\'', (str(telegram_id),))
         row = cur.fetchone()
-    return row[0] if row and row[0] in ('pending', 'rejected') else 'none'
+    return int(row[0] or 0) if row else 0
+
+
+def identity_level(telegram_id) -> int:
+    with get_conn() as conn, conn.cursor() as cur:
+        return _identity_level_cur(cur, str(telegram_id))
+
+
+def identity_state(telegram_id) -> str:
+    """approved | pending | rejected | none — دربارهٔ سطحی که *الان* لازم است.
+
+    کسی که سطح ۱ دارد ولی سفارشی منتظرِ سطح ۲ دارد «تاییدشده» نیست؛ ویدیو از
+    او خواسته می‌شود.
+    """
+    tg = str(telegram_id)
+    need = identity_needed_level(tg)
+    with get_conn() as conn, conn.cursor() as cur:
+        have = _identity_level_cur(cur, tg)
+        if have and have >= max(need, LEVEL_PHOTOS):
+            return 'approved'
+        cur.execute('SELECT "Status","Level","ApprovedLevel" FROM "IdentityVerifications" '
+                    'WHERE "TelegramId"=%s', (tg,))
+        row = cur.fetchone()
+    if not row:
+        return 'none'
+    status, level, approved_level = row[0], int(row[1] or 1), int(row[2] or 0)
+    if status == 'pending':
+        return 'pending'
+    if status == 'rejected':
+        return 'rejected'
+    return 'none'
+
+
+def identity_what_to_ask(telegram_id) -> dict:
+    """چه چیزی از خریدار خواسته شود: {'photos', 'video', 'level'} — بدون حرفی از مبلغ."""
+    need = identity_needed_level(telegram_id)
+    have = identity_level(telegram_id)
+    return {'photos': have < LEVEL_PHOTOS, 'video': need >= LEVEL_VIDEO and have < LEVEL_VIDEO,
+            'level': max(need, LEVEL_PHOTOS)}
 
 
 def is_identity_verified(telegram_id) -> bool:
@@ -7830,8 +7951,8 @@ def claim_identity_hold(order_id) -> bool:
     تصمیم زیر قفلِ همان خریدار است تا دو پرداختِ هم‌زمان هر کدام جمعِ دیگری را
     ببینند. سفارشی که یک‌بار آزاد شده (KycReleasedAt) دوباره نگه داشته نمی‌شود.
     """
-    threshold = identity_threshold_toman()
     days = identity_window_days()
+    topup_days = identity_topup_window_days()
     with get_conn() as conn, conn.cursor() as cur:
         try:
             row, net_total, _payable = _locked_order_financials(cur, order_id)
@@ -7847,18 +7968,19 @@ def claim_identity_hold(order_id) -> bool:
             conn.rollback()
             return False
         cur.execute('SELECT pg_advisory_xact_lock(%s, hashtext(%s))', (_IDENTITY_LOCK_NS, tg))
-        if _identity_approved_cur(cur, tg):
-            conn.rollback()
-            return False
         spent = _identity_spent_cur(cur, tg, days, exclude_order_id=order_id)
-        if spent + int(net_total or 0) < threshold:
+        # «مبلغِ در خطر»: خریدهای چند روز با همین سفارش، یا شارژهای کیف پولِ اخیر —
+        # هر کدام بیشتر است. سه میلیون شارژ و بعد خریدِ کوچک، همان ویدیو را می‌خواهد.
+        topups = _identity_topups_cur(cur, tg, topup_days)
+        level = identity_level_for_amount(max(spent + int(net_total or 0), topups))
+        if not level or _identity_level_cur(cur, tg) >= level:
             conn.rollback()
             return False
-        cur.execute('UPDATE "Orders" SET "Status"=\'kyc_hold\', "KycHoldAt"=now() WHERE "Id"=%s',
-                    (int(order_id),))
+        cur.execute('UPDATE "Orders" SET "Status"=\'kyc_hold\', "KycHoldAt"=now(), "KycLevel"=%s '
+                    'WHERE "Id"=%s', (int(level), int(order_id)))
         conn.commit()
-        _LOG.warning('order %s held for identity verification (tg=%s, spent=%s, order=%s)',
-                     order_id, tg, spent, net_total)
+        _LOG.warning('order %s held for identity level %s (tg=%s, spent=%s, order=%s, topups=%s)',
+                     order_id, level, tg, spent, net_total, topups)
         return True
 
 
@@ -7874,9 +7996,10 @@ def claim_identity_hold_notice(order_id) -> bool:
 
 
 def list_identity_held_orders(telegram_id=None, limit=50):
-    """[(Id, TelegramId, TotalAmount, DiscountAmount, PaymentMethod, KycHoldAt)]"""
+    """[(Id, TelegramId, TotalAmount, DiscountAmount, PaymentMethod, KycHoldAt, KycLevel)]"""
     sql = ('SELECT "Id","TelegramId","TotalAmount",COALESCE("DiscountAmount",0),'
-           '"PaymentMethod","KycHoldAt" FROM "Orders" WHERE "Status"=\'kyc_hold\'')
+           '"PaymentMethod","KycHoldAt",COALESCE("KycLevel",1) FROM "Orders" '
+           'WHERE "Status"=\'kyc_hold\'')
     params = []
     if telegram_id is not None:
         sql += ' AND "TelegramId"=%s'
@@ -7889,16 +8012,41 @@ def list_identity_held_orders(telegram_id=None, limit=50):
 
 
 def release_identity_holds(telegram_id):
-    """سفارش‌های منتظرِ این خریدار به صف تحویل برمی‌گردند. خروجی: [order_id]."""
+    """سفارش‌های منتظرِ این خریدار تا سطحِ تاییدشده‌اش به صف تحویل برمی‌گردند.
+
+    سفارشی که ویدیو می‌خواهد و خریدار فقط سطح ۱ دارد، منتظر می‌ماند.
+    خروجی: [order_id].
+    """
+    tg = str(telegram_id)
     with get_conn() as conn, conn.cursor() as cur:
+        level = _identity_level_cur(cur, tg)
         cur.execute(
             'UPDATE "Orders" SET "Status"=\'processing\', "KycHoldAt"=NULL, "KycReleasedAt"=now() '
-            'WHERE "TelegramId"=%s AND "Status"=\'kyc_hold\' RETURNING "Id"',
-            (str(telegram_id),),
+            'WHERE "TelegramId"=%s AND "Status"=\'kyc_hold\' AND COALESCE("KycLevel",1)<=%s '
+            'RETURNING "Id"',
+            (tg, int(level)),
         )
         ids = sorted(int(row[0]) for row in cur.fetchall())
         conn.commit()
         return ids
+
+
+def reject_identity_hold_order(order_id, *, refund, reason='', reviewer=''):
+    """ردِ سفارشِ منتظرِ احرازِ ربات. خروجی: (ok, refunded, error).
+
+    refund=True همان «لغو + برگشت به کیف پول»؛ refund=False لغو بدون برگشتِ پول
+    (کارتِ دزدی یا تقلب) که روی سفارش ثبت می‌شود.
+    """
+    who = (reviewer or 'ادمین')[:80]
+    reason = ' '.join(str(reason or '').split())[:150]
+    note = (('رد در احراز + برگشت به کیف پول' if refund else 'رد بدون بازگشت وجه')
+            + f' ({who})' + (f': {reason}' if reason else ''))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT "Status" FROM "Orders" WHERE "Id"=%s', (int(order_id),))
+        row = cur.fetchone()
+    if not row or row[0] != 'kyc_hold':
+        return False, 0, 'این سفارش دیگر منتظر احراز نیست.'
+    return admin_cancel_stuck_order(order_id, refund=refund, allow_kyc_hold=True, note=note)
 
 
 def release_identity_hold_order(order_id) -> bool:
@@ -7928,30 +8076,41 @@ def identity_card_owned_by_other(telegram_id, card_number) -> bool:
 
 
 def submit_identity_verification(telegram_id, card_number, phone, card_file_id,
-                                 national_file_id, selfie_file_id=''):
-    """ثبت یا جایگزینیِ مدارک. خروجی: (Id, Status) — تاییدشده تایید می‌ماند.
+                                 national_file_id, selfie_file_id='', video_file_id='', level=None):
+    """ثبت یا جایگزینیِ مدارک. خروجی: (Id, Status).
 
+    مدارکی که سطحش از قبل تایید شده تایید می‌ماند؛ ارسالِ سطحِ بالاتر (ویدیو) دوباره
+    در صف می‌رود ولی سطحِ تاییدشدهٔ قبلی (ApprovedLevel) از دست نمی‌رود.
     سلفی دیگر خواسته نمی‌شود (خالی)؛ فقط مدارکِ قدیمی آن را دارند.
     """
+    level = int(level or (LEVEL_VIDEO if video_file_id else LEVEL_PHOTOS))
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone",'
-            '"CardPhotoFileId","NationalCardFileId","SelfieFileId","Status","Source") '
-            'VALUES (%s,%s,%s,%s,%s,%s,\'pending\',\'bot\') '
+            '"CardPhotoFileId","NationalCardFileId","SelfieFileId","VideoFileId","Level",'
+            '"Status","Source") VALUES (%s,%s,%s,%s,%s,%s,%s,%s,\'pending\',\'bot\') '
             'ON CONFLICT ("TelegramId") DO UPDATE SET '
-            '"CardNumber"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' '
+            '"CardNumber"=CASE WHEN "IdentityVerifications"."ApprovedLevel">=EXCLUDED."Level" '
             'THEN "IdentityVerifications"."CardNumber" ELSE EXCLUDED."CardNumber" END, '
             '"Phone"=EXCLUDED."Phone", '
-            '"CardPhotoFileId"=EXCLUDED."CardPhotoFileId", '
-            '"NationalCardFileId"=EXCLUDED."NationalCardFileId", '
-            '"SelfieFileId"=EXCLUDED."SelfieFileId", "Source"=\'bot\', '
-            '"Status"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' THEN \'approved\' '
-            'ELSE \'pending\' END, "RejectReason"=\'\', '
-            '"CreatedAt"=CASE WHEN "IdentityVerifications"."Status"=\'approved\' '
+            '"CardPhotoFileId"=COALESCE(NULLIF(EXCLUDED."CardPhotoFileId",\'\'),'
+            '"IdentityVerifications"."CardPhotoFileId"), '
+            '"NationalCardFileId"=COALESCE(NULLIF(EXCLUDED."NationalCardFileId",\'\'),'
+            '"IdentityVerifications"."NationalCardFileId"), '
+            '"SelfieFileId"=EXCLUDED."SelfieFileId", '
+            '"VideoFileId"=COALESCE(NULLIF(EXCLUDED."VideoFileId",\'\'),'
+            '"IdentityVerifications"."VideoFileId"), '
+            '"Level"=GREATEST(EXCLUDED."Level","IdentityVerifications"."Level"*'
+            '(CASE WHEN "IdentityVerifications"."Status"=\'pending\' THEN 1 ELSE 0 END)), '
+            '"Source"=\'bot\', '
+            '"Status"=CASE WHEN "IdentityVerifications"."ApprovedLevel">=EXCLUDED."Level" '
+            'THEN \'approved\' ELSE \'pending\' END, "RejectReason"=\'\', '
+            '"CreatedAt"=CASE WHEN "IdentityVerifications"."ApprovedLevel">=EXCLUDED."Level" '
             'THEN "IdentityVerifications"."CreatedAt" ELSE now() END '
             'RETURNING "Id","Status"',
-            (str(telegram_id), str(card_number)[:16], (phone or '')[:20], (card_file_id or '')[:255],
-             (national_file_id or '')[:255], (selfie_file_id or '')[:255]),
+            (str(telegram_id), str(card_number or '')[:16], (phone or '')[:20],
+             (card_file_id or '')[:255], (national_file_id or '')[:255], (selfie_file_id or '')[:255],
+             (video_file_id or '')[:255], level),
         )
         row = cur.fetchone()
         conn.commit()
@@ -7960,22 +8119,34 @@ def submit_identity_verification(telegram_id, card_number, phone, card_file_id,
 
 def get_identity_verification(verification_id):
     """(Id, TelegramId, CardNumber, Phone, CardPhotoFileId, NationalCardFileId,
-    SelfieFileId, Status, Source, RejectReason, ReviewedBy, ReviewedAt, CreatedAt)"""
+    SelfieFileId, Status, Source, RejectReason, ReviewedBy, ReviewedAt, CreatedAt,
+    Level, ApprovedLevel, VideoFileId)"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT "Id","TelegramId","CardNumber","Phone","CardPhotoFileId","NationalCardFileId",'
-            '"SelfieFileId","Status","Source","RejectReason","ReviewedBy","ReviewedAt","CreatedAt" '
+            '"SelfieFileId","Status","Source","RejectReason","ReviewedBy","ReviewedAt","CreatedAt",'
+            '"Level","ApprovedLevel","VideoFileId" '
             'FROM "IdentityVerifications" WHERE "Id"=%s',
             (int(verification_id),),
         )
         return cur.fetchone()
 
 
+def get_identity_verification_by_tg(telegram_id):
+    """همان ستون‌های get_identity_verification، برای مدارکِ یک خریدار (یا None)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('SELECT "Id" FROM "IdentityVerifications" WHERE "TelegramId"=%s',
+                    (str(telegram_id),))
+        row = cur.fetchone()
+    return get_identity_verification(row[0]) if row else None
+
+
 def list_pending_identity_verifications(limit=20):
-    """[(Id, TelegramId, CardNumber, Phone, CreatedAt)] — قدیمی‌ترین اول."""
+    """[(Id, TelegramId, CardNumber, Phone, CreatedAt, Level)] — قدیمی‌ترین اول."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            'SELECT "Id","TelegramId","CardNumber","Phone","CreatedAt" FROM "IdentityVerifications" '
+            'SELECT "Id","TelegramId","CardNumber","Phone","CreatedAt","Level" '
+            'FROM "IdentityVerifications" '
             'WHERE "Status"=\'pending\' ORDER BY "CreatedAt" LIMIT %s',
             (int(limit),),
         )
@@ -8000,11 +8171,14 @@ def review_identity_verification(verification_id, *, approve, reviewer='', reaso
     """
     status = 'approved' if approve else 'rejected'
     with get_conn() as conn, conn.cursor() as cur:
+        # تایید سطحِ همین ارسال را می‌دهد؛ رد، سطحِ تاییدشدهٔ قبلی را نمی‌گیرد.
         cur.execute(
             'UPDATE "IdentityVerifications" SET "Status"=%s, "RejectReason"=%s, "ReviewedBy"=%s, '
-            '"ReviewedAt"=now() WHERE "Id"=%s AND "Status"=\'pending\' '
+            '"ReviewedAt"=now(), "ApprovedLevel"=CASE WHEN %s THEN GREATEST("ApprovedLevel","Level") '
+            'ELSE "ApprovedLevel" END WHERE "Id"=%s AND "Status"=\'pending\' '
             'RETURNING "TelegramId","CardNumber","Phone"',
-            (status, (reason or '')[:255], (reviewer or '')[:120], int(verification_id)),
+            (status, (reason or '')[:255], (reviewer or '')[:120], bool(approve),
+             int(verification_id)),
         )
         row = cur.fetchone()
         if row and approve:
@@ -8025,22 +8199,26 @@ def review_identity_verification(verification_id, *, approve, reviewer='', reaso
         return (row[0], row[1]) if row else None
 
 
-def import_site_identity(telegram_id, card_number, phone):
-    """احرازِ تاییدشدهٔ سایت برای همین شماره، در ربات هم تاییدشده ثبت می‌شود.
+def import_site_identity(telegram_id, card_number, phone, level=1):
+    """احرازِ تاییدشدهٔ سایت برای همین شماره، در ربات هم با همان سطح ثبت می‌شود.
 
     خروجی False یعنی کارت روی حساب تلگرامِ دیگری است و وارد نشد.
     """
     number = ''.join(ch for ch in str(card_number or '') if ch.isdigit())[:16]
     if number and identity_card_owned_by_other(telegram_id, number):
         return False
+    level = max(LEVEL_PHOTOS, min(LEVEL_VIDEO, int(level or 1)))
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone","Status",'
-            '"Source","ReviewedBy","ReviewedAt") VALUES (%s,%s,%s,\'approved\',\'site\','
-            '\'احراز سایت\',now()) ON CONFLICT ("TelegramId") DO UPDATE SET '
+            '"Source","ReviewedBy","ReviewedAt","Level","ApprovedLevel") VALUES '
+            '(%s,%s,%s,\'approved\',\'site\',\'احراز سایت\',now(),%s,%s) '
+            'ON CONFLICT ("TelegramId") DO UPDATE SET '
             '"Status"=\'approved\', "Source"=\'site\', "ReviewedBy"=\'احراز سایت\', '
-            '"ReviewedAt"=now(), "CardNumber"=EXCLUDED."CardNumber", "Phone"=EXCLUDED."Phone"',
-            (str(telegram_id), number, (phone or '')[:20]),
+            '"ReviewedAt"=now(), "CardNumber"=EXCLUDED."CardNumber", "Phone"=EXCLUDED."Phone", '
+            '"Level"=GREATEST("IdentityVerifications"."Level",EXCLUDED."Level"), '
+            '"ApprovedLevel"=GREATEST("IdentityVerifications"."ApprovedLevel",EXCLUDED."ApprovedLevel")',
+            (str(telegram_id), number, (phone or '')[:20], level, level),
         )
         cur.execute('UPDATE "Users" SET "KycStatus"=\'approved\', "KycVerifiedAt"=now() '
                     'WHERE "TelegramId"=%s', (str(telegram_id),))
