@@ -58,13 +58,10 @@ async def site_review_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from handlers.receipt_reasons import reasons_keyboard
 
         payment_id = _payment_id(query.data)
-        rows = [list(row) for row in reasons_keyboard('s', payment_id).inline_keyboard]
-        # پیام به خریدار بدون رد (تیکت در داشبورد سایت) — پیش از دکمهٔ بازگشت.
-        rows.insert(len(rows) - 1, [InlineKeyboardButton(
-            '💬 ارسال پیام به کاربر (بدون رد)', callback_data=f'site_rcpt_msg_{payment_id}')])
+        # سایت برای رسید فقط approve/reject دارد؛ دکمهٔ «پیام بدون رد» این‌جا نیست.
         await query.answer('دلیل رد را انتخاب کن')
         try:
-            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+            await query.edit_message_reply_markup(reply_markup=reasons_keyboard('s', payment_id))
         except Exception:
             pass
         return
