@@ -339,8 +339,9 @@ class SettingsAndMenuTests(unittest.TestCase):
         promo = [btn.callback_data for row in admin_hub_promo_keyboard().inline_keyboard
                  for btn in row]
         self.assertIn('radm_home', promo)
+        # هر گزینه فقط در یک بخش: رفرال زیرِ «تبلیغ و کانال‌ها» است، نه «کاربران».
         users = [btn.callback_data for row in admin_hub_users_keyboard().inline_keyboard for btn in row]
-        self.assertIn('radm_home', users)
+        self.assertNotIn('radm_home', users)
 
 
 class KeyboardTests(unittest.TestCase):

@@ -57,9 +57,15 @@ class AppearanceTests(unittest.TestCase):
 
         settings = [b.callback_data for row in admin_home_keyboard().inline_keyboard for b in row]
         self.assertIn('admx_hub_system', settings)
+        # «تنظیمات» ← «🎨 ظاهر ربات» ← «ظاهر متن و دکمه‌ها»
+        from keyboards import admin_hub_look_keyboard
+
         row = admin_hub_system_keyboard().inline_keyboard[1][0]
-        self.assertEqual(row.callback_data, 'ap_home')
+        self.assertEqual(row.callback_data, 'admx_hub_look')
         self.assertIn('ظاهر', row.text)
+        first = admin_hub_look_keyboard().inline_keyboard[0][0]
+        self.assertEqual(first.callback_data, 'ap_home')
+        self.assertIn('ظاهر', first.text)
 
     def test_extract_custom_emoji_from_admin_message(self):
         entity = SimpleNamespace(
