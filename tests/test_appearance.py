@@ -53,7 +53,11 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(kb.inline_keyboard[2][0].callback_data, 'pay_wallet_9')
 
     def test_admin_home_has_appearance_hub(self):
-        row = admin_home_keyboard().inline_keyboard[2][0]
+        from keyboards import admin_hub_system_keyboard
+
+        settings = [b.callback_data for row in admin_home_keyboard().inline_keyboard for b in row]
+        self.assertIn('admx_hub_system', settings)
+        row = admin_hub_system_keyboard().inline_keyboard[1][0]
         self.assertEqual(row.callback_data, 'ap_home')
         self.assertIn('ظاهر', row.text)
 

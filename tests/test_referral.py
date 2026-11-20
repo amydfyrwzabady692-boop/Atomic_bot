@@ -331,12 +331,14 @@ class SettingsAndMenuTests(unittest.TestCase):
             self.assertEqual(appearance.menu_action(appearance.DEFAULTS['b.menu.ref']), 'referral')
 
     def test_admin_entry_buttons_do_not_move_existing_rows(self):
+        from keyboards import admin_hub_promo_keyboard
+
         home = admin_home_keyboard().inline_keyboard
         self.assertEqual(home[0][0].callback_data, 'admx_ops')
-        self.assertEqual(home[2][0].callback_data, 'ap_home')
-        self.assertEqual(home[3][0].callback_data, 'admx_hub_orders')
-        callbacks = [btn.callback_data for row in home for btn in row]
-        self.assertIn('radm_home', callbacks)
+        self.assertEqual(home[1][0].callback_data, 'admx_hub_orders')
+        promo = [btn.callback_data for row in admin_hub_promo_keyboard().inline_keyboard
+                 for btn in row]
+        self.assertIn('radm_home', promo)
         users = [btn.callback_data for row in admin_hub_users_keyboard().inline_keyboard for btn in row]
         self.assertIn('radm_home', users)
 

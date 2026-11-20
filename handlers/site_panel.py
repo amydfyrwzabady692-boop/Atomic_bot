@@ -7,6 +7,7 @@ from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.ext import ContextTypes
 
 from admin_notify import is_admin, is_credential_admin
+from text_safety import markdown_safe
 from keyboards import site_card_keyboard
 from site_api import (
     call_site_credential_action,
@@ -188,7 +189,7 @@ async def _list_site_credentials(update, ctx):
     buttons = []
     if not data.get('ok'):
         err = data.get('message') or data.get('error') or 'خطای سایت'
-        lines.append(f'⚠️ خواندن از سایت نشد: {err}')
+        lines.append(f'⚠️ خواندن از سایت نشد: {markdown_safe(err, 200)}')
     elif not items:
         lines.append('سفارش سایتی ثبت نشده است.')
     for item in items:
@@ -325,7 +326,7 @@ async def _list_site_receipts(update, ctx):
     buttons = []
     if not data.get('ok'):
         err = data.get('message') or data.get('error') or 'خطای سایت'
-        lines.append(f'⚠️ خواندن از سایت نشد: {err}')
+        lines.append(f'⚠️ خواندن از سایت نشد: {markdown_safe(err, 200)}')
     elif not items:
         lines.append('✅ رسید تاییدنشده سایتی وجود ندارد.')
     for item in items:

@@ -6976,10 +6976,17 @@ def move_catalogue_item(kind, item_id, direction):
     table = 'GemPackages' if kind == 'gem' else 'SensePackages'
     with get_conn() as conn, conn.cursor() as cur:
         if kind == 'gem':
+            # هر نوع خرید (با آیدی، با اطلاعات، …) فهرستِ جدای خودش را دارد؛ قبلاً
+            # فقط «با آیدی» دیده می‌شد و جابه‌جاییِ بقیه خطای «پیدا نشد» می‌داد.
+            cur.execute('SELECT "PurchaseType" FROM "GemPackages" WHERE "Id"=%s FOR UPDATE',
+                        (int(item_id),))
+            selected = cur.fetchone()
+            if not selected:
+                raise ValueError('بستهٔ جم پیدا نشد.')
             cur.execute(
-                'SELECT "Id" FROM "GemPackages" '
-                'WHERE "PurchaseType"=\'by_id\' '
-                'ORDER BY "SortOrder","Id" FOR UPDATE'
+                'SELECT "Id" FROM "GemPackages" WHERE "PurchaseType"=%s '
+                'ORDER BY "SortOrder","Id" FOR UPDATE',
+                (selected[0],),
             )
         else:
             cur.execute(

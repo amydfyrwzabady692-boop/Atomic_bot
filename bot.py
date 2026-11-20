@@ -702,6 +702,62 @@ def _transform_message_content(text: str, parse_mode: str | None) -> tuple[str, 
         return text, parse_mode, False
 
 
+_MD_ESCAPED = re.compile(r'\\([_*`\[\\])')
+_HTML_TAG = re.compile(r'<[^>]+>')
+
+
+def _as_plain(text, parse_mode):
+    """همان متن بی‌قالب: برای وقتی تلگرام Markdown/HTMLِ پیام را نپذیرفت."""
+    mode = str(parse_mode or '').lower()
+    if 'html' in mode:
+        return _html_module.unescape(_HTML_TAG.sub('', text))
+    if 'markdown' in mode:
+        return _MD_ESCAPED.sub(r'\1', text)
+    return text
+
+
+def _plain_text_fallback(func, field, position):
+    """اگر قالبِ پیام parse نشد، همان پیام بی‌قالب فرستاده شود.
+
+    نام، یوزرنیم یا موضوعی با «_» یا «*» کلِ پیامِ Markdown را رد می‌کرد و دکمهٔ
+    پنل «هیچ کاری نمی‌کرد». این تورِ ایمنی است؛ خودِ متن‌ها هم escape می‌شوند.
+    """
+    async def inner(self, *args, **kwargs):
+        try:
+            return await func(self, *args, **kwargs)
+        except Exception as err:
+            if 'parse entities' not in str(err).lower():
+                raise
+            if isinstance(kwargs.get(field), str):
+                kwargs[field] = _as_plain(kwargs[field], kwargs.get('parse_mode'))
+            elif position is not None and len(args) > position and isinstance(args[position], str):
+                args = list(args)
+                args[position] = _as_plain(args[position], kwargs.get('parse_mode'))
+                args = tuple(args)
+            else:
+                raise
+            kwargs['parse_mode'] = None
+            log.warning('message markup did not parse (%s); sent as plain text instead', err)
+            return await func(self, *args, **kwargs)
+
+    return inner
+
+
+async def stale_button(update: Update, ctx):
+    """هر دکمه‌ای که هیچ مسیری نگرفت (گفتگوی منقضی، پیامِ قدیمی بعد از ری‌استارت).
+
+    قبلاً چرخ‌دندهٔ تلگرام بی‌پایان می‌چرخید و به نظر می‌رسید دکمه خراب است.
+    """
+    query = update.callback_query
+    log.info('unhandled callback %r from %s', getattr(query, 'data', ''),
+             getattr(update.effective_user, 'id', '?'))
+    try:
+        await query.answer('این دکمه قدیمی است؛ از منو دوباره شروع کن (ادمین: /admin).',
+                           show_alert=False)
+    except Exception:  # noqa: BLE001 — کوئریِ خیلی قدیمی
+        pass
+
+
 def _install_premium_glyph_hook(application=None) -> None:
     if getattr(ExtBot, "_premium_glyph_hooked", False):
         return
@@ -896,11 +952,11 @@ def _install_premium_glyph_hook(application=None) -> None:
                     raise
             raise
 
-    ExtBot.send_message = wrapped_send
-    ExtBot.edit_message_text = wrapped_edit
-    ExtBot.send_photo = wrapped_send_photo
-    ExtBot.send_document = wrapped_send_doc
-    ExtBot.edit_message_caption = wrapped_edit_caption
+    ExtBot.send_message = _plain_text_fallback(wrapped_send, 'text', 1)
+    ExtBot.edit_message_text = _plain_text_fallback(wrapped_edit, 'text', 0)
+    ExtBot.send_photo = _plain_text_fallback(wrapped_send_photo, 'caption', 2)
+    ExtBot.send_document = _plain_text_fallback(wrapped_send_doc, 'caption', 2)
+    ExtBot.edit_message_caption = _plain_text_fallback(wrapped_edit_caption, 'caption', None)
     ExtBot._premium_glyph_hooked = True
 
 
@@ -1129,6 +1185,9 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_kyc_approve, pattern=r'^kyc_ok_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(admin_kyc_reject, pattern=r'^kyc_no_\d+_\d+$'))
     app.add_handler(CallbackQueryHandler(pay_back_methods, pattern=r'^pay_back_\d+$'))
+
+    # آخرین مسیرِ گروه صفر: فقط دکمه‌ای که هیچ مسیرِ دیگری نگرفت.
+    app.add_handler(CallbackQueryHandler(stale_button))
 
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,

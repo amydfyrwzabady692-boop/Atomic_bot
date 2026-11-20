@@ -8,6 +8,8 @@ from telegram.ext import (
     CallbackQueryHandler, CommandHandler, filters,
 )
 
+from text_safety import markdown_safe
+
 from admin_notify import is_admin, is_credential_admin, notify_admin
 from keyboards import (
     admin_home_keyboard, admin_user_keyboard, admin_failed_order_keyboard,
@@ -99,9 +101,11 @@ def _tg_handle(uname):
 
 def _format_user(p):
     _db_id, tg, uname, first, last, blocked, reason, bal, joined = p
-    name = f"{first or ''} {last or ''}".strip() or "—"
+    # نام و دلیلِ بلاک را خودِ کاربر/ادمین نوشته؛ «_» یا «*» در آن‌ها کلِ کارت را
+    # از کار می‌انداخت. یوزرنیم داخل *…* است و تلگرام در آن فقط حرف، عدد و «_» دارد.
+    name = markdown_safe(f"{first or ''} {last or ''}".strip() or "—", 60)
     handle = _tg_handle(uname)
-    st = f"🚫 بلاک — {reason or '—'}" if blocked else "✅ فعال"
+    st = f"🚫 بلاک — {markdown_safe(reason or '—', 120)}" if blocked else "✅ فعال"
     joined_s = str(joined)[:16] if joined else "—"
     return (
         f"✦ *کارت کاربر*\n"
@@ -151,32 +155,37 @@ async def _show_home(update, ctx, via_message=False):
     except Exception:
         ops['wallet_refunds_unseen'] = 0
     manual_stars = int(ops.get('manual_stars') or 0)
-    alerts = ops_action_total(ops, ready_creds)
+    try:
+        from db import count_identity_queue
+
+        idv_pending, idv_held = count_identity_queue()
+    except Exception:  # noqa: BLE001
+        idv_pending, idv_held = 0, 0
+    alerts = ops_action_total(ops, ready_creds + idv_pending)
     orders_action = (
-        ops['pending_receipts'] + ops['stuck_processing']
-        + ready_creds + int(s.get('failed_g2') or 0)
-        + manual_stars
+        ops['stuck_processing'] + ready_creds + int(s.get('failed_g2') or 0) + manual_stars
     )
+    receipts = int(ops['pending_receipts'] or 0)
     text = (
-        f"✦ *پنل ادمین Atomic*\n"
+        f"✦ *پنل مدیریت اتومیک*\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
-        f"👥 کاربران: *{s['users']:,}*  ·  🚫 بلاک: {s['blocked']}\n"
-        f"📦 سفارش‌ها: *{s['orders']:,}*  ·  باز: {s['open_orders']}\n"
-        f"❌ تحویل ناموفق: *{s['failed_g2']:,}*\n"
-        f"🔐 جم با اطلاعات (آماده): *{ready_creds:,}*\n"
-        f"⭐ استارز دستی در انتظار: *{manual_stars:,}*\n"
-        f"💰 برگشت کیف‌پول دیده‌نشده: *{ops.get('wallet_refunds_unseen', 0):,}*\n"
-        f"🎫 تیکت باز: *{s['open_tickets']:,}*\n"
-        f"🏦 مجموع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
+        f"📅 فروش امروز: *{ops['sales_today_amount']:,}* ت ({ops['sales_today_count']:,} سفارش)\n"
+        f"👥 کاربران: *{s['users']:,}* · 🏦 جمع کیف پول‌ها: *{s['wallet_sum']:,}* ت\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"📅 فروش امروز: *{ops['sales_today_amount']:,}* ت "
-        f"({ops['sales_today_count']:,} سفارش)\n"
-        f"🔎 استعلام سفارش: `/order 12345`\n"
-        f"{'🚨 نیاز به اقدام:' if alerts else '✅ وضعیت عادی — هشدار:'} *{alerts:,}*"
-    )
+        f"{'🚨 کارِ منتظر:' if alerts else '✅ کار منتظری نیست.'}"
+        + (f" *{alerts:,}*\n" if alerts else "\n")
+        + (f"🧾 رسید: {receipts} · " if receipts else "")
+        + (f"🪪 احراز: {idv_pending}/{idv_held} · " if idv_pending or idv_held else "")
+        + (f"⏳ گیرکرده: {ops['stuck_processing']} · " if ops['stuck_processing'] else "")
+        + (f"❌ ناموفق: {s['failed_g2']} · " if s.get('failed_g2') else "")
+        + (f"🎫 تیکت: {s['open_tickets']}" if s['open_tickets'] else "")
+        + "\n\n🔎 استعلام سریع: `/order 12345`"
+    ).replace(' · \n', '\n')
     kb = admin_home_keyboard({
         'ops_alerts': alerts,
         'orders_action': orders_action,
+        'receipts': receipts,
+        'identity': idv_pending + idv_held,
         'open_tickets': s['open_tickets'],
         'manual_stars': manual_stars,
     })
@@ -930,7 +939,8 @@ async def admin_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         tid, subject, status, created, tg, name = r[:6]
         cat = r[6] if len(r) > 6 else 'other'
         tag = '🔐' if cat == 'credential' else '🎧'
-        lines.append(f"{tag} #{tid} · {name or '—'} · `{tg}`\n  {(subject or '')[:50]}")
+        lines.append(f"{tag} #{tid} · {markdown_safe(name or '—', 40)} · `{tg}`\n"
+                     f"  {markdown_safe(subject or '', 50)}")
         buttons.append([
             InlineKeyboardButton(f'#{tid} پاسخ', callback_data=f'adm_treply_{tid}'),
             InlineKeyboardButton('بستن', callback_data=f'adm_tclose_{tid}'),
@@ -964,7 +974,8 @@ async def admin_credential_tickets(update: Update, ctx: ContextTypes.DEFAULT_TYP
     buttons = []
     for r in rows:
         tid, subject, status, created, tg, name = r[:6]
-        lines.append(f"#{tid} · {name or '—'} · `{tg}`\n  {(subject or '')[:50]}")
+        lines.append(f"#{tid} · {markdown_safe(name or '—', 40)} · `{tg}`\n"
+                     f"  {markdown_safe(subject or '', 50)}")
         buttons.append([
             InlineKeyboardButton(f'#{tid} پاسخ', callback_data=f'adm_treply_{tid}'),
             InlineKeyboardButton('بستن', callback_data=f'adm_tclose_{tid}'),
@@ -990,7 +1001,7 @@ async def admin_ticket_reply_start(update: Update, ctx: ContextTypes.DEFAULT_TYP
     ctx.user_data['adm_ticket_category'] = _ticket_category(ticket)
     tg = ticket[5] or ticket[6]
     await query.edit_message_text(
-        f"پاسخ تیکت #{tid}\nکاربر `{tg}`\n{(ticket[3] or '')[:280]}\n\nپاسخت را بفرست:",
+        f"پاسخ تیکت #{tid}\nکاربر `{tg}`\n{markdown_safe(ticket[3] or '', 280)}\n\nپاسخت را بفرست:",
         parse_mode='Markdown',
     )
     return WAIT_TICKET_REPLY
@@ -1016,7 +1027,7 @@ async def admin_ticket_reply_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE
     try:
         await ctx.bot.send_message(
             chat_id=int(tg),
-            text=f"🎧 *پاسخ پشتیبانی — تیکت #{tid}*\n\n{text}",
+            text=f"🎧 *پاسخ پشتیبانی — تیکت #{tid}*\n\n{markdown_safe(text)}",
             parse_mode='Markdown',
             reply_markup=main_menu(),
         )
