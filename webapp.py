@@ -268,6 +268,106 @@ def create_web_app(bot_app):
 </html>"""
         return web.Response(text=html, content_type='text/html')
 
+    async def api_user_status(request):
+        """API امن برای ربات‌های همکار جهت بررسی استارت بودن کاربر در ربات اتومیک شاپ."""
+        try:
+            key = (
+                request.query.get('key')
+                or request.headers.get('X-Api-Key')
+                or (
+                    request.headers.get('Authorization', '')[7:].strip()
+                    if request.headers.get('Authorization', '').lower().startswith('bearer ')
+                    else ''
+                )
+                or ''
+            ).strip()
+
+            if not key:
+                return web.json_response(
+                    {'ok': False, 'error': 'missing_key', 'message': 'کلید API الزامی است.'},
+                    status=401
+                )
+
+            from db import get_partner_key, record_partner_key_use, get_conn, get_setting
+
+            partner = await asyncio.to_thread(get_partner_key, key_token=key)
+            if not partner:
+                expected = (await asyncio.to_thread(get_setting, 'partner_api_key_for_winzon', '') or '').strip()
+                if not expected or key != expected:
+                    return web.json_response(
+                        {'ok': False, 'error': 'unauthorized', 'message': 'کلید API نامعتبر است.'},
+                        status=401
+                    )
+                partner_id = None
+            else:
+                partner_id = partner[0]
+                if not partner[3]:  # IsActive
+                    return web.json_response(
+                        {'ok': False, 'error': 'inactive_key', 'message': 'این کلید API غیرفعال شده است.'},
+                        status=403
+                    )
+
+            user_id_raw = (request.query.get('user_id') or '').strip()
+            if not user_id_raw and request.method == 'POST':
+                try:
+                    body = await request.json()
+                    user_id_raw = str(body.get('user_id') or '').strip()
+                except Exception:
+                    pass
+
+            if not user_id_raw or not (user_id_raw.isdigit() or (user_id_raw.startswith('-') and user_id_raw[1:].isdigit())):
+                return web.json_response(
+                    {'ok': False, 'error': 'invalid_user_id', 'message': 'user_id باید عدد معتبر باشد.'},
+                    status=400
+                )
+
+            user_id = int(user_id_raw)
+
+            def _lookup():
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        'SELECT "Id", "IsBlocked", "IsActive", "DateJoined" '
+                        'FROM "Users" WHERE "TelegramId"=%s',
+                        (str(user_id),)
+                    )
+                    return cur.fetchone()
+
+            row = await asyncio.to_thread(_lookup)
+            if partner_id:
+                asyncio.create_task(asyncio.to_thread(record_partner_key_use, partner_id))
+
+            if not row:
+                return web.json_response({
+                    'ok': True,
+                    'user_id': user_id,
+                    'started': False,
+                    'blocked': False,
+                    'passed': False,
+                    'started_at': None,
+                })
+
+            is_blocked = bool(row[1])
+            is_active = bool(row[2])
+            started = bool(is_active and not is_blocked)
+
+            return web.json_response({
+                'ok': True,
+                'user_id': user_id,
+                'started': started,
+                'blocked': is_blocked,
+                'passed': started,
+                'started_at': row[3].isoformat() if row[3] else None,
+            })
+        except Exception as exc:
+            logging.getLogger(__name__).exception('api_user_status error')
+            return web.json_response({'ok': False, 'error': str(exc)}, status=500)
+
+    app.router.add_get('/api/v1/user', api_user_status)
+    app.router.add_post('/api/v1/user', api_user_status)
+    app.router.add_get('/api/v1/check', api_user_status)
+    app.router.add_post('/api/v1/check', api_user_status)
+    app.router.add_get('/api/v1/started', api_user_status)
+    app.router.add_post('/api/v1/started', api_user_status)
     app.router.add_get('/health', health)
     app.router.add_get('/ready', ready)
     app.router.add_get('/pay/{authority}', start_pay)

@@ -20,7 +20,50 @@ from text_safety import markdown_safe
 
 GAME_PLAYER, GAME_SERVER, GAME_CONFIRM = range(3)
 GAMES_PER_PAGE = 10
+PACKAGES_PER_PAGE = 10
 _BACK_HOME = [InlineKeyboardButton('🔙 منوی اصلی', callback_data='home')]
+
+GAME_EMOJIS = {
+    'pubgm': '🪂',
+    'codm_sgmy': '🎖',
+    'codm': '🎖',
+    'deltaforce': '⚡️',
+    'mlbb': '⚔️',
+    'genshin': '🔮',
+    'honkai_star_rail': '💫',
+    'zzz': '⚡️',
+    'wuwa': '🌊',
+    'hok': '👑',
+    'bloodstrikeme': '💥',
+    'marvelrivals': '🦸',
+    'identityv': '🎭',
+    'sky_cotl': '🕯',
+    'stumble_guys': '🏃',
+    '8_ball_pool': '🎱',
+    'growtopia': '🌱',
+    'bigo': '💎',
+    'likee': '💖',
+    'poppolive': '🪙',
+    'farlight84': '🚀',
+    'whiteout_survival': '❄️',
+}
+
+
+def game_emoji(code, title):
+    c = str(code or '').lower()
+    t = str(title or '').lower()
+    for k, emo in GAME_EMOJIS.items():
+        if k in c:
+            return emo
+    if 'پابجی' in t or 'pubg' in t:
+        return '🪂'
+    if 'کالاف' in t or 'call of duty' in t:
+        return '🎖'
+    if 'موبایل لجندز' in t:
+        return '⚔️'
+    if 'دلتا' in t:
+        return '⚡️'
+    return '🎮'
 
 
 def _md(text, limit=160):
@@ -33,7 +76,8 @@ def _games_keyboard(games, page):
     chunk = games[(page - 1) * GAMES_PER_PAGE: page * GAMES_PER_PAGE]
     rows, row = [], []
     for game in chunk:
-        row.append(InlineKeyboardButton(f"🎮 {game['title']}", callback_data=f"gm_g_{game['id']}"))
+        emo = game_emoji(game.get('code'), game.get('title'))
+        row.append(InlineKeyboardButton(f"{emo} {game['title']}", callback_data=f"gm_g_{game['id']}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -41,20 +85,34 @@ def _games_keyboard(games, page):
         rows.append(row)
     nav = []
     if page > 1:
-        nav.append(InlineKeyboardButton('◀️ قبلی', callback_data=f'gm_page_{page - 1}'))
+        nav.append(InlineKeyboardButton('➡️ صفحه قبلی', callback_data=f'gm_page_{page - 1}'))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f'📄 {page} از {total_pages}', callback_data='noop'))
     if page < total_pages:
-        nav.append(InlineKeyboardButton('بعدی ▶️', callback_data=f'gm_page_{page + 1}'))
+        nav.append(InlineKeyboardButton('صفحه بعدی ⬅️', callback_data=f'gm_page_{page + 1}'))
     if nav:
         rows.append(nav)
     rows.append(_BACK_HOME)
     return InlineKeyboardMarkup(rows), page, total_pages
 
 
-def _packages_keyboard(game, packages):
-    rows = [[InlineKeyboardButton(f"{p['title']} — {p['price']:,} ت", callback_data=f"gm_buy_{p['id']}")]
-            for p in packages]
+def _packages_keyboard(game, packages, page=1):
+    total_pages = max(1, (len(packages) + PACKAGES_PER_PAGE - 1) // PACKAGES_PER_PAGE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * PACKAGES_PER_PAGE
+    chunk = packages[start: start + PACKAGES_PER_PAGE]
+    rows = [[InlineKeyboardButton(f"📦 {p['title']} — {p['price']:,} ت", callback_data=f"gm_buy_{p['id']}")]
+            for p in chunk]
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton('➡️ صفحه قبلی', callback_data=f"gm_pkg_{game['id']}_{page - 1}"))
+        nav.append(InlineKeyboardButton(f'📄 {page} از {total_pages}', callback_data='noop'))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton('صفحه بعدی ⬅️', callback_data=f"gm_pkg_{game['id']}_{page + 1}"))
+        rows.append(nav)
     rows.append([InlineKeyboardButton('🔙 همهٔ بازی‌ها', callback_data='gm_home')])
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(rows), page, total_pages
 
 
 async def _show(update, text, markup):
@@ -87,19 +145,31 @@ async def games_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def game_packages(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    game_id = int(update.callback_query.data.rsplit('_', 1)[-1])
+    query = update.callback_query
+    data = str(getattr(query, 'data', '') or '')
+    page = 1
+    if data.startswith('gm_pkg_'):
+        parts = data.split('_')
+        game_id = int(parts[2])
+        page = int(parts[3])
+    else:
+        game_id = int(data.rsplit('_', 1)[-1])
+
     game = await asyncio.to_thread(games_db.get_game, game_id)
     packages = await asyncio.to_thread(games_db.list_game_packages, game_id) if game else []
     if not game or not packages:
-        await update.callback_query.answer('این بازی فعلاً بسته‌ای ندارد.', show_alert=True)
+        await query.answer('این بازی فعلاً بسته‌ای ندارد.', show_alert=True)
         return
+    markup, page, total = _packages_keyboard(game, packages, page=page)
     text = f"🎮 *{_md(game['title'])}*\n━━━━━━━━━━━━━━━\n"
     if game['unit']:
         text += f"بسته‌های {_md(game['unit'])}، فقط با آیدی بازیکن.\n"
     if game['warning']:
         text += f"\n⚠️ {_md(game['warning'], 400)}\n"
     text += '\nبسته را انتخاب کن:'
-    await _show(update, text, _packages_keyboard(game, packages))
+    if total > 1:
+        text += f'  (صفحهٔ {page} از {total})'
+    await _show(update, text, markup)
 
 
 def _cancel_kb():
@@ -300,5 +370,5 @@ def games_conversation_handler():
 def games_callback_handlers():
     return [
         CallbackQueryHandler(games_menu, pattern=r'^(?:gm_home|gm_page_\d+)$'),
-        CallbackQueryHandler(game_packages, pattern=r'^gm_g_\d+$'),
+        CallbackQueryHandler(game_packages, pattern=r'^(?:gm_g_\d+|gm_pkg_\d+_\d+)$'),
     ]
