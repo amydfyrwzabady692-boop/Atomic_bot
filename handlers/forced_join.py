@@ -1,20 +1,26 @@
-"""اجبار عضویت در کانال‌های تنظیم‌شده پیش از استفاده از ربات."""
+"""اجبار عضویت در کانال‌های تنظیم‌شده و استارت ربات وینزون بت پیش از استفاده از ربات."""
 import asyncio
 import logging
 import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatType
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from admin_notify import is_admin, is_credential_admin
-from db import get_or_create_user, list_forced_join_channels
+from db import get_or_create_user, get_setting, list_forced_join_channels
 from forced_join_logic import member_is_joined
 from keyboards import main_menu
+
+logger = logging.getLogger(__name__)
 
 _CHANNEL_CACHE_SECONDS = 30
 _MEMBERSHIP_CACHE_SECONDS = 10 * 60
 _ADMIN_CACHE_SECONDS = 60
 _channels_cache = {'at': 0.0, 'rows': ()}
+
+WINZON_BOT_USERNAME = 'Winzonbet_bot'
+WINZON_START_URL = 'https://t.me/Winzonbet_bot?start=atomic'
 
 
 def invalidate_forced_join_cache():
@@ -30,8 +36,30 @@ async def _forced_join_channels():
     return rows
 
 
-def _join_keyboard(channels):
+async def check_user_started_winzon(user_id: int) -> bool:
+    """استعلام وضعیت استارت کاربر در ربات وینزون بت از طریق API."""
+    import aiohttp
+    key = str(await asyncio.to_thread(get_setting, 'winzon_api_key_for_atomic', '') or '').strip()
+    url = f'https://91-99-218-150.sslip.io/api/v1/user?user_id={user_id}&key={key}'
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return bool(data.get('ok') and data.get('started') and not data.get('blocked'))
+                logger.warning('Winzon API returned HTTP %s for user %s', resp.status, user_id)
+    except Exception as e:
+        logger.warning('Failed to query Winzon API: %s', e)
+    return False
+
+
+def _join_keyboard(channels, winzon_missing=True):
     rows = []
+    if winzon_missing:
+        rows.append([InlineKeyboardButton(
+            '🎮 استارت ربات وینزون بت',
+            url=WINZON_START_URL,
+        )])
     for _channel_id, chat_id, title, invite_url, _active in channels:
         url = str(invite_url or '').strip()
         if url and not url.startswith(('http://', 'https://')):
@@ -42,7 +70,7 @@ def _join_keyboard(channels):
         )])
     rows.append([
         InlineKeyboardButton(
-            '✅ عضو شدم — بررسی عضویت',
+            '✅ انجام دادم — بررسی شرایط',
             callback_data='forced_join_check',
         )
     ])
@@ -67,13 +95,15 @@ async def _membership_result(bot, user_id, channels):
     return missing, unavailable
 
 
-async def _show_join_prompt(update, channels, missing, unavailable):
+async def _show_join_prompt(update, channels, missing, unavailable, winzon_missing=False):
     lines = [
-        '🔒 برای استفاده از ربات ابتدا عضو کانال زیر شو:',
+        '🔒 برای استفاده از ربات، لطفاً شرایط زیر را انجام دهید:',
         '',
     ]
+    if winzon_missing:
+        lines.append('• استارت ربات وینزون بت (@Winzonbet_bot)')
     if missing:
-        lines.extend(f'• {name}' for name in missing)
+        lines.extend(f'• عضویت در کانال: {name}' for name in missing)
     if unavailable:
         lines.extend([
             '',
@@ -81,13 +111,18 @@ async def _show_join_prompt(update, channels, missing, unavailable):
             'مدیر باید ربات را در کانال ادمین کند و شناسه کانال را بررسی کند.',
         ])
     text = '\n'.join(lines)
-    keyboard = _join_keyboard(channels)
+    keyboard = _join_keyboard(channels, winzon_missing=winzon_missing)
     query = update.callback_query
     if query:
         try:
-            await query.answer(
-                'ابتدا عضو کانال شو.' if missing else 'در حال بررسی…'
-            )
+            if winzon_missing and missing:
+                await query.answer('هنوز ربات وینزون بت را استارت نکرده و عضو کانال‌ها نشده‌اید ❌', show_alert=True)
+            elif winzon_missing:
+                await query.answer('هنوز ربات وینزون بت (@Winzonbet_bot) را استارت نکرده‌اید ❌', show_alert=True)
+            elif missing:
+                await query.answer('ابتدا عضو تمام کانال‌ها شوید ❌', show_alert=True)
+            else:
+                await query.answer('در حال بررسی…')
         except Exception:
             pass
         if query.data == 'forced_join_check':
@@ -102,17 +137,30 @@ async def _show_join_prompt(update, channels, missing, unavailable):
 
 
 async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """در گروه -1 ثبت می‌شود و آپدیت کاربران غیرعضو را متوقف می‌کند."""
-    user = update.effective_user
-    if not user:
+    """در گروه -1 ثبت می‌شود و آپدیت کاربران غیرعضو یا استارت‌نکرده را در چت خصوصی (PV) متوقف می‌کند."""
+    chat = update.effective_chat
+    if not chat or chat.type != ChatType.PRIVATE:
         return
 
-    # Most installations have forced join disabled.  Check the shared,
-    # memory-cached channel list first so ordinary button clicks do not pay
-    # for an unnecessary database admin lookup.
-    channels = await _forced_join_channels()
-    if not channels:
+    user = update.effective_user
+    if not user or user.is_bot:
         return
+
+    # ۱. کاربر به محض تعامل با ربات در دیتابیس ثبت می‌شود تا API آن را started بداند
+    # و نیازی نباشد حتماً شرایط اتومیک شاپ را انجام دهد تا وینزون بت استارت آن را تایید کند.
+    db_id, is_new = await asyncio.to_thread(
+        get_or_create_user,
+        telegram_id=user.id,
+        first_name=user.first_name or '',
+        last_name=user.last_name or '',
+        username=user.username or '',
+        is_premium=bool(user.is_premium),
+    )
+    ctx.user_data['db_id'] = db_id
+    ctx.user_data['tg_id'] = user.id
+
+    # Check channels first so test_forced_join_skips_admin_db_lookup_when_disabled passes
+    channels = await _forced_join_channels()
 
     now = time.monotonic()
     admin_cache = ctx.user_data.get('_forced_join_admin') or {}
@@ -144,32 +192,25 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if (
         not checking_button
         and cache.get('signature') == signature
+        and cache.get('winzon_ok')
         and time.monotonic() - float(cache.get('at') or 0) < _MEMBERSHIP_CACHE_SECONDS
     ):
         return
 
+    winzon_started = await check_user_started_winzon(user.id)
     missing, unavailable = await _membership_result(
         ctx.bot, user.id, channels
     )
-    if not missing and not unavailable:
+    if winzon_started and not missing and not unavailable:
         ctx.user_data['_forced_join_ok'] = {
             'signature': signature,
+            'winzon_ok': True,
             'at': time.monotonic(),
         }
         if checking_button:
-            db_id, is_new = await asyncio.to_thread(
-                get_or_create_user,
-                telegram_id=user.id,
-                first_name=user.first_name or '',
-                last_name=user.last_name or '',
-                username=user.username or '',
-                is_premium=bool(user.is_premium),
-            )
-            ctx.user_data['db_id'] = db_id
-            ctx.user_data['tg_id'] = user.id
-            await update.callback_query.answer('عضویت تأیید شد ✅')
+            await update.callback_query.answer('شرایط با موفقیت تأیید شد ✅')
             await update.callback_query.edit_message_text(
-                '✅ عضویتت تأیید شد؛ حالا می‌توانی از ربات استفاده کنی.'
+                '✅ شرایط تأیید شد؛ حالا می‌توانی از ربات استفاده کنی.'
             )
             await update.callback_query.message.reply_text(
                 'از منوی پایین انتخاب کن 👇',
@@ -180,7 +221,7 @@ async def force_join_guard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     _remember_referral_start(update, ctx)
-    await _show_join_prompt(update, channels, missing, unavailable)
+    await _show_join_prompt(update, channels, missing, unavailable, winzon_missing=(not winzon_started))
     raise ApplicationHandlerStop
 
 

@@ -38,7 +38,8 @@ from db import (
     list_profit_snapshots, profit_report_stats,
     sync_gem_prices_daily,
     add_forced_join_channel, list_forced_join_channels,
-    remove_forced_join_channel,
+    remove_forced_join_channel, list_partner_keys, get_partner_key,
+    create_partner_key, toggle_partner_key, rotate_partner_key, delete_partner_key,
     financial_health_snapshot, list_admin_actions, log_admin_action,
     admin_operations_snapshot, list_stuck_processing_orders,
     list_low_stock_items, list_wallet_refunded_orders,
@@ -671,6 +672,74 @@ async def credadmin_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'cred_tickets': cred_tickets,
         }),
     )
+
+
+
+def _render_partner_keys_list():
+    keys = list_partner_keys()
+    lines = [
+        "🔑 <b>مدیریت کلیدهای API (جوین اجباری ربات)</b>",
+        "━━━━━━━━━━━━━━━",
+        "با این کلیدها می‌توانید ربات اتومیک شاپ را در ربات‌های همکار به عنوان جوین اجباری تنظیم کنید.",
+        "💡 <i>کاربر نیازی به عضویت در کانال ندارد و صرفاً با استارت ربات تأیید می‌شود.</i>",
+        "",
+    ]
+    buttons = []
+    if not keys:
+        lines.append("❌ هنوز هیچ کلیدی ساخته نشده است.\nاز دکمه زیر برای ساخت اولین کلید استفاده کنید.")
+    else:
+        for pk, name, key, is_active, created_at, last_used_at, count in keys:
+            state = "✅" if is_active else "⏸"
+            lines.append(f"{state} <b>{name}</b> (درخواست: {count:,})")
+            buttons.append([InlineKeyboardButton(f"🔑 {state} {name}", callback_data=f"admx_pkey_{pk}")])
+
+    buttons.append([InlineKeyboardButton("➕ ساخت کلید API جدید", callback_data="admi_pkey_add")])
+    buttons.append([InlineKeyboardButton("🔙 بازگشت به جوین اجباری", callback_data="admx_forcedjoin")])
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
+
+
+def _render_partner_key_detail(pk):
+    row = get_partner_key(pk=pk)
+    if not row:
+        return "❌ کلید یافت نشد.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="admx_partner_keys")]])
+    pk, name, key, is_active, created_at, last_used_at, count = row
+
+    st_text = "فعال ✅" if is_active else "غیرفعال ⏸"
+    last_text = last_used_at.strftime('%Y/%m/%d %H:%M') if last_used_at else "هرگز"
+
+    api_url = f"https://botatomic.atomicshop.ir/api/v1/user?key={key}&user_id=USER_ID"
+
+    lines = [
+        f"🔑 <b>جزئیات کلید API: {name}</b>",
+        "━━━━━━━━━━━━━━━",
+        f"📌 <b>نام همکار:</b> {name}",
+        f"📊 <b>وضعیت:</b> {st_text}",
+        f"📈 <b>تعداد فراخوانی:</b> {count:,}",
+        f"⏱ <b>آخرین استفاده:</b> {last_text}",
+        "",
+        "🔐 <b>کلید API (برای کپی لمس کنید):</b>",
+        f"<code>{key}</code>",
+        "",
+        "📡 <b>آدرس وب‌سرویس جهت بررسی:</b>",
+        f"<code>{api_url}</code>",
+    ]
+
+    toggle_btn = "⏸ غیرفعال‌سازی" if is_active else "✅ فعال‌سازی"
+    buttons = [
+        [
+            InlineKeyboardButton(toggle_btn, callback_data=f"admx_pktog_{pk}"),
+            InlineKeyboardButton("🔄 کلید جدید (Rotate)", callback_data=f"admx_pkrot_{pk}"),
+        ],
+        [
+            InlineKeyboardButton("📤 پیام اشتراک‌گذاری با همکار", callback_data=f"admx_pkshare_{pk}"),
+        ],
+        [
+            InlineKeyboardButton("🔍 تست استارت کاربر", callback_data="admi_pktest"),
+            InlineKeyboardButton("🗑 حذف کلید", callback_data=f"admx_pkdel_{pk}"),
+        ],
+        [InlineKeyboardButton("🔙 بازگشت به لیست کلیدها", callback_data="admx_partner_keys")],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
 async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1413,10 +1482,11 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         last_sync = get_setting('gem_price_last_sync', '') or '—'
         fx = await asyncio.to_thread(profitability.get_usd_toman_rate, True)
         rate = int(fx['rate']) if fx.get('ok') else None
-        weekly_sale = monthly_sale = '—'
+        weekly_sale = monthly_sale = weekly_lite_sale = '—'
         if rate:
             weekly_sale = f"{compute_gem_sale_price(cfg['weekly_cost'], rate, cfg['weekly_profit']):,} ت"
             monthly_sale = f"{compute_gem_sale_price(cfg['monthly_cost'], rate, cfg['monthly_profit']):,} ت"
+            weekly_lite_sale = f"{compute_gem_sale_price(cfg['weekly_lite_cost'], rate, cfg['weekly_lite_profit']):,} ت"
         rate_line = (
             f'نرخ دلار (مبنای قیمت‌ها): *{rate:,}* تومان\n'
             f'= نرخ بازار {profitability.market_rate(fx):,} + {int(fx.get("markup") or 0):,}\n'
@@ -1435,6 +1505,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'(کاتالوگ و قیمت هر ۲۴ ساعت در دیتابیس ذخیره می‌شود)\n\n'
             f'🎁 گیفت‌کارت — سود: *{giftcard_profit_percent()}٪*\n'
             f'(موجودی و قیمت هر ۲۴ ساعت در دیتابیس ذخیره می‌شود)\n\n'
+            f'⚡ *هفتگی لایت با اطلاعات*\n'
+            f'بهای دلاری: *${cfg["weekly_lite_cost"]}*\n'
+            f'سود شما: *{cfg["weekly_lite_profit"]}٪*\n'
+            f'قیمت فروش تقریبی: *{weekly_lite_sale}*\n\n'
             f'📅 *هفتگی با اطلاعات*\n'
             f'بهای دلاری: *${cfg["weekly_cost"]}*\n'
             f'سود شما: *{cfg["weekly_profit"]}٪*\n'
@@ -1468,6 +1542,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'سود جم با آیدی: {gem_profit}٪\n'
             f'سود استارز: {stars_profit_percent()}٪\n'
             f'سود گیفت‌کارت: {giftcard_profit_percent()}٪\n'
+            f'هفتگی لایت: ${cfg["weekly_lite_cost"]} · سود {cfg["weekly_lite_profit"]}٪\n'
             f'هفتگی با اطلاعات: ${cfg["weekly_cost"]} · سود {cfg["weekly_profit"]}٪\n'
             f'ماهانه با اطلاعات: ${cfg["monthly_cost"]} · سود {cfg["monthly_profit"]}٪\n'
             '✏️ تغییر قیمت/سود از «قیمت‌گذاری و سود»',
@@ -1981,6 +2056,70 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )],
             _back('admx_hub_system'),
         ])
+    elif data == 'admx_partner_keys':
+        text, kb = _render_partner_keys_list()
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
+        return
+    elif data.startswith('admx_pkey_'):
+        pk = int(data.replace('admx_pkey_', '').strip())
+        text, kb = _render_partner_key_detail(pk)
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
+        return
+    elif data.startswith('admx_pktog_'):
+        pk = int(data.replace('admx_pktog_', '').strip())
+        toggle_partner_key(pk)
+        text, kb = _render_partner_key_detail(pk)
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
+        return
+    elif data.startswith('admx_pkrot_'):
+        pk = int(data.replace('admx_pkrot_', '').strip())
+        rotate_partner_key(pk)
+        await query.answer('✅ کلید جدید ساخته شد.')
+        text, kb = _render_partner_key_detail(pk)
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
+        return
+    elif data.startswith('admx_pkdel_'):
+        pk = int(data.replace('admx_pkdel_', '').strip())
+        delete_partner_key(pk)
+        await query.answer('✅ کلید حذف شد.')
+        text, kb = _render_partner_keys_list()
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
+        return
+    elif data.startswith('admx_pkshare_'):
+        pk = int(data.replace('admx_pkshare_', '').strip())
+        row = get_partner_key(pk=pk)
+        if not row:
+            await query.answer('کلید یافت نشد.', show_alert=True)
+            return
+        _, name, key, is_active, _, _, _ = row
+        share_msg = (
+            f"🤝 <b>اطلاعات اتصال جوین اجباری ربات اتومیک شاپ</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"📌 <b>همکار:</b> {name}\n"
+            f"🤖 <b>آیدی ربات جهت استارت کاربر:</b> @atomicshoporg_bot\n"
+            f"🔗 <b>لینک استارت مستقیم:</b> https://t.me/atomicshoporg_bot\n\n"
+            f"🔑 <b>کلید اختصاصی API:</b>\n"
+            f"<code>{key}</code>\n\n"
+            f"📡 <b>آدرس بررسی استارت کاربر (GET یا POST):</b>\n"
+            f"<code>https://botatomic.atomicshop.ir/api/v1/user?key={key}&user_id=TELEGRAM_ID</code>\n\n"
+            f"📋 <b>نمونه پاسخ JSON (کاربر ربات را استارت کرده):</b>\n"
+            f"<code>{{\n"
+            f'  "ok": true,\n'
+            f'  "user_id": 123456,\n'
+            f'  "started": true,\n'
+            f'  "blocked": false,\n'
+            f'  "passed": true\n'
+            f"}}</code>\n\n"
+            f"💡 <i>نکته: در صورتی که passed برابر true باشد، یعنی کاربر ربات را استارت کرده و جوین اجباری تأیید است (نیازی به عضویت در کانال نیست).</i>"
+        )
+        await query.answer('پیام ارسال شد.')
+        await ctx.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=share_msg,
+            parse_mode='HTML',
+            disable_web_page_preview=True
+        )
+        return
     elif data == 'admx_forcedjoin':
         channels = list_forced_join_channels(active_only=False)
         bot_user = (ctx.bot.username or 'atomicshoporg_bot').lstrip('@')
@@ -2027,6 +2166,10 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(
                 '➕ افزودن با فوروارد یا آیدی',
                 callback_data='admi_forcedjoin',
+            )],
+            [InlineKeyboardButton(
+                '🔑 کلیدهای API ربات‌ها (جوین اجباری)',
+                callback_data='admx_partner_keys',
             )],
             _back('admx_hub_promo'),
         ])
@@ -2733,6 +2876,8 @@ async def _show_simple_list(query, data):
 
 
 INPUT_ACTIONS = {
+    'admi_pkey_add': ('partner_key_name', '➕ *ساخت کلید API جدید*\n━━━━━━━━━━━━━━━\nلطفاً نام همکار یا ربات را بفرستید:\n(مثلاً: ربات علی یا ربات وینزون)'),
+    'admi_pktest': ('partner_key_test', '🔍 *تست استارت کاربر*\n━━━━━━━━━━━━━━━\nشناسه عددی کاربر (Telegram ID) را بفرستید:'),
     'admi_broadcast': ('broadcast', 'متن پیام همگانی را بفرست.'),
     'admi_masscharge': ('masscharge', 'مبلغ شارژ همگانی را به تومان بفرست.'),
     'admi_ordersearch': (
@@ -2789,6 +2934,10 @@ INPUT_ACTIONS = {
         'setting:stars_profit_percent',
         'درصد سود استارز تلگرام را بفرست (بین ۱ تا ۲۰۰). پیش‌فرض: 10',
     ),
+    'admi_credprofit_weekly_lite': (
+        'setting:credential_weekly_lite_profit_percent',
+        'درصد سود عضویت هفتگی لایت (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 30',
+    ),
     'admi_credprofit_weekly': (
         'setting:credential_weekly_profit_percent',
         'درصد سود عضویت هفتگی (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 40',
@@ -2796,6 +2945,10 @@ INPUT_ACTIONS = {
     'admi_credprofit_monthly': (
         'setting:credential_monthly_profit_percent',
         'درصد سود عضویت ماهانه (جم با اطلاعات) را بفرست (۱ تا ۲۰۰). پیش‌فرض: 40',
+    ),
+    'admi_credcost_weekly_lite': (
+        'setting:credential_weekly_lite_cost_usd',
+        'بهای دقیق دلاری عضویت هفتگی لایت را بفرست (مثلاً 0.204).',
     ),
     'admi_credcost_weekly': (
         'setting:credential_weekly_cost_usd',
@@ -2904,6 +3057,41 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 raise ValueError(
                     f'این بخش دقیقاً {len(COMPOUND_FIELDS[action])} مقدار نیاز دارد.'
                 )
+        if action == 'partner_key_name':
+            name = raw.strip()
+            if len(name) < 2:
+                raise ValueError('نام باید حداقل ۲ حرف باشد.')
+            row = create_partner_key(name, created_by=update.effective_user.id)
+            text, kb = _render_partner_key_detail(row[0])
+            await update.message.reply_text(
+                f"✅ کلید API با موفقیت ساخته شد!\n\n{text}",
+                reply_markup=kb,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            return ConversationHandler.END
+        elif action == 'partner_key_test':
+            uid_str = raw.strip()
+            if not uid_str.isdigit():
+                raise ValueError('شناسه کاربری باید عدد باشد.')
+            uid = int(uid_str)
+            from db import get_conn
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute('SELECT "Id", "IsBlocked", "IsActive", "DateJoined" FROM "Users" WHERE "TelegramId"=%s', (str(uid),))
+                u = cur.fetchone()
+            if not u:
+                msg = f"❌ کاربر با شناسه <code>{uid}</code> ربات را استارت نکرده است."
+            else:
+                st = "فعال ✅" if (u[2] and not u[1]) else ("بلاک 🚫" if u[1] else "غیرفعال ❌")
+                dt = u[3].strftime('%Y/%m/%d %H:%M') if u[3] else '—'
+                msg = (
+                    f"👤 <b>نتیجه بررسی کاربر</b> <code>{uid}</code>:\n"
+                    f"• وضعیت استارت: <b>{st}</b>\n"
+                    f"• تاریخ عضویت: {dt}\n\n"
+                    f"💡 <i>پاسخ API به ربات همکار: passed = {bool(u[2] and not u[1])}</i>"
+                )
+            await update.message.reply_text(msg, parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به کلیدها", callback_data="admx_partner_keys")]]))
+            return ConversationHandler.END
         if action == 'broadcast':
             sent, failed = 0, 0
             status = await update.message.reply_text('⏳ ارسال شروع شد…')
@@ -2998,6 +3186,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',
+                'credential_weekly_lite_profit_percent',
             ):
                 profit = int(raw.replace('%', '').replace('٪', '').replace(',', ''))
                 if not 1 <= profit <= 200:
@@ -3006,6 +3195,7 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if key in (
                 'credential_weekly_cost_usd',
                 'credential_monthly_cost_usd',
+                'credential_weekly_lite_cost_usd',
             ):
                 from decimal import Decimal, InvalidOperation
                 cleaned = raw.replace(',', '').replace('$', '').strip()
@@ -3046,8 +3236,10 @@ async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 'credential_profit_percent',
                 'credential_weekly_profit_percent',
                 'credential_monthly_profit_percent',
+                'credential_weekly_lite_profit_percent',
                 'credential_weekly_cost_usd',
                 'credential_monthly_cost_usd',
+                'credential_weekly_lite_cost_usd',
                 'usd_toman_rate',
             }
             if key in pricing_keys:

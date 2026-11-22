@@ -81,6 +81,7 @@ from handlers.appearance import appearance_conversation_handler, appear_router
 from handlers.forced_join import force_join_guard
 from handlers.site_receipts import (
     site_approve, site_reject, site_review_back, site_review_prompt,
+    site_receipt_router, receipt_reason_handler,
 )
 from handlers.site_panel import site_panel_router
 from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
@@ -1003,6 +1004,7 @@ def main():
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
     # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
     app.add_handler(identity_reason_handler(), group=-2)
+    app.add_handler(receipt_reason_handler(), group=-2)
     # دلیلِ نوشته‌شده برای ردِ رسید (و دکمهٔ «نوشتن دلیل دیگر»).
     from handlers.receipt_reasons import receipt_reason_handlers
 
@@ -1101,6 +1103,9 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(
         site_review_back, pattern=r'^site_review_back_\d+$'
+    ))
+    app.add_handler(CallbackQueryHandler(
+        site_receipt_router, pattern=r'^site_rcpt_'
     ))
     app.add_handler(CallbackQueryHandler(site_card_review, pattern=r'^site_card_(?:ok|no)_\d+$'))
     app.add_handler(CallbackQueryHandler(cverify_review, pattern=r'^cverify_(?:ok|no)_\d+$'))

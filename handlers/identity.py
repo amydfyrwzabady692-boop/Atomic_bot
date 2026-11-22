@@ -65,7 +65,7 @@ REJECT_REASONS = {
 }
 
 _FA = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
-_REVIEW_RE = re.compile(r'^(site_idv|idv)_(ok|no|rj|back|why)_(\d+)(?:_([a-z]+))?$')
+_REVIEW_RE = re.compile(r'^(site_idv|idv)_(ok|no|rj|back|why|msg)_(\d+)(?:_([a-z]+))?$')
 # ردِ سفارشِ منتظرِ احراز (ربات و سایت) — دلیل برای خریدار فرستاده می‌شود.
 HOLD_REJECT_REASONS = {
     'card': 'کارت پرداخت متعلق به خریدار نیست',
@@ -546,6 +546,7 @@ def reasons_keyboard(verification_id, prefix='idv'):
     rows = [[InlineKeyboardButton(f'❌ {label}', callback_data=f'{prefix}_rj_{vid}_{code}')]
             for code, label in REJECT_REASONS.items()]
     rows.append([InlineKeyboardButton('✍️ نوشتن دلیل رد', callback_data=f'{prefix}_why_{vid}')])
+    rows.append([InlineKeyboardButton('💬 ارسال پیام به کاربر (بدون رد)', callback_data=f'{prefix}_msg_{vid}')])
     rows.append([InlineKeyboardButton('↩️ بازگشت', callback_data=f'{prefix}_back_{vid}')])
     return InlineKeyboardMarkup(rows)
 
@@ -766,10 +767,26 @@ async def identity_review(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:  # noqa: BLE001
             pass
         return
+    if action == 'msg':
+        message = query.message
+        _PENDING_REASON[update.effective_user.id] = {
+            'prefix': prefix, 'id': verification_id, 'action': 'message', 'at': time.time(),
+            'chat_id': message.chat_id if message else None,
+            'message_id': message.message_id if message else None,
+            'photo': bool(message and (message.photo or message.document)),
+        }
+        await query.answer()
+        await ctx.bot.send_message(
+            chat_id=update.effective_user.id,
+            text=(f'💬 پیام مورد نظر برای ارسال به کاربر احراز هویت #{verification_id} را بنویس و بفرست؛ '
+                  'این پیام به صورت تیکت پشتیبانی در داشبورد ثبت می‌شود و وضعیت احراز در انتظار می‌ماند.\n'
+                  'برای انصراف بنویس: انصراف'),
+            reply_markup=ForceReply(selective=True, input_field_placeholder='پیام به کاربر…'))
+        return
     if action == 'why':
         message = query.message
         _PENDING_REASON[update.effective_user.id] = {
-            'prefix': prefix, 'id': verification_id, 'at': time.time(),
+            'prefix': prefix, 'id': verification_id, 'action': 'reject', 'at': time.time(),
             'chat_id': message.chat_id if message else None,
             'message_id': message.message_id if message else None,
             'photo': bool(message and (message.photo or message.document)),
@@ -857,6 +874,27 @@ async def identity_reason_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         raise ApplicationHandlerStop
     query = _TypedReason(ctx.bot, message, pending)
     name = admin_display_name(admin)
+    if pending.get('action') == 'message':
+        if pending['prefix'] == 'site_idv':
+            from site_api import call_site_identity_review
+            res = await asyncio.to_thread(call_site_identity_review, pending['id'], 'message', admin.id, name, reason[:255])
+            if res.get('ok'):
+                await message.reply_text('✅ پیام شما با موفقیت در تیکت داشبورد کاربر برای احراز هویت ثبت گردید.')
+            else:
+                await message.reply_text(f'❌ خطا در ثبت پیام: {res.get("message") or res.get("error")}')
+        else:
+            row = await asyncio.to_thread(get_identity_verification, pending['id'])
+            tg = row[1] if row else None
+            if tg:
+                try:
+                    await ctx.bot.send_message(chat_id=int(tg), text=f'💬 پیام پشتیبانی اتومیک شاپ درباره مدارک احراز هویت شما:\n\n{reason}')
+                    await message.reply_text('✅ پیام در تلگرام برای کاربر ارسال شد.')
+                except Exception as exc:
+                    await message.reply_text(f'❌ خطا در ارسال پیام به کاربر: {exc}')
+            else:
+                await message.reply_text('کاربر یافت نشد.')
+        raise ApplicationHandlerStop
+
     if pending['prefix'] == 'site_idv':
         await _site_review(query, ctx, pending['id'], False, reason[:255], name)
     else:
@@ -1165,7 +1203,7 @@ async def _append_result(query, line):
 
 def identity_admin_handlers():
     return [
-        CallbackQueryHandler(identity_review, pattern=r'^(?:site_idv|idv)_(?:ok|no|rj|back|why)_\d+'),
+        CallbackQueryHandler(identity_review, pattern=r'^(?:site_idv|idv)_(?:ok|no|rj|back|why|msg)_\d+'),
         CallbackQueryHandler(identity_admin, pattern=r'^idva_'),
         CallbackQueryHandler(site_held_order, pattern=r'^skyc_'),
         CallbackQueryHandler(terms_accept, pattern=r'^terms_ok_\d+$'),

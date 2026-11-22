@@ -100,21 +100,33 @@ def _referral_menu_visible():
 
 def main_menu():
     rows = [
-        [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary'),
-         _kbtn('b.menu.wal', '💰 کیف پول', 'success')],
-        # همهٔ بازی‌های دیگر (پابجی، کالاف، …) پشت یک دکمه، نه یک دکمه برای هر بازی.
+        [_kbtn('b.menu.ff', '🎮 محصولات فری‌فایر', 'primary')],
         [_kbtn('b.menu.games', '🕹 شارژ بازی‌ها | پابجی، کالاف و…', 'success')],
-        [_kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
-         _kbtn('b.menu.acc', '👤 حساب من', 'primary')],
-        [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
-         _kbtn('b.menu.se', '🎯 پک سنس', 'primary')],
-        [_kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
-         _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success')],
-        [_kbtn('b.menu.su', '🎧 پشتیبانی', 'danger'),
-         _kbtn('b.menu.prem', '💎 تلگرام پرمیوم', 'primary')],
+        [
+            _kbtn('b.menu.stars', '⭐ خرید استارز', 'primary'),
+            _kbtn('b.menu.prem', '💎 تلگرام پرمیوم', 'primary'),
+        ],
+        [
+            _kbtn('b.menu.gc', '🎁 خرید گیفت کارت', 'success'),
+            _kbtn('b.menu.wal', '💰 کیف پول', 'success'),
+        ],
+        [
+            _kbtn('b.menu.ord', '📦 سفارش‌های من', 'primary'),
+            _kbtn('b.menu.acc', '👤 حساب من', 'primary'),
+        ],
+        (
+            [
+                _kbtn('b.menu.ref', '🎁 دعوت دوستان و جایزه', 'success'),
+                _kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success'),
+            ]
+            if _referral_menu_visible()
+            else [_kbtn('b.menu.st', '🛍 فروشگاه اکانت', 'success')]
+        ),
+        [
+            _kbtn('b.menu.se', '🎯 پک سنس', 'primary'),
+            _kbtn('b.menu.su', '🎧 پشتیبانی', 'danger'),
+        ],
     ]
-    if _referral_menu_visible():
-        rows.insert(5, [_kbtn('b.menu.ref', appearance.DEFAULTS['b.menu.ref'], 'success')])
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
@@ -265,13 +277,13 @@ def stars_detail_keyboard(package_id, page=1, back=None):
 
 
 def premium_list_keyboard(packages):
-    """تلگرام پرمیوم: یک دکمه برای هر مدت، با قیمت."""
+    """تلگرام پرمیوم: یک دکمه برای هر مدت، با قیمت و ایموجی پرمیوم."""
     rows = []
     for pkg in packages or []:
-        label = f"{pkg['title']} — {int(pkg['price']):,} ت"
+        label = f"⭐️ {pkg['title']}  •  {int(pkg['price']):,} تومان"
         if not pkg.get('available'):
-            label += ' (ناموجود)'
-        rows.append([InlineKeyboardButton(label, callback_data=f"st_{int(pkg['id'])}")])
+            label = f"❌ {pkg['title']} (ناموجود)"
+        rows.append([_inline_btn(label, f"st_{int(pkg['id'])}", '5895708410447401643')])
     rows.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(rows)
 
@@ -496,7 +508,8 @@ def sens_pc_packs_keyboard(packs):
 def _gem_catalogue_order(gem):
     """Keep diamonds/memberships on page one and Level Up packs on page two."""
     catalogue_name = str(gem[9] or '').strip().casefold()
-    return catalogue_name.startswith('level up package')
+    plan_type = str(gem[6] or '').strip().casefold() if len(gem) > 6 else ''
+    return catalogue_name.startswith('level up package') or plan_type == 'levelup'
 
 
 def ordered_gem_catalogue(gems):
@@ -522,13 +535,12 @@ def gems_list_keyboard(gems, page=1, per_page=GEM_PRODUCTS_PER_PAGE):
         else:
             buttons.append([_inline_btn(label, f'gem_{g[0]}', icon)])
     if total_pages > 1:
-        nav = [
-            InlineKeyboardButton(
-                f'• {number} •' if number == page else str(number),
-                callback_data='noop' if number == page else f'gems_page_{number}',
-            )
-            for number in range(1, total_pages + 1)
-        ]
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton('➡️ صفحه قبلی', callback_data=f'gems_page_{page - 1}'))
+        nav.append(InlineKeyboardButton(f'📄 صفحه {page} از {total_pages}', callback_data='noop'))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton('صفحه بعدی ⬅️', callback_data=f'gems_page_{page + 1}'))
         buttons.append(nav)
     buttons.append([_ibtn('b.nav.home', '🔙 منوی اصلی', 'home')])
     return InlineKeyboardMarkup(buttons)
@@ -979,12 +991,14 @@ def admin_pricing_keyboard():
         [InlineKeyboardButton('⭐ سود استارز', callback_data='admi_starprofit')],
         [InlineKeyboardButton('🎁 سود گیفت‌کارت', callback_data='admi_giftprofit')],
         [
+            InlineKeyboardButton('⚡ سود هفتگی لایت', callback_data='admi_credprofit_weekly_lite'),
             InlineKeyboardButton('📅 سود هفتگی', callback_data='admi_credprofit_weekly'),
             InlineKeyboardButton('📆 سود ماهانه', callback_data='admi_credprofit_monthly'),
         ],
         [
-            InlineKeyboardButton('💵 بهای دلاری هفتگی', callback_data='admi_credcost_weekly'),
-            InlineKeyboardButton('💵 بهای دلاری ماهانه', callback_data='admi_credcost_monthly'),
+            InlineKeyboardButton('💵 دلار لایت', callback_data='admi_credcost_weekly_lite'),
+            InlineKeyboardButton('💵 دلار هفتگی', callback_data='admi_credcost_weekly'),
+            InlineKeyboardButton('💵 دلار ماهانه', callback_data='admi_credcost_monthly'),
         ],
         [InlineKeyboardButton('💱 نرخ دستی دلار (پشتیبان)', callback_data='admi_usdrate')],
         [InlineKeyboardButton('🔄 اعمال الان روی قیمت‌های فروش', callback_data='admx_pricesync')],

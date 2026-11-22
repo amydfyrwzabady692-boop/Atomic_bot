@@ -223,6 +223,8 @@ async def show_credential_product(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         plan = 'لول‌آپ فری‌فایر'
     elif product[6] == 'weekly':
         plan = 'هفتگی'
+    elif product[6] == 'weekly_lite':
+        plan = 'هفتگی لایت'
     else:
         plan = 'ماهانه'
     text = (

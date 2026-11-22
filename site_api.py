@@ -74,7 +74,7 @@ def _site_request(path, *, method='GET', payload=None, query=None, timeout=25):
         return {'ok': False, 'error': str(exc)}
 
 
-def call_site_review(payment_id, action, admin_tg, admin_name):
+def call_site_review(payment_id, action, admin_tg, admin_name, note=''):
     """POST به سایت. نتیجه dict است؛ در خطا {'ok': False, 'error': ...}."""
     return _site_request(
         f'/internal/bot/card-transfer/{int(payment_id)}/review/',
@@ -83,6 +83,8 @@ def call_site_review(payment_id, action, admin_tg, admin_name):
             'action': action,
             'admin_tg_id': str(admin_tg or ''),
             'admin_name': str(admin_name or ''),
+            'note': str(note or '')[:500],
+            'reason': str(note or '')[:500],
         },
     )
 

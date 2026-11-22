@@ -143,7 +143,7 @@ def get_gems_by_id():
         f'SELECT {_GEM_COLS} FROM "GemPackages" '
         'WHERE "IsActive"=true AND "IsAvailable"=true '
         'AND "PurchaseType"=\'by_id\' '
-        'AND "PlanType"=\'once\' '
+        'AND "PlanType" IN (\'once\', \'levelup\') '
         'ORDER BY "SortOrder", "Id"'
     )
     try:
@@ -183,7 +183,7 @@ def get_gems_by_credentials():
             f'SELECT {_GEM_COLS} FROM "GemPackages" '
             'WHERE "IsActive"=true AND "IsAvailable"=true '
             'AND "PurchaseType"=\'by_credentials\' '
-            'AND "PlanType" IN (\'weekly\',\'monthly\',\'gift\',\'levelup\') '
+            'AND "PlanType" IN (\'weekly\',\'monthly\',\'gift\',\'levelup\',\'weekly_lite\') '
             'ORDER BY "SortOrder","Id"'
         )
         return cur.fetchall()
@@ -3901,6 +3901,17 @@ def ensure_admin_schema():
              END IF;
            END;
            $migration$''',
+        '''CREATE TABLE IF NOT EXISTS "PartnerKeys" (
+            "Id" SERIAL PRIMARY KEY,
+            "Name" VARCHAR(100) NOT NULL,
+            "Key" VARCHAR(100) UNIQUE NOT NULL,
+            "IsActive" BOOLEAN NOT NULL DEFAULT true,
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            "LastUsedAt" TIMESTAMPTZ,
+            "RequestCount" INTEGER NOT NULL DEFAULT 0,
+            "CreatedBy" BIGINT
+        )''',
+        'CREATE INDEX IF NOT EXISTS idx_partnerkeys_key ON "PartnerKeys" ("Key")',
         '''CREATE TABLE IF NOT EXISTS "ForcedJoinChannels" (
             "Id" SERIAL PRIMARY KEY,
             "ChatId" VARCHAR(100) UNIQUE NOT NULL,
@@ -4801,6 +4812,94 @@ def remove_forced_join_channel(channel_id):
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+
+import secrets
+
+
+def list_partner_keys():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id", "Name", "Key", "IsActive", "CreatedAt", "LastUsedAt", "RequestCount" '
+            'FROM "PartnerKeys" ORDER BY "Id" DESC'
+        )
+        return cur.fetchall()
+
+
+def get_partner_key(pk=None, key_token=None):
+    with get_conn() as conn, conn.cursor() as cur:
+        if pk is not None:
+            cur.execute(
+                'SELECT "Id", "Name", "Key", "IsActive", "CreatedAt", "LastUsedAt", "RequestCount" '
+                'FROM "PartnerKeys" WHERE "Id"=%s',
+                (int(pk),)
+            )
+        elif key_token:
+            cur.execute(
+                'SELECT "Id", "Name", "Key", "IsActive", "CreatedAt", "LastUsedAt", "RequestCount" '
+                'FROM "PartnerKeys" WHERE "Key"=%s',
+                (str(key_token).strip(),)
+            )
+        else:
+            return None
+        return cur.fetchone()
+
+
+def create_partner_key(name, created_by=None):
+    token = "ak_" + secrets.token_urlsafe(28)
+    name = str(name or '').strip()[:100] or 'همکار'
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "PartnerKeys" ("Name", "Key", "IsActive", "CreatedBy") '
+            'VALUES (%s, %s, true, %s) RETURNING "Id", "Name", "Key", "IsActive"',
+            (name, token, created_by)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row
+
+
+def toggle_partner_key(pk):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "PartnerKeys" SET "IsActive" = NOT "IsActive" WHERE "Id"=%s RETURNING "IsActive"',
+            (int(pk),)
+        )
+        res = cur.fetchone()
+        conn.commit()
+        return res[0] if res else None
+
+
+def rotate_partner_key(pk):
+    token = "ak_" + secrets.token_urlsafe(28)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "PartnerKeys" SET "Key"=%s WHERE "Id"=%s RETURNING "Key"',
+            (token, int(pk))
+        )
+        res = cur.fetchone()
+        conn.commit()
+        return res[0] if res else None
+
+
+def delete_partner_key(pk):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute('DELETE FROM "PartnerKeys" WHERE "Id"=%s', (int(pk),))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def record_partner_key_use(pk):
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                'UPDATE "PartnerKeys" SET "LastUsedAt"=now(), "RequestCount"="RequestCount"+1 WHERE "Id"=%s',
+                (int(pk),)
+            )
+            conn.commit()
+    except Exception:
+        pass
 
 
 def get_bool_setting(key, default=True):
@@ -6351,12 +6450,13 @@ def get_credential_pricing_config():
 
     legacy_profit = str(get_setting('credential_profit_percent', '40') or '40')
 
-    def _profit(key):
-        raw = get_setting(key, legacy_profit) or legacy_profit
+    def _profit(key, default=None):
+        def_val = default if default is not None else legacy_profit
+        raw = get_setting(key, str(def_val)) or def_val
         try:
             return max(1, min(200, int(str(raw).replace('%', '').replace('٪', ''))))
         except (TypeError, ValueError):
-            return 40
+            return int(def_val) if str(def_val).isdigit() else 40
 
     def _cost(key, default):
         raw = str(get_setting(key, default) or default).replace(',', '').strip()
@@ -6371,8 +6471,10 @@ def get_credential_pricing_config():
     return {
         'weekly_cost': _cost('credential_weekly_cost_usd', '1.328'),
         'monthly_cost': _cost('credential_monthly_cost_usd', '6.64'),
+        'weekly_lite_cost': _cost('credential_weekly_lite_cost_usd', '0.204'),
         'weekly_profit': _profit('credential_weekly_profit_percent'),
         'monthly_profit': _profit('credential_monthly_profit_percent'),
+        'weekly_lite_profit': _profit('credential_weekly_lite_profit_percent', default=30),
     }
 
 
@@ -6386,6 +6488,8 @@ def credential_cost_for_package(amount=None, plan_type=None):
         amt = 0
     if plan == CREDENTIAL_UID_GIFT_PLAN or amt == CREDENTIAL_UID_GIFT_AMOUNT:
         return None
+    if plan == 'weekly_lite' or amt == 20:
+        return cfg.get('weekly_lite_cost') or Decimal('0.204')
     if plan == 'weekly' or amt == 60:
         return cfg['weekly_cost']
     if plan == 'monthly' or amt == 300:
@@ -6401,6 +6505,8 @@ def credential_profit_for_package(amount=None, plan_type=None):
         amt = int(amount or 0)
     except (TypeError, ValueError):
         amt = 0
+    if plan == 'weekly_lite' or amt == 20:
+        return cfg.get('weekly_lite_profit') or 30
     if plan == 'weekly' or amt == 60:
         return cfg['weekly_profit']
     if plan == 'monthly' or amt == 300:
