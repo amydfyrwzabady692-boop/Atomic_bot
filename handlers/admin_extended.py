@@ -742,10 +742,15 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if 'not modified' not in str(exc).lower():
                 raise
         return
-    if data == 'admx_allorders':
-        rows = await asyncio.to_thread(list_recent_orders_admin, 20)
+    if data == 'admx_allorders' or re.fullmatch(r'admx_allorders_p\d+', data):
+        # صفحه‌بندی: قبلاً فقط ۲۰ سفارشِ آخر دیده می‌شد و راهی به قبل‌تر نبود.
+        page = int(data.rsplit('_p', 1)[1]) if '_p' in data else 0
+        per_page = 15
+        rows = await asyncio.to_thread(list_recent_orders_admin, per_page + 1, page * per_page)
+        has_next = len(rows) > per_page
+        rows = rows[:per_page]
         lines = [
-            '📋 *آخرین سفارش‌ها*',
+            '📋 *آخرین سفارش‌ها*' + (f' · صفحهٔ {page + 1}' if page else ''),
             'همه وضعیت‌ها · با اطلاعات کاربر و آیدی بازی',
             '━━━━━━━━━━━━━━━',
         ]
@@ -774,6 +779,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if len('\n'.join(lines)) > 3200:
                     lines.append('…')
                     break
+        nav = []
+        if page:
+            nav.append(InlineKeyboardButton('➡️ صفحهٔ قبل', callback_data=(
+                f'admx_allorders_p{page - 1}' if page > 1 else 'admx_allorders')))
+        if has_next:
+            nav.append(InlineKeyboardButton('صفحهٔ بعد ⬅️', callback_data=f'admx_allorders_p{page + 1}'))
+        if nav:
+            buttons.append(nav)
         buttons.extend([
             [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_allorders')],
             _back('admx_hub_orders'),

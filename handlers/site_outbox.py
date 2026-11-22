@@ -124,6 +124,18 @@ LINK = {'last_ok': None, 'first_fail': None, 'last_error': '', 'alerted': False,
         'last_reminder': 0.0, 'last_ping': 0.0}
 
 
+def link_status_line(now=None):
+    """یک خط برای صفحهٔ اول پنل: ارتباطِ ربات با سایت برقرار است یا نه."""
+    now = now or time.time()
+    if LINK['first_fail']:
+        minutes = max(1, int((now - LINK['first_fail']) // 60))
+        return f'⚠️ ارتباط با سایت: قطع از حدود {minutes} دقیقه پیش (رسیدها و سفارش‌های سایت نمی‌رسند)'
+    if LINK['last_ok']:
+        minutes = int((now - LINK['last_ok']) // 60)
+        return '🌐 ارتباط با سایت: برقرار' + (f' ({minutes} دقیقه پیش)' if minutes >= 2 else '')
+    return ''
+
+
 async def _tell_admins(bot, text):
     for aid in admin_ids():
         try:

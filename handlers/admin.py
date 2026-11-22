@@ -166,6 +166,12 @@ async def _show_home(update, ctx, via_message=False):
         ops['stuck_processing'] + ready_creds + int(s.get('failed_g2') or 0) + manual_stars
     )
     receipts = int(ops['pending_receipts'] or 0)
+    try:
+        from handlers.site_outbox import link_status_line
+
+        link_line = link_status_line()
+    except Exception:  # noqa: BLE001 — صفحهٔ اول نباید به خاطر این خط باز نشود
+        link_line = ''
     text = (
         f"✦ *پنل مدیریت اتومیک*\n"
         f"┄┄┄┄┄┄┄┄┄┄┄┄┄┄\n"
@@ -179,6 +185,7 @@ async def _show_home(update, ctx, via_message=False):
         + (f"⏳ گیرکرده: {ops['stuck_processing']} · " if ops['stuck_processing'] else "")
         + (f"❌ ناموفق: {s['failed_g2']} · " if s.get('failed_g2') else "")
         + (f"🎫 تیکت: {s['open_tickets']}" if s['open_tickets'] else "")
+        + (f"\n{link_line}" if link_line else "")
         + "\n\n🔎 استعلام سریع: `/order 12345`"
     ).replace(' · \n', '\n')
     kb = admin_home_keyboard({
@@ -200,8 +207,14 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not await _require_admin(update):
         return
+    # صفحه‌بندی: adm_users_p<شمارهٔ صفحه>؛ قبلاً فقط ۱۵ کاربرِ آخر دیده می‌شد.
+    data = query.data or 'adm_users'
+    page = int(data.rsplit('_p', 1)[1]) if '_p' in data else 0
+    per_page = 15
     try:
-        rows = list_recent_users(15)
+        rows = list_recent_users(per_page + 1, page * per_page)
+        has_next = len(rows) > per_page
+        rows = rows[:per_page]
     except Exception as e:
         await query.edit_message_text(
             f"❌ خطا در دریافت کاربران:\n{e}",
@@ -214,7 +227,7 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_home_keyboard(),
         )
         return
-    lines = ["✦ آخرین کاربران", "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
+    lines = ["✦ آخرین کاربران" + (f" · صفحهٔ {page + 1}" if page else ""), "┄┄┄┄┄┄┄┄┄┄┄┄┄┄"]
     buttons = []
     for r in rows:
         _db_id, tg, name, uname, blocked, bal = r
@@ -232,6 +245,14 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f'➖ کسر {tg}', callback_data=f'adm_wdeduct_{tg}'),
         ])
     lines.append("\nجستجو با آیدی @user یا شناسه عددی")
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton('➡️ صفحهٔ قبل', callback_data=(
+            f'adm_users_p{page - 1}' if page > 1 else 'adm_users')))
+    if has_next:
+        nav.append(InlineKeyboardButton('صفحهٔ بعد ⬅️', callback_data=f'adm_users_p{page + 1}'))
+    if nav:
+        buttons.append(nav)
     buttons.append([InlineKeyboardButton('🔎 جستجو', callback_data='adm_find')])
     buttons.append([InlineKeyboardButton('🔙 کاربران', callback_data='admx_hub_users')])
     await query.edit_message_text(

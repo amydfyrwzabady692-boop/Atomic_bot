@@ -1136,7 +1136,7 @@ def main():
 
     # پنل ادمین
     app.add_handler(CallbackQueryHandler(admin_home_cb, pattern='^adm_home$'))
-    app.add_handler(CallbackQueryHandler(admin_users, pattern='^adm_users$'))
+    app.add_handler(CallbackQueryHandler(admin_users, pattern=r'^adm_users(?:_p\d+)?$'))
     app.add_handler(CallbackQueryHandler(
         admin_users_with_balance, pattern='^adm_users_balance$'
     ))

@@ -5170,9 +5170,10 @@ def resolve_late_zarinpal_recovery(order_id, authority=None):
     }, None
 
 
-def list_recent_orders_admin(limit=20):
-    """آخرین سفارش‌ها با اطلاعات کاربر و آیدی بازی — همه وضعیت‌ها."""
+def list_recent_orders_admin(limit=20, offset=0):
+    """آخرین سفارش‌ها با اطلاعات کاربر و آیدی بازی — همه وضعیت‌ها؛ offset برای صفحه‌بندی."""
     limit = max(1, min(int(limit), 30))
+    offset = max(0, int(offset or 0))
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT o."Id",o."TelegramId",o."TotalAmount",o."Status",'
@@ -5183,8 +5184,8 @@ def list_recent_orders_admin(limit=20):
             ' LIMIT 1) '
             'FROM "Orders" o '
             'LEFT JOIN "Users" u ON u."Id"=o."UserId" '
-            'ORDER BY o."Id" DESC LIMIT %s',
-            (limit,),
+            'ORDER BY o."Id" DESC LIMIT %s OFFSET %s',
+            (limit, offset),
         )
         return cur.fetchall()
 
@@ -6648,8 +6649,9 @@ def find_user_by_username(username):
         return cur.fetchone()
 
 
-def list_recent_users(limit=15):
-    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance) — ساده و پایدار"""
+def list_recent_users(limit=15, offset=0):
+    """(Id, TelegramId, FirstName, TelegramUsername, IsBlocked, Balance) — ساده و پایدار؛ offset برای صفحه‌بندی."""
+    offset = max(0, int(offset or 0))
     with get_conn() as conn, conn.cursor() as cur:
         try:
             cur.execute(
@@ -6658,8 +6660,8 @@ def list_recent_users(limit=15):
                 'COALESCE(u."IsBlocked", false), COALESCE(w."Balance", 0) '
                 'FROM "Users" u '
                 'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-                'ORDER BY u."Id" DESC LIMIT %s',
-                (limit,),
+                'ORDER BY u."Id" DESC LIMIT %s OFFSET %s',
+                (limit, offset),
             )
         except Exception:
             cur.execute(
@@ -6667,8 +6669,8 @@ def list_recent_users(limit=15):
                 'false, COALESCE(w."Balance", 0) '
                 'FROM "Users" u '
                 'LEFT JOIN "Wallets" w ON w."UserId"=u."Id" '
-                'ORDER BY u."Id" DESC LIMIT %s',
-                (limit,),
+                'ORDER BY u."Id" DESC LIMIT %s OFFSET %s',
+                (limit, offset),
             )
         return cur.fetchall()
 
