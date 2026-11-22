@@ -456,9 +456,11 @@ class WiringTests(unittest.TestCase):
 
     def test_start_welcome_text_is_unchanged(self):
         from handlers import start
-        source = inspect.getsource(start.start_handler)
+        # متن در welcome_kwargs ساخته می‌شود (پیش‌نمایشِ پنل هم از همان استفاده می‌کند).
+        source = inspect.getsource(start)
         self.assertIn("'t.welcome'", source)
         self.assertIn("stored or appearance.DEFAULTS['t.welcome']", source)
+        self.assertIn('welcome_kwargs(stored, name, is_new)', inspect.getsource(start.start_handler))
 
     def test_remember_start_payload_only_for_referral_links(self):
         for text, expected in (

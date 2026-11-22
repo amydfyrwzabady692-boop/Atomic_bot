@@ -7,6 +7,7 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
+import appearance
 import g2bulk
 from admin_notify import is_admin, is_premium_admin
 from db import (
@@ -153,6 +154,14 @@ async def studio_edit_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     edit = ctx.user_data.get('studio_edit') or {}
     value = (update.message.text or '').strip()
+    if appearance.is_menu_tap(value):
+        # دکمهٔ منوی پایین زده شده، نه متنی نوشته شده؛ برچسبِ دکمه ذخیره نمی‌شود.
+        ctx.user_data.pop('studio_edit', None)
+        await update.message.reply_text(
+            '⚠️ دکمهٔ منو زده شد و چیزی ذخیره نشد.',
+            reply_markup=_keyboard(update.effective_user.id),
+        )
+        return ConversationHandler.END
     if not value:
         await update.message.reply_text('❌ مقدار خالی مجاز نیست.')
         return WAIT_STUDIO_VALUE

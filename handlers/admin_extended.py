@@ -6,6 +6,8 @@ import uuid
 from text_safety import markdown_safe
 from urllib.parse import urlparse
 
+import appearance
+
 log = logging.getLogger(__name__)
 
 from telegram import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -2049,12 +2051,42 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _edit(query, '⚙️ تنظیمات ربات و فروشگاه', [
             [InlineKeyboardButton('✏️ نام فروشگاه', callback_data='admi_shopname')],
             [InlineKeyboardButton('📝 متن خوش‌آمد', callback_data='admi_welcome')],
+            [
+                InlineKeyboardButton('👁 پیش‌نمایش خوش‌آمد', callback_data='admx_welcome_preview'),
+                InlineKeyboardButton('♻️ متن پیش‌فرض', callback_data='admx_welcome_reset'),
+            ],
             [InlineKeyboardButton('📝 متن پشتیبانی', callback_data='admi_supporttext')],
             [InlineKeyboardButton(
                 f'📦 حد هشدار موجودی: {_low_stock_threshold()}',
                 callback_data='admi_lowstock',
             )],
             _back('admx_hub_system'),
+        ])
+    elif data == 'admx_welcome_preview':
+        # همان پیامی که کاربر با /start می‌بیند — یک بار برای کاربر تازه، یک بار برگشته.
+        from handlers.start import welcome_kwargs
+
+        stored = await asyncio.to_thread(get_setting, 'welcome_text', '')
+        name = update.effective_user.first_name or 'دوست عزیز'
+        await query.message.reply_text('👁 پیش‌نمایش پیام /start — اول کاربر تازه، بعد کاربرِ برگشته:')
+        for is_new in (True, False):
+            payload = welcome_kwargs(stored, name, is_new)
+            try:
+                await query.message.reply_text(**payload)
+            except Exception:
+                await query.message.reply_text(payload['text'])
+    elif data == 'admx_welcome_reset':
+        await _edit(query, '♻️ متن خوش‌آمدِ فعلی پاک شود و متن پیش‌فرض نشان داده شود؟', [
+            [
+                InlineKeyboardButton('✅ بله، پیش‌فرض', callback_data='admx_welcome_resetok'),
+                InlineKeyboardButton('❌ نه', callback_data='admx_settings'),
+            ],
+        ])
+    elif data == 'admx_welcome_resetok':
+        await asyncio.to_thread(set_setting, 'welcome_text', '')
+        await _edit(query, '✅ متن خوش‌آمد به پیش‌فرض برگشت. با «پیش‌نمایش» ببینش.', [
+            [InlineKeyboardButton('👁 پیش‌نمایش خوش‌آمد', callback_data='admx_welcome_preview')],
+            _back('admx_settings'),
         ])
     elif data == 'admx_partner_keys':
         text, kb = _render_partner_keys_list()
@@ -3033,6 +3065,16 @@ async def admin_input_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_input_receive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update):
+        return ConversationHandler.END
+    if appearance.is_menu_tap(update.message.text):
+        # مدیر وسطِ واردکردنِ مقدار، دکمهٔ منوی پایین را زده؛ برچسبِ دکمه مقدار
+        # نیست. قبلاً ذخیره می‌شد: متن خوش‌آمدِ ربات شده بود «🎮 محصولات فری‌فایر».
+        ctx.user_data.pop('admin_ext_action', None)
+        ctx.user_data.pop('admin_ext_draft', None)
+        await update.message.reply_text(
+            '⚠️ دکمهٔ منو زده شد و چیزی ذخیره نشد.\n'
+            'اگر می‌خواستی مقداری بفرستی، دوباره همان گزینه را از پنل بزن.'
+        )
         return ConversationHandler.END
     action = ctx.user_data.pop('admin_ext_action', '')
     raw = (update.message.text or '').strip()

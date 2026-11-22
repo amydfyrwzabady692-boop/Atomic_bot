@@ -8,6 +8,29 @@ import appearance
 from db import get_or_create_user, is_user_blocked, get_setting
 from admin_notify import is_admin, is_premium_admin, is_credential_admin
 
+NEW_USER_GREETING = 'به اتومیک شاپ خوش اومدی ✨'
+RETURNING_GREETING = 'خوش برگشتی! 🌟'
+
+
+def welcome_kwargs(stored, name, is_new):
+    """پیام /start: متنِ مدیر (تنظیمات) یا پیش‌فرض، با نام و سلامِ تازه/برگشته.
+
+    پیش‌نمایشِ پنل هم همین را می‌سازد، پس مدیر دقیقاً همان را می‌بیند که کاربر.
+    اگر به‌جای متن، برچسبِ یکی از دکمه‌های منو ذخیره شده باشد (مدیر وسطِ
+    واردکردنِ متن دکمهٔ منو را زده بود)، نادیده گرفته می‌شود؛ وگرنه هر کاربر با
+    /start فقط همان برچسب را می‌دید («🎮 محصولات فری‌فایر»).
+    """
+    stored = (stored or '').strip()
+    if appearance.is_menu_tap(stored):
+        stored = ''
+    greeting = NEW_USER_GREETING if is_new else RETURNING_GREETING
+    payload = appearance.message_kwargs(
+        't.welcome', stored or appearance.DEFAULTS['t.welcome'], name=name, welcome=greeting
+    )
+    # اگر متنِ مدیر آکولادِ نامعتبر داشته باشد، format کار نمی‌کند؛ این‌جا جبران می‌شود.
+    payload['text'] = payload['text'].replace('{name}', name).replace('{welcome}', greeting)
+    return payload
+
 
 async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -32,14 +55,10 @@ async def start_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['db_id'] = db_id
     ctx.user_data['tg_id'] = user.id
 
-    name = user.first_name or 'کاربر'
-    welcome = "🆕 خوش اومدی!" if is_new else "👋 خوش برگشتی!"
-
-    stored = (await asyncio.to_thread(get_setting, 'welcome_text', '')).strip()
-    payload = appearance.message_kwargs(
-        't.welcome', stored or appearance.DEFAULTS['t.welcome']
-    )
-    text = payload['text'].replace('{name}', name).replace('{welcome}', welcome)
+    name = user.first_name or 'دوست عزیز'
+    stored = await asyncio.to_thread(get_setting, 'welcome_text', '')
+    payload = welcome_kwargs(stored, name, is_new)
+    text = payload['text']
     if admin:
         text += "\n\n🛠 ادمین: دستور `/admin` را بزن."
     elif await asyncio.to_thread(is_credential_admin, user.id):
