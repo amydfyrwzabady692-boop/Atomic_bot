@@ -66,10 +66,13 @@ class ButtonStyleTests(unittest.TestCase):
                 for btn in row:
                     self.assertIn(btn.to_dict().get('style'), ('primary', 'success', 'danger'), btn.text)
         rows = main_menu().keyboard
-        self.assertEqual(rows[0][0].to_dict().get('style'), 'primary')
-        self.assertEqual(rows[0][1].to_dict().get('style'), 'success')
-        self.assertEqual(rows[2][0].to_dict().get('style'), 'primary')
-        self.assertEqual(rows[3][0].to_dict().get('style'), 'success')
-        self.assertEqual(rows[4][0].to_dict().get('style'), 'primary')
-        self.assertEqual(rows[4][1].to_dict().get('style'), 'success')
-        self.assertEqual(rows[5][0].to_dict().get('style'), 'danger')
+        # چیدمان منوی زنده: فری‌فایر | شارژ بازی‌ها | استارز، پرمیوم | گیفت کارت، کیف پول |
+        # سفارش‌ها، حساب | (دعوت دوستان،) فروشگاه اکانت | پک سنس، پشتیبانی
+        self.assertEqual(rows[0][0].to_dict().get('style'), 'primary')   # فری‌فایر
+        self.assertEqual(rows[1][0].to_dict().get('style'), 'success')   # شارژ بازی‌ها
+        self.assertEqual(rows[2][0].to_dict().get('style'), 'primary')   # استارز
+        self.assertEqual(rows[3][0].to_dict().get('style'), 'success')   # گیفت کارت
+        self.assertEqual(rows[3][1].to_dict().get('style'), 'success')   # کیف پول
+        self.assertEqual(rows[4][0].to_dict().get('style'), 'primary')   # سفارش‌های من
+        self.assertEqual(rows[5][0].to_dict().get('style'), 'success')   # فروشگاه اکانت
+        self.assertEqual(rows[6][1].to_dict().get('style'), 'danger')    # پشتیبانی

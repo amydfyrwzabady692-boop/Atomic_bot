@@ -316,7 +316,8 @@ class SettingsAndMenuTests(unittest.TestCase):
             rows = main_menu().keyboard
         labels = [btn.text for row in rows for btn in row]
         self.assertNotIn(appearance.DEFAULTS['b.menu.ref'], labels)
-        self.assertEqual(rows[5][0].text, '🎧 پشتیبانی')
+        self.assertEqual([btn.text for btn in rows[5]], ['🛍 فروشگاه اکانت'])
+        self.assertEqual(rows[6][1].text, '🎧 پشتیبانی')
 
     def test_menu_shows_green_referral_row_when_enabled(self):
         cache = {'at': time.monotonic(), 'values': _enabled_settings()}
@@ -326,9 +327,12 @@ class SettingsAndMenuTests(unittest.TestCase):
             rows = main_menu().keyboard
         self.assertEqual(rows[5][0].text, appearance.DEFAULTS['b.menu.ref'])
         self.assertEqual(rows[5][0].to_dict().get('style'), 'success')
-        self.assertEqual(rows[6][0].text, '🎧 پشتیبانی')
+        self.assertEqual(rows[5][1].text, '🛍 فروشگاه اکانت')
+        self.assertEqual(rows[6][1].text, '🎧 پشتیبانی')
         with patch.object(appearance, '_CACHE', {}):
             self.assertEqual(appearance.menu_action(appearance.DEFAULTS['b.menu.ref']), 'referral')
+            # همان دکمه‌ای که در منو دیده می‌شود باید به دعوت دوستان برسد.
+            self.assertEqual(appearance.menu_action(rows[5][0].text), 'referral')
 
     def test_admin_entry_buttons_do_not_move_existing_rows(self):
         from keyboards import admin_hub_promo_keyboard
