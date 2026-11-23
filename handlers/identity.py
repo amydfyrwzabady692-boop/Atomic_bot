@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 import time
@@ -318,10 +319,18 @@ def _video_intro_text(only=False) -> str:
     sentence = video_sentence().replace('[', '\\[')
     head = ('🎥 *یک قدم مانده — ویدیوی کوتاه احراز*\n' if only
             else '🎥 *قدم آخر — ویدیوی کوتاه احراز*\n')
-    return (head
-            + f'با دوربین جلوی گوشی یک ویدیوی حداکثر {fa(VIDEO_MAX_SECONDS)} ثانیه‌ای از صورتت بگیر. '
-            'کارت ملی و کارت بانکی را کنار صورتت نگه دار تا خوانا دیده شوند و این جمله را بلند '
-            f'بخوان:\n\n«{sentence}»\n\n'
+    take = f'با دوربین جلوی گوشی یک ویدیوی حداکثر {fa(VIDEO_MAX_SECONDS)} ثانیه‌ای از صورتت بگیر؛ '
+    if only:
+        # عکس‌ها قبلاً تایید شده‌اند و شاید آن کاغذ دیگر نباشد: متن دوباره نوشته می‌شود.
+        first, second = (line.replace('[', '\\[') for line in note_lines())
+        hold = ('اول این متن را روی کاغذ بنویس، امضا کن و اثر انگشت بزن:\n'
+                f'«{first}\n{second}»\n\nبعد ' + take
+                + 'این دست‌نوشته و کارت ملی‌ات را در دستت بگیر و کنار صورتت نگه دار تا خوانا '
+                'دیده شوند، و این جمله را بلند بخوان:')
+    else:
+        hold = (take + 'همان دست‌نوشته‌ای که برای عکس کارت ملی نوشتی و خودِ کارت ملی را در دستت '
+                'بگیر و کنار صورتت نگه دار تا خوانا دیده شوند، و این جمله را بلند بخوان:')
+    return (head + hold + f'\n\n«{sentence}»\n\n'
             'ویدیو را همین‌جا بفرست (ویدیوی معمولی یا ویدیوی دایره‌ای تلگرام).')
 
 
@@ -553,6 +562,8 @@ def reasons_keyboard(verification_id, prefix='idv'):
 
 def admin_caption(verification_id, user, number, phone, held, other_account,
                   sent_at=None, legacy_selfie=False, level=1, video_only=False) -> str:
+    """متنِ HTML (send_for_review): شمارهٔ کارت، موبایل و آیدی با یک لمس کپی می‌شوند."""
+    esc = html.escape
     uname = f'@{user.username}' if getattr(user, 'username', None) else '—'
     held_total = sum(max(0, int(row[2] or 0) - int(row[3] or 0)) for row in held)
     level = int(level or 1)
@@ -560,9 +571,9 @@ def admin_caption(verification_id, user, number, phone, held, other_account,
         f'🪪 احراز هویت #{verification_id} — ربات'
         + (' · سطح ۲ (با ویدیو)' if level >= LEVEL_VIDEO else ''),
         '━━━━━━━━━━━━━━━',
-        f'شماره کارت: {_pretty(number)}',
-        f'📞 موبایلِ حساب تلگرام: {phone or "—"}',
-        f'کاربر: {getattr(user, "full_name", "") or "—"} ({uname}) · {user.id}',
+        f'شماره کارت: <code>{esc(str(number or ""))}</code> ({esc(_pretty(number))})',
+        '📞 موبایلِ حساب تلگرام: ' + (f'<code>{esc(str(phone))}</code>' if phone else '—'),
+        f'کاربر: {esc(getattr(user, "full_name", "") or "—")} ({esc(uname)}) · <code>{user.id}</code>',
     ]
     if held:
         lines.append(f'⏸ سفارش منتظر: {len(held)} (جمع {held_total:,} تومان)')
@@ -574,8 +585,8 @@ def admin_caption(verification_id, user, number, phone, held, other_account,
         lines.append('عکس‌ها قبلاً تایید شده‌اند؛ این بار فقط ویدیو آمده.')
     lines += [f'✓ {line}' for line in review_checklist(sent_at)]
     if level >= LEVEL_VIDEO:
-        lines.append('✓ ویدیو: همان صورتِ کارت ملی، هر دو کارت خوانا کنار صورت، و جملهٔ احراز '
-                     'با تاریخِ همین روزها بلند خوانده شود.')
+        lines.append('✓ ویدیو: همان صورتِ کارت ملی؛ دست‌نوشته و کارت ملی در دستِ خریدار و خوانا '
+                     'کنار صورت؛ جملهٔ احراز با تاریخِ همین روزها بلند خوانده شود.')
     lines.append('با تایید، سفارش‌های منتظرِ این خریدار خودکار تحویل می‌شوند.')
     return '\n'.join(lines)
 
@@ -598,7 +609,7 @@ async def send_for_review(bot, verification_id, caption, file_ids, recipients=No
                 except BadRequest:
                     # ویدیوی دایره‌ای با sendVideo فرستاده نمی‌شود.
                     await bot.send_video_note(chat_id=aid, video_note=video_file_id)
-            msg = await bot.send_message(chat_id=aid, text=caption,
+            msg = await bot.send_message(chat_id=aid, text=caption, parse_mode='HTML',
                                          reply_markup=review_keyboard(verification_id))
             notices.append({'chat_id': int(aid), 'message_id': msg.message_id})
         except Exception as exc:  # noqa: BLE001

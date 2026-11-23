@@ -1540,7 +1540,7 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'زرین‌پال: {"✅" if zp else "❌"}\n'
             f'مرچنت: {_mask_secret(merchant) if merchant else "از env سرور"}\n'
             f'کارت‌به‌کارت: {"✅" if card else "❌"}\n'
-            f'شماره کارت: {number}\n\n'
+            f'شماره کارت: `{number}`\n\n'
             f'سود جم با آیدی: {gem_profit}٪\n'
             f'سود استارز: {stars_profit_percent()}٪\n'
             f'سود گیفت‌کارت: {giftcard_profit_percent()}٪\n'

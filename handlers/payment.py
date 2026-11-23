@@ -1827,7 +1827,7 @@ async def recover_late_zarinpal(
             f"و جم خودکار ارسال نشد.\n"
             f"مبلغ: {credited:,} تومان\n"
             f"موجودی: {new_balance:,} تومان\n"
-            f"کد پیگیری: {ref_id}\n\n"
+            f"کد پیگیری: `{ref_id}`\n\n"
             "از کیف پول دوباره جم سفارش بده یا به پشتیبانی پیام بده.",
         )
     if notify_admin:
@@ -1884,7 +1884,7 @@ async def process_zarinpal_callback(bot, order_id, authority, status_ok):
                 telegram_id,
                 f"✅ مبلغ لینک قبلی به کیف پولت اضافه شد.\n"
                 f"مبلغ: {credited:,} تومان\nموجودی: {new_balance:,} تومان\n"
-                f"کد پیگیری: {ref_id}",
+                f"کد پیگیری: `{ref_id}`",
             )
             return True, 'detached gateway credited to wallet'
         if str(order[3] or '') in ('canceled', 'cancelled'):
@@ -1978,8 +1978,7 @@ async def process_zarinpal_wallet_callback(bot, authority, status_ok):
         f"✅ کیف پول شارژ شد!\n"
         f"مبلغ: {credited:,} تومان\n"
         f"موجودی: {new_balance:,} تومان\n"
-        f"پیگیری: {ref_id}",
-        parse_mode=None,
+        f"کد پیگیری: `{ref_id}`",
     )
     return True, 'wallet credited'
 

@@ -138,7 +138,7 @@ def _cred_reveal_html(item):
         lines.append('<i>— ثبت نشده —</i>')
     lines.extend([
         '',
-        f'کاربر سایت: {_html_esc(item.get("phone"))}',
+        f'کاربر سایت: <code>{_html_esc(item.get("phone"))}</code>',
         'این سفارش از <b>سایت</b> است؛ با سفارش‌های ربات قاطی نیست.',
     ])
     return '\n'.join(lines)
@@ -231,9 +231,9 @@ async def _show_site_credential(update, pk):
         f'وضعیت سفارش: `{order_status}`\n'
         f'وضعیت اطلاعات: *{status}*\n'
         f'روش ورود: {item.get("login_method_label") or "—"}\n'
-        f'کاربر سایت: {item.get("phone") or "—"}\n'
+        f'کاربر سایت: `{item.get("phone") or "—"}`\n'
         f'تلگرام: `{item.get("telegram_id") or "—"}`\n'
-        f'ایمیل: {item.get("email") or "—"}\n'
+        f'ایمیل: `{item.get("email") or "—"}`\n'
         f'منبع: سایت (نه ربات)'
     )
     if item.get('note'):
@@ -355,14 +355,17 @@ async def _show_site_receipt(update, pk):
         err = item.get('message') or item.get('error') or 'پیدا نشد'
         await _edit(query, f'رسید سایت پیدا نشد ({err}).', [_back('admx_sitereceipts')])
         return
+    # HTML: کد پیگیری، موبایل و کارتِ مبدأ با یک لمس کپی می‌شوند.
+    paid_from = (item.get('paid_from') or '').strip()
     caption = (
         f'🌐 رسید سایت #{pk}\n'
-        f'نوع: {item.get("kind") or "—"}\n'
-        f'کد پیگیری: {item.get("tracking_code") or "—"}\n'
+        f'نوع: {_html_esc(item.get("kind") or "—")}\n'
+        f'کد پیگیری: <code>{_html_esc(item.get("tracking_code") or "—")}</code>\n'
         f'مبلغ: {int(item.get("amount") or 0):,} تومان\n'
-        f'سفارش: #{item.get("order_id") or "—"}\n'
-        f'کاربر: {item.get("phone") or "—"}\n'
-        f'وضعیت: {item.get("status") or "—"}'
+        f'سفارش: #{_html_esc(item.get("order_id") or "—")}\n'
+        f'کاربر: <code>{_html_esc(item.get("phone") or "—")}</code>\n'
+        + (f'کارت مبدأ: <code>{_html_esc(paid_from)}</code>\n' if paid_from else '')
+        + f'وضعیت: {_html_esc(item.get("status") or "—")}'
     )
     review_kb = site_card_keyboard(pk)
     photo_url = (item.get('photo_url') or '').strip()
@@ -370,13 +373,13 @@ async def _show_site_receipt(update, pk):
     if photo_url:
         try:
             await query.message.reply_photo(
-                photo=photo_url, caption=caption, reply_markup=review_kb,
+                photo=photo_url, caption=caption, parse_mode='HTML', reply_markup=review_kb,
             )
             sent = True
         except Exception:
             try:
                 await query.message.reply_document(
-                    document=photo_url, caption=caption, reply_markup=review_kb,
+                    document=photo_url, caption=caption, parse_mode='HTML', reply_markup=review_kb,
                 )
                 sent = True
             except Exception:
