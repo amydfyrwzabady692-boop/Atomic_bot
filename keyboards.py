@@ -912,7 +912,7 @@ def admin_hub_support_keyboard(counts=None):
 
 def admin_hub_system_keyboard(state=None):
     st = state or {}
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton('🏪 نام فروشگاه، خوش‌آمد و متن‌ها', callback_data='admx_settings')],
         [InlineKeyboardButton('🎨 ظاهر ربات (متن، دکمه، ایموجی)', callback_data='admx_hub_look')],
         [
@@ -921,8 +921,12 @@ def admin_hub_system_keyboard(state=None):
         ],
         [InlineKeyboardButton(_on_off('اعلان خودکار به مدیر', st.get('alerts', True)),
                               callback_data='admx_toggle_alerts')],
-        _home_row(),
-    ])
+    ]
+    if st.get('owner'):
+        # بک‌آپ اطلاعاتِ همهٔ کاربران را دارد: فقط مالک (ADMIN_CHAT_ID) می‌بیند.
+        rows.append([InlineKeyboardButton('💾 بک‌آپ دیتابیس (ربات و سایت)', callback_data='bkp_home')])
+    rows.append(_home_row())
+    return InlineKeyboardMarkup(rows)
 
 
 def admin_hub_look_keyboard():

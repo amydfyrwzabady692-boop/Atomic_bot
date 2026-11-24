@@ -6,8 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# postgresql-client: pg_dump برای دکمهٔ «💾 بک‌آپ» در پنلِ مالک (handlers/backup.py)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libpq5 curl \
+        libpq5 curl postgresql-client \
     && addgroup --system --gid 10001 atomic \
     && adduser --system --uid 10001 --ingroup atomic --home /app atomic \
     && rm -rf /var/lib/apt/lists/*

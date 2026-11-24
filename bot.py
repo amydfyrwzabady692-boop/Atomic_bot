@@ -84,6 +84,7 @@ from handlers.site_receipts import (
     site_receipt_router, receipt_reason_handler,
 )
 from handlers.site_panel import site_panel_router
+from handlers.backup import backup_router
 from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
 from handlers.identity import (
@@ -1165,6 +1166,8 @@ def main():
         site_panel_router, pattern=r'^admx_site(?:cred|receipt)'
     ))
     app.add_handler(CallbackQueryHandler(admin_ext_router, pattern=r'^admx_'))
+    # 💾 بک‌آپ دیتابیسِ ربات و سایت — فقط مالک (handlers/backup.py)
+    app.add_handler(CallbackQueryHandler(backup_router, pattern=r'^bkp_(?:home|go)$'))
     app.add_handler(
         CallbackQueryHandler(
             studio_router, pattern=r'^studio_(?:home|g2|payments)$'

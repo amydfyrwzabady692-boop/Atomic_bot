@@ -926,11 +926,14 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     if data == 'admx_hub_system':
+        state = _system_state()
+        state['owner'] = query.from_user is not None and query.from_user.id == admin_id()
         await query.edit_message_text(
             '⚙️ *تنظیمات*\n'
-            'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها',
+            'متن‌ها و ظاهر · سقف احراز هویت · مدیران ربات · اعلان‌ها'
+            + (' · بک‌آپ' if state['owner'] else ''),
             parse_mode='Markdown',
-            reply_markup=admin_hub_system_keyboard(_system_state()),
+            reply_markup=admin_hub_system_keyboard(state),
         )
         return
     if data == 'admx_hub_look':

@@ -74,6 +74,55 @@ def _site_request(path, *, method='GET', payload=None, query=None, timeout=25):
         return {'ok': False, 'error': str(exc)}
 
 
+_ATTACHMENT_NAME = re.compile(r'filename="?([A-Za-z0-9._-]+)"?')
+SITE_BACKUP_MAX_BYTES = 500 * 1024 * 1024
+
+
+def fetch_site_backup(requested_by=None, *, attempts=3, timeout=180, pause=5):
+    """بک‌آپِ کاملِ دیتابیسِ سایت (gzip) برای دکمهٔ «💾 بک‌آپ» در پنلِ مالک.
+
+    خروجی: {'ok': True, 'data': bytes, 'filename': str} یا {'ok': False, 'error': ...}.
+    راهِ آلمان↔ایران گاهی سرِ TLS قطع می‌شود؛ خطای شبکه تا سه بار دوباره امتحان
+    می‌شود، ولی جوابِ خودِ سایت (رمز غلط، خطای pg_dump، «در حال ساخت») نه.
+    """
+    import time
+
+    secret = (os.getenv('BOT_INTERNAL_SECRET') or BOT_INTERNAL_SECRET or '').strip()
+    base = (os.getenv('SITE_API_URL') or SITE_API_URL or 'https://atomicshop.ir').strip().rstrip('/')
+    if not secret:
+        return {'ok': False, 'error': 'missing_secret'}
+    body = json.dumps({'requested_by': str(requested_by or '')}).encode('utf-8')
+    headers = {'X-Bot-Secret': secret, 'User-Agent': 'AtomicBot/1.0',
+               'Content-Type': 'application/json'}
+    last = 'network'
+    for attempt in range(max(1, int(attempts))):
+        if attempt:
+            time.sleep(pause)
+        req = urllib.request.Request(f'{base}/internal/bot/backup/', data=body, headers=headers,
+                                     method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read(SITE_BACKUP_MAX_BYTES + 1)
+                disposition = resp.headers.get('Content-Disposition') or ''
+        except urllib.error.HTTPError as exc:
+            try:
+                raw = exc.read().decode('utf-8', errors='replace')
+            except Exception:  # noqa: BLE001
+                raw = ''
+            return _error_from_body(raw, exc.code)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = str(getattr(exc, 'reason', None) or exc)[:200]
+            log.warning('site backup download failed (attempt %s): %s', attempt + 1, last)
+            continue
+        if len(data) > SITE_BACKUP_MAX_BYTES:
+            return {'ok': False, 'error': 'بک‌آپِ سایت از ۵۰۰ مگ بزرگ‌تر است'}
+        if not data.startswith(b'\x1f\x8b'):
+            return {'ok': False, 'error': 'جوابِ سایت فایلِ gzip نبود'}
+        match = _ATTACHMENT_NAME.search(disposition)
+        return {'ok': True, 'data': data, 'filename': match.group(1) if match else ''}
+    return {'ok': False, 'error': last}
+
+
 def call_site_review(payment_id, action, admin_tg, admin_name, note=''):
     """POST به سایت. نتیجه dict است؛ در خطا {'ok': False, 'error': ...}."""
     return _site_request(
