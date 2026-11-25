@@ -10,7 +10,26 @@ from telegram.ext import (
 
 from text_safety import markdown_safe
 
-from admin_notify import is_admin, is_credential_admin, notify_admin
+from admin_notify import admin_id, is_admin, is_credential_admin, notify_admin
+
+# بالا بردنِ موجودیِ کیف پول (شارژ یا «تنظیم دقیق») یعنی ساختنِ پول: با همان
+# موجودی جم خودکار از حسابِ G2Bulk خریده می‌شود. پس فقط مالک (ADMIN_CHAT_ID) —
+# مثل سایت که در پنل فقط کم/صفر کردن دارد. ادمینِ کمکی هنوز کسر و صفر می‌کند.
+OWNER_ONLY_WALLET_TEXT = ('⛔ شارژ و تنظیم موجودی کیف پول فقط برای مالکِ ربات است. '
+                          'ادمین‌های کمکی فقط کسر یا صفر می‌کنند.')
+
+
+def _is_owner(update) -> bool:
+    owner = admin_id()
+    user = getattr(update, 'effective_user', None)
+    return bool(owner) and user is not None and int(user.id) == owner
+
+
+async def _refuse_wallet_raise(update) -> None:
+    if update.callback_query:
+        await update.callback_query.answer(OWNER_ONLY_WALLET_TEXT, show_alert=True)
+    elif update.message:
+        await update.message.reply_text(OWNER_ONLY_WALLET_TEXT)
 from keyboards import (
     admin_home_keyboard, admin_user_keyboard, admin_failed_order_keyboard,
     admin_stuck_order_keyboard, admin_ticket_keyboard, main_menu,
@@ -459,9 +478,12 @@ async def admin_msg_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_wallet_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not await _require_admin(update):
         return ConversationHandler.END
+    if not _is_owner(update):
+        await _refuse_wallet_raise(update)
+        return ConversationHandler.END
+    await query.answer()
     tg = query.data.replace('adm_wal_', '')
     ctx.user_data['adm_wal_tg'] = tg
     ctx.user_data['adm_wal_mode'] = 'charge'
@@ -506,6 +528,10 @@ async def admin_wallet_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     amount = int(raw)
     if mode == 'deduct':
         amount = -amount
+    elif not _is_owner(update):
+        # همان قاعدهٔ دکمه؛ دوباره این‌جا، چون حالتِ گفتگو در user_data است.
+        await _refuse_wallet_raise(update)
+        return ConversationHandler.END
     profile = get_user_profile(telegram_id=tg)
     if not profile:
         await update.message.reply_text("کاربر پیدا نشد.")
@@ -605,9 +631,12 @@ async def admin_wallet_empty(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_wallet_set_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     if not await _require_admin(update):
         return ConversationHandler.END
+    if not _is_owner(update):
+        await _refuse_wallet_raise(update)
+        return ConversationHandler.END
+    await query.answer()
     tg = query.data.replace('adm_wset_', '')
     ctx.user_data['adm_wset_tg'] = tg
     profile = get_user_profile(telegram_id=tg)
@@ -623,6 +652,10 @@ async def admin_wallet_set_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 async def admin_wallet_set_apply(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
+        return ConversationHandler.END
+    if not _is_owner(update):
+        ctx.user_data.pop('adm_wset_tg', None)
+        await _refuse_wallet_raise(update)
         return ConversationHandler.END
     tg = ctx.user_data.pop('adm_wset_tg', None)
     raw = (update.message.text or '').strip().replace(',', '').replace('،', '')
