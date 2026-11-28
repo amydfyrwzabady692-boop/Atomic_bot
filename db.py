@@ -2475,12 +2475,17 @@ def get_user_orders(user_db_id, limit=10):
 
 
 def get_gem_infos_for_order(order_id):
-    """Delivery rows including the persisted provider submission state."""
+    """Delivery rows including the persisted provider submission state.
+
+    خروجی: (info_id, pkg_id, game_uid, player_name, auto_deliver, catalogue,
+    g2_id, amount, g2_status, purchase_type, plan_type)
+    """
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             'SELECT g."Id", g."GemPackageId", g."GameUID", g."PlayerName", '
             'p."AutoDeliver", p."G2BulkCatalogueName", g."G2BulkOrderId", '
-            'p."Amount", COALESCE(g."G2BulkStatus",\'\') '
+            'p."Amount", COALESCE(g."G2BulkStatus",\'\'), '
+            'COALESCE(g."PurchaseType",p."PurchaseType"), COALESCE(p."PlanType",\'\') '
             'FROM "GemOrderInfo" g '
             'JOIN "GemPackages" p ON p."Id"=g."GemPackageId" '
             'WHERE g."OrderId"=%s',
@@ -3028,12 +3033,17 @@ def fulfill_order(order_id):
             manual_ok = True
             for info in infos:
                 (info_id, pkg_id, game_uid, player_name, auto_deliver,
-                 catalogue, g2_id, amount, g2_status) = info
+                 catalogue, g2_id, amount, g2_status, purchase_type,
+                 plan_type) = (list(info) + ['', ''])[:11]
                 if not auto_deliver:
                     total_manual += 1
                     manual_ok = _reserve_manual_gem(info_id, pkg_id) and manual_ok
-                    if manual_ok and str(catalogue or '').startswith('itunes_try:'):
-                        supplier_cost = credential_cost_for_package(amount)
+                    # جم با اطلاعات: سود/نرخ همان لحظهٔ پرداخت قفل شود.
+                    if manual_ok and (
+                        purchase_type == 'by_credentials'
+                        or str(catalogue or '').startswith('itunes_try:')
+                    ):
+                        supplier_cost = credential_cost_for_package(amount, plan_type)
                         if supplier_cost:
                             record_gem_profit_snapshot(
                                 info_id, order_id, supplier_cost,
@@ -4044,6 +4054,32 @@ def ensure_admin_schema():
         )''',
         '''CREATE INDEX IF NOT EXISTS idx_profit_snapshots_captured
            ON "OrderProfitSnapshots" ("CapturedAt" DESC)''',
+        '''CREATE TABLE IF NOT EXISTS "CredentialCommissionLedger" (
+            "Id" BIGSERIAL PRIMARY KEY,
+            "Source" VARCHAR(10) NOT NULL CHECK ("Source" IN ('bot','site')),
+            "OrderRef" VARCHAR(64) NOT NULL,
+            "OrderLabel" VARCHAR(80) NOT NULL DEFAULT '',
+            "Title" VARCHAR(190) NOT NULL DEFAULT '',
+            "AdminTelegramId" VARCHAR(64) NOT NULL DEFAULT '',
+            "SaleToman" INTEGER NOT NULL CHECK ("SaleToman">0),
+            "SupplierCostUsd" NUMERIC(18,6) NOT NULL CHECK ("SupplierCostUsd">0),
+            "UsdTomanRate" INTEGER NOT NULL CHECK ("UsdTomanRate">0),
+            "GrossProfitToman" INTEGER NOT NULL,
+            "SharePercent" INTEGER NOT NULL DEFAULT 40 CHECK ("SharePercent">0 AND "SharePercent"<=100),
+            "CommissionToman" INTEGER NOT NULL CHECK ("CommissionToman">=0),
+            "Status" VARCHAR(12) NOT NULL DEFAULT 'owed'
+                CHECK ("Status" IN ('owed','settled')),
+            "SettledAt" TIMESTAMPTZ,
+            "SettledBy" VARCHAR(64) NOT NULL DEFAULT '',
+            "SettlementNote" VARCHAR(200) NOT NULL DEFAULT '',
+            "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE ("Source", "OrderRef")
+        )''',
+        '''CREATE INDEX IF NOT EXISTS idx_cred_commission_status
+           ON "CredentialCommissionLedger" ("Status", "CreatedAt" DESC)''',
+        '''INSERT INTO "BotSettings" ("Key","Value","UpdatedAt")
+           VALUES ('credential_admin_share_percent','40',now())
+           ON CONFLICT ("Key") DO NOTHING''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_status_created
            ON "PaymentAttempts" ("Status", "CreatedAt" DESC)''',
         '''CREATE INDEX IF NOT EXISTS idx_payment_attempts_order
@@ -7587,6 +7623,323 @@ def admin_reject_credential_info(order_id, admin_note=''):
         )
         conn.commit()
         return True, row[1], 'needs_info'
+
+
+# ─── سهم ادمین جم با اطلاعات (۴۰٪ سود بسته) ───────────────────────────────
+
+
+def credential_admin_share_percent() -> int:
+    raw = str(get_setting('credential_admin_share_percent', '40') or '40')
+    try:
+        return max(1, min(100, int(raw.replace('%', '').replace('٪', ''))))
+    except (TypeError, ValueError):
+        return 40
+
+
+def _credential_profit_inputs_for_bot_info(info_id, order_id):
+    """(sale, cost_usd, rate, title) از snapshot پرداخت؛ وگرنه بازسازی محافظه‌کارانه."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT p."SaleAmountToman",p."SupplierCostUsd",p."UsdTomanRate",'
+            'gp."Title",gp."Amount",gp."PlanType",'
+            'oi."Price",oi."Quantity",o."TotalAmount",o."DiscountAmount" '
+            'FROM "GemOrderInfo" g '
+            'JOIN "Orders" o ON o."Id"=g."OrderId" '
+            'JOIN "GemPackages" gp ON gp."Id"=g."GemPackageId" '
+            'LEFT JOIN "OrderItems" oi ON oi."Id"=g."OrderItemId" '
+            'LEFT JOIN "OrderProfitSnapshots" p ON p."GemOrderInfoId"=g."Id" '
+            'WHERE g."Id"=%s AND g."OrderId"=%s AND g."PurchaseType"=\'by_credentials\'',
+            (int(info_id), int(order_id)),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    title = row[3] or 'جم با اطلاعات'
+    if row[0] and row[1] and row[2]:
+        return int(row[0]), Decimal(str(row[1])), int(row[2]), title
+    # بدون snapshot: فروش از قلم سفارش؛ هزینه از تنظیم بسته؛ نرخ از فرمول قیمت.
+    unit = int(row[6] or 0)
+    qty = max(1, int(row[7] or 1))
+    sale = unit * qty
+    if sale <= 0:
+        sale = max(0, int(row[8] or 0) - int(row[9] or 0))
+    cost = credential_cost_for_package(row[4], row[5])
+    if not cost or sale <= 0:
+        return None
+    profit_pct = credential_profit_for_package(row[4], row[5])
+    # sale ≈ round_1000(cost * rate * (1+p/100)) → نرخ تقریبی لحظهٔ قیمت‌گذاری
+    factor = Decimal(1) + (Decimal(profit_pct) / Decimal(100))
+    from decimal import ROUND_HALF_UP
+    rate = int((Decimal(sale) / (Decimal(cost) * factor))
+               .quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    if rate <= 0:
+        snap = profitability.get_purchase_rate_snapshot()
+        rate = int(snap.get('rate') or 0) if snap.get('ok') else 0
+    if rate <= 0:
+        return None
+    return sale, Decimal(cost), rate, title
+
+
+def record_credential_commission_bot(order_id, *, admin_tg='', already=False):
+    """بعد از «انجام شد» ربات: برای هر قلم اطلاعاتی یک ردیف طلب بساز.
+
+    خروجی: لیست dictهای ساخته‌شده/موجود (خالی اگر چیزی برای ثبت نبود).
+    """
+    if already:
+        # اگر قبلاً تکمیل شده، فقط ردیف‌های موجود را برگردان.
+        return list_credential_commissions_for_ref('bot', str(int(order_id)))
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT g."Id" FROM "GemOrderInfo" g '
+            'WHERE g."OrderId"=%s AND g."PurchaseType"=\'by_credentials\'',
+            (int(order_id),),
+        )
+        info_ids = [int(r[0]) for r in cur.fetchall()]
+    created = []
+    for info_id in info_ids:
+        inputs = _credential_profit_inputs_for_bot_info(info_id, order_id)
+        if not inputs:
+            _LOG.warning('credential commission skipped bot order=%s info=%s (no inputs)',
+                         order_id, info_id)
+            continue
+        sale, cost_usd, rate, title = inputs
+        row = _insert_credential_commission(
+            source='bot',
+            order_ref=f'{int(order_id)}:{int(info_id)}',
+            order_label=f'ربات #{int(order_id)}',
+            title=title,
+            admin_tg=admin_tg,
+            sale_toman=sale,
+            cost_usd=cost_usd,
+            usd_rate=rate,
+        )
+        if row:
+            created.append(row)
+    return created
+
+
+def record_credential_commission_site(
+    *, info_id, order_id, sale_toman, cost_usd, title='', admin_tg='',
+    plan_type='', amount=0, tracking='', already=False,
+):
+    """بعد از تکمیل سفارش سایت در ربات."""
+    ref = f'site:{int(info_id)}'
+    if already:
+        existing = list_credential_commissions_for_ref('site', ref)
+        if existing:
+            return existing
+    sale = int(sale_toman or 0)
+    try:
+        cost = Decimal(str(cost_usd)) if cost_usd not in (None, '') else None
+    except (InvalidOperation, TypeError, ValueError):
+        cost = None
+    if cost is None or cost <= 0:
+        cost = credential_cost_for_package(amount, plan_type)
+    if not cost or sale <= 0:
+        _LOG.warning('credential commission skipped site info=%s (sale=%s cost=%s)',
+                     info_id, sale, cost)
+        return []
+    from decimal import ROUND_HALF_UP
+    profit_pct = credential_profit_for_package(amount, plan_type)
+    factor = Decimal(1) + (Decimal(profit_pct) / Decimal(100))
+    rate = int((Decimal(sale) / (Decimal(cost) * factor))
+               .quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+    if rate <= 0:
+        snap = profitability.get_purchase_rate_snapshot()
+        rate = int(snap.get('rate') or 0) if snap.get('ok') else 0
+    if rate <= 0:
+        return []
+    label = f'سایت {tracking or ("#" + str(int(order_id)))}'
+    row = _insert_credential_commission(
+        source='site',
+        order_ref=ref,
+        order_label=label,
+        title=title or 'جم با اطلاعات سایت',
+        admin_tg=admin_tg,
+        sale_toman=sale,
+        cost_usd=cost,
+        usd_rate=rate,
+    )
+    return [row] if row else []
+
+
+def _insert_credential_commission(
+    *, source, order_ref, order_label, title, admin_tg, sale_toman, cost_usd, usd_rate,
+):
+    share = credential_admin_share_percent()
+    try:
+        supplier_toman, gross = profitability.calculate_gross_profit(
+            sale_toman, cost_usd, usd_rate)
+    except ValueError:
+        return None
+    commission = max(0, int(gross) * share // 100)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'INSERT INTO "CredentialCommissionLedger" '
+            '("Source","OrderRef","OrderLabel","Title","AdminTelegramId",'
+            '"SaleToman","SupplierCostUsd","UsdTomanRate","GrossProfitToman",'
+            '"SharePercent","CommissionToman","Status") '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,\'owed\') '
+            'ON CONFLICT ("Source","OrderRef") DO NOTHING '
+            'RETURNING "Id","Source","OrderRef","OrderLabel","Title",'
+            '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+            '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+            '"SettledAt","CreatedAt"',
+            (
+                source, str(order_ref)[:64], str(order_label)[:80],
+                str(title or '')[:190], str(admin_tg or '')[:64],
+                int(sale_toman), Decimal(str(cost_usd)), int(usd_rate),
+                int(gross), share, commission,
+            ),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                'SELECT "Id","Source","OrderRef","OrderLabel","Title",'
+                '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+                '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+                '"SettledAt","CreatedAt" '
+                'FROM "CredentialCommissionLedger" '
+                'WHERE "Source"=%s AND "OrderRef"=%s',
+                (source, str(order_ref)[:64]),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _commission_row_dict(row) if row else None
+
+
+def _commission_row_dict(row):
+    if not row:
+        return None
+    return {
+        'id': int(row[0]),
+        'source': row[1],
+        'order_ref': row[2],
+        'order_label': row[3],
+        'title': row[4],
+        'admin_tg': row[5],
+        'sale': int(row[6] or 0),
+        'cost_usd': Decimal(str(row[7] or 0)),
+        'usd_rate': int(row[8] or 0),
+        'gross_profit': int(row[9] or 0),
+        'share_percent': int(row[10] or 40),
+        'commission': int(row[11] or 0),
+        'status': row[12],
+        'settled_at': row[13],
+        'created_at': row[14],
+    }
+
+
+def list_credential_commissions_for_ref(source, order_ref_prefix):
+    """ردیف‌های یک سفارش (ربات ممکن است چند قلم داشته باشد)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Source","OrderRef","OrderLabel","Title",'
+            '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+            '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+            '"SettledAt","CreatedAt" '
+            'FROM "CredentialCommissionLedger" '
+            'WHERE "Source"=%s AND ("OrderRef"=%s OR "OrderRef" LIKE %s) '
+            'ORDER BY "Id"',
+            (source, str(order_ref_prefix), str(order_ref_prefix) + ':%'),
+        )
+        return [_commission_row_dict(r) for r in cur.fetchall()]
+
+
+def credential_commission_summary():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT '
+            'COUNT(*) FILTER (WHERE "Status"=\'owed\'),'
+            'COALESCE(SUM("CommissionToman") FILTER (WHERE "Status"=\'owed\'),0),'
+            'COUNT(*) FILTER (WHERE "Status"=\'settled\'),'
+            'COALESCE(SUM("CommissionToman") FILTER (WHERE "Status"=\'settled\'),0) '
+            'FROM "CredentialCommissionLedger"'
+        )
+        owed_n, owed_sum, settled_n, settled_sum = cur.fetchone()
+    return {
+        'owed_count': int(owed_n or 0),
+        'owed_sum': int(owed_sum or 0),
+        'settled_count': int(settled_n or 0),
+        'settled_sum': int(settled_sum or 0),
+    }
+
+
+def list_credential_commissions(*, status='owed', limit=20):
+    status = str(status or 'owed')
+    if status not in ('owed', 'settled', 'all'):
+        status = 'owed'
+    with get_conn() as conn, conn.cursor() as cur:
+        if status == 'all':
+            cur.execute(
+                'SELECT "Id","Source","OrderRef","OrderLabel","Title",'
+                '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+                '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+                '"SettledAt","CreatedAt" '
+                'FROM "CredentialCommissionLedger" ORDER BY "Id" DESC LIMIT %s',
+                (max(1, min(int(limit), 50)),),
+            )
+        else:
+            cur.execute(
+                'SELECT "Id","Source","OrderRef","OrderLabel","Title",'
+                '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+                '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+                '"SettledAt","CreatedAt" '
+                'FROM "CredentialCommissionLedger" WHERE "Status"=%s '
+                'ORDER BY "Id" DESC LIMIT %s',
+                (status, max(1, min(int(limit), 50))),
+            )
+        return [_commission_row_dict(r) for r in cur.fetchall()]
+
+
+def get_credential_commission(commission_id):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id","Source","OrderRef","OrderLabel","Title",'
+            '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+            '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+            '"SettledAt","CreatedAt" '
+            'FROM "CredentialCommissionLedger" WHERE "Id"=%s',
+            (int(commission_id),),
+        )
+        return _commission_row_dict(cur.fetchone())
+
+
+def settle_credential_commissions(ids, *, settled_by='', note=''):
+    """تسویهٔ چند ردیف طلب. خروجی: (ok, settled_rows, total, error)."""
+    ids = [int(i) for i in (ids or []) if str(i).isdigit() or isinstance(i, int)]
+    if not ids:
+        return False, [], 0, 'ردیفی انتخاب نشده.'
+    who = str(settled_by or '')[:64]
+    note = str(note or '')[:200]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "CredentialCommissionLedger" '
+            'SET "Status"=\'settled\',"SettledAt"=now(),"SettledBy"=%s,'
+            '"SettlementNote"=%s '
+            'WHERE "Id"=ANY(%s) AND "Status"=\'owed\' '
+            'RETURNING "Id","Source","OrderRef","OrderLabel","Title",'
+            '"AdminTelegramId","SaleToman","SupplierCostUsd","UsdTomanRate",'
+            '"GrossProfitToman","SharePercent","CommissionToman","Status",'
+            '"SettledAt","CreatedAt"',
+            (who, note, ids),
+        )
+        rows = [_commission_row_dict(r) for r in cur.fetchall()]
+        conn.commit()
+    total = sum(int(r['commission']) for r in rows)
+    if not rows:
+        return False, [], 0, 'چیزی برای تسویه نبود (شاید قبلاً تسویه شده).'
+    return True, rows, total, ''
+
+
+def settle_all_owed_credential_commissions(*, settled_by='', note=''):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'SELECT "Id" FROM "CredentialCommissionLedger" WHERE "Status"=\'owed\' '
+            'ORDER BY "Id"'
+        )
+        ids = [int(r[0]) for r in cur.fetchall()]
+    return settle_credential_commissions(ids, settled_by=settled_by, note=note)
 
 
 

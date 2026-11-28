@@ -448,6 +448,7 @@ def credential_admin_home_keyboard(counts=None):
         [InlineKeyboardButton(bot_label, callback_data='admx_credentials')],
         [InlineKeyboardButton(site_label, callback_data='admx_sitecreds')],
         [InlineKeyboardButton(tickets_label, callback_data='adm_cred_tickets')],
+        [InlineKeyboardButton('💰 دفتر طلب / تسویه سهم', callback_data='admx_credpay')],
         [InlineKeyboardButton('🔄 بروزرسانی', callback_data='admx_credhub')],
     ])
 

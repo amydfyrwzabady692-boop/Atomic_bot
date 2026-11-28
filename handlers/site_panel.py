@@ -159,10 +159,10 @@ async def site_panel_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _reveal_site_credential(update, int(data.rsplit('_', 1)[-1]))
         return
     if data.startswith('admx_sitecreddone_'):
-        await _act_site_credential(update, int(data.rsplit('_', 1)[-1]), 'complete')
+        await _act_site_credential(update, ctx, int(data.rsplit('_', 1)[-1]), 'complete')
         return
     if data.startswith('admx_sitecredbad_'):
-        await _act_site_credential(update, int(data.rsplit('_', 1)[-1]), 'needs_info')
+        await _act_site_credential(update, ctx, int(data.rsplit('_', 1)[-1]), 'needs_info')
         return
     if data.startswith('admx_sitecred_'):
         await _show_site_credential(update, int(data.rsplit('_', 1)[-1]))
@@ -294,7 +294,7 @@ async def _reveal_site_credential(update, pk):
     await _edit(query, html, buttons, html=True)
 
 
-async def _act_site_credential(update, pk, action):
+async def _act_site_credential(update, ctx, pk, action):
     query = update.callback_query
     result = await asyncio.to_thread(
         call_site_credential_action,
@@ -307,11 +307,32 @@ async def _act_site_credential(update, pk, action):
         return
     if action == 'complete':
         text = '✅ سفارش سایت تکمیل شد و به کاربر سایت خبر داده شد.'
+        try:
+            from handlers.cred_commission import after_site_credential_done
+
+            detail = dict(result)
+            detail.setdefault('id', pk)
+            rows = await after_site_credential_done(
+                ctx.bot, detail,
+                admin_tg=str(update.effective_user.id),
+                already=bool(result.get('already')),
+            )
+            if rows:
+                total = sum(int(r['commission']) for r in rows)
+                text += f'\n🧾 سهم این سفارش: *{total:,}* تومان (صورتحساب ارسال شد).'
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                'credential commission after site done failed pk=%s', pk)
     else:
         text = '⚠️ اطلاعات ناقص برای سفارش سایت ثبت و به کاربر خبر داده شد.'
-    if result.get('already'):
+    if result.get('already') and action != 'complete':
         text = result.get('message') or text
-    await _edit(query, text, [_back('admx_sitecreds')])
+    buttons = [_back('admx_sitecreds')]
+    if action == 'complete':
+        buttons.insert(0, [InlineKeyboardButton(
+            '💰 دفتر طلب/تسویه', callback_data='admx_credpay')])
+    await _edit(query, text, buttons, markdown=('*' in text))
 
 
 async def _list_site_receipts(update, ctx):

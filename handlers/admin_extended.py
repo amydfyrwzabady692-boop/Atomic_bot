@@ -212,7 +212,7 @@ def _credential_staff_allowed(data):
     """Callbackهایی که پشتیبان فقط-جم-با-اطلاعات می‌تواند بزند."""
     if data in (
         'admx_credhub', 'admx_credentials', 'admx_sitecreds',
-        'admx_noop', 'adm_cred_tickets',
+        'admx_noop', 'adm_cred_tickets', 'admx_credpay',
     ):
         return True
     prefixes = (
@@ -225,6 +225,7 @@ def _credential_staff_allowed(data):
         'admx_sitecredreveal_',
         'admx_sitecreddone_',
         'admx_sitecredbad_',
+        'admx_credpay_',
     )
     return any(str(data or '').startswith(p) for p in prefixes)
 
@@ -1246,12 +1247,33 @@ async def admin_ext_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'order', order_id,
             'secret erased after delivery' if is_done else 'needs_info kept secrets',
         )
+        bill_note = ''
+        if is_done:
+            try:
+                from handlers.cred_commission import after_bot_credential_done
+
+                rows = await after_bot_credential_done(
+                    ctx.bot, order_id,
+                    admin_tg=str(update.effective_user.id),
+                    already=(result == 'already'),
+                )
+                if rows:
+                    total = sum(int(r['commission']) for r in rows)
+                    bill_note = f'\n🧾 سهم این سفارش: *{total:,}* تومان (صورتحساب ارسال شد).'
+            except Exception:
+                log.exception('credential commission after bot done failed order=%s', order_id)
+        done_rows = [
+            [InlineKeyboardButton('💰 دفتر طلب/تسویه', callback_data='admx_credpay')],
+            _back('admx_credentials'),
+        ]
         await query.edit_message_text(
-            ('✅ سفارش تکمیل شد، مشتری مطلع شد و اطلاعات ورود از سرور پاک شد.'
+            (('✅ سفارش تکمیل شد، مشتری مطلع شد و اطلاعات ورود از سرور پاک شد.'
+              + bill_note)
              if is_done else
              '⚠️ اطلاعات ناقص ثبت و مشتری مطلع شد.\n'
              'اطلاعات ورود هنوز روی سرور هست تا تحویل نهایی یا برگشت پول.'),
-            reply_markup=_kb([_back('admx_credentials')]),
+            reply_markup=_kb(done_rows) if is_done else _kb([_back('admx_credentials')]),
+            parse_mode='Markdown' if is_done and bill_note else None,
         )
         return
 

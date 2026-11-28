@@ -91,6 +91,7 @@ from handlers.identity import (
     identity_reason_handler,
 )
 from handlers.site_finance import site_finance_handlers, site_finance_text_handler
+from handlers.cred_commission import cred_commission_handlers
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
 from handlers.referral import (
@@ -1116,6 +1117,8 @@ def main():
     for handler in identity_admin_handlers():
         app.add_handler(handler)
     for handler in site_finance_handlers():
+        app.add_handler(handler)
+    for handler in cred_commission_handlers():
         app.add_handler(handler)
     app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+(?:_[a-z]+)?$'))
