@@ -247,7 +247,9 @@ class HoldNoticeTests(unittest.TestCase):
         self.assertEqual(kwargs['reply_markup'].inline_keyboard[0][0].callback_data, 'idv_start')
         self.assertIn('منتظر احراز هویت', admin.call_args.args[1])
         actions = [row[0].callback_data for row in admin.call_args.kwargs['reply_markup'].inline_keyboard]
-        self.assertEqual(actions, ['idva_rel_9', 'idva_ref_9', 'idva_keep_9'])
+        self.assertEqual(actions, [
+            'idva_g1_9', 'idva_g2_9', 'idva_rv_9', 'idva_rel_9', 'idva_ref_9', 'idva_keep_9',
+        ])
 
     def test_a_video_order_asks_for_the_video_without_amounts(self):
         with patch.object(identity, 'identity_what_to_ask',
@@ -753,11 +755,41 @@ class SiteAlbumTests(unittest.TestCase):
         self.assertEqual(len(ack.call_args.args[1]), 2)
 
 
+class ManualGrantAdminTests(unittest.TestCase):
+    def setUp(self):
+        self.ctx = SimpleNamespace(bot=SimpleNamespace(send_message=AsyncMock()))
+
+    def test_grant_level_from_held_order_releases_and_notifies(self):
+        query = _admin_query('idva_g1ok_9')
+        order = (9, None, 1_200_000, 'kyc_hold', None, None, '555')
+        with patch.object(identity, 'is_admin', return_value=True), \
+                patch.object(identity, 'get_order', return_value=order), \
+                patch.object(identity, 'grant_identity_level',
+                             return_value=(True, 'سطح ۱ تایید شد.', 1)) as grant, \
+                patch.object(identity, 'release_and_deliver',
+                             new=AsyncMock(return_value=[9])) as release:
+            run(identity.identity_admin(_admin_update(query), self.ctx))
+        self.assertEqual(grant.call_args.args[:2], ('555', identity.LEVEL_PHOTOS))
+        release.assert_awaited()
+        self.assertIn('سطح ۱', query.edit_message_text.call_args.args[0])
+        self.assertEqual(self.ctx.bot.send_message.call_args.kwargs['chat_id'], 555)
+
+    def test_revoke_from_user_manage(self):
+        query = _admin_query('idva_urvok_555')
+        with patch.object(identity, 'is_admin', return_value=True), \
+                patch.object(identity, 'revoke_identity',
+                             return_value=(True, 'احراز بسته شد.')) as revoke:
+            run(identity.identity_admin(_admin_update(query), self.ctx))
+        self.assertEqual(revoke.call_args.args[0], 555)
+        self.assertIn('بسته', query.edit_message_text.call_args.args[0])
+
+
 class WiringTests(unittest.TestCase):
     def test_bot_registers_the_identity_flow(self):
         src = (ROOT / 'bot.py').read_text(encoding='utf-8')
         self.assertIn('identity_conversation_handler()', src)
         self.assertIn('identity_admin_handlers()', src)
+        self.assertIn('identity_manual_tg_handler()', src)
         self.assertLess(src.index('payment_conversation_handler()'),
                         src.index('identity_conversation_handler()'))
 

@@ -36,11 +36,12 @@ from telegram.ext import (
 from admin_notify import admin_ids, is_admin, notify_admin
 from db import (
     LEVEL_PHOTOS, LEVEL_VIDEO, accept_terms, claim_identity_hold_notice, count_identity_queue,
-    get_identity_verification, get_or_create_user, get_order, identity_card_owned_by_other,
-    identity_level, identity_state, identity_threshold_toman, identity_video_threshold_toman,
-    identity_what_to_ask, identity_window_days, import_site_identity, list_identity_held_orders,
-    list_pending_identity_verifications, reject_identity_hold_order, release_identity_hold_order,
-    release_identity_holds, review_identity_verification, submit_identity_verification,
+    get_identity_verification, get_or_create_user, get_order, grant_identity_level,
+    identity_card_owned_by_other, identity_level, identity_state, identity_threshold_toman,
+    identity_video_threshold_toman, identity_what_to_ask, identity_window_days,
+    import_site_identity, list_identity_held_orders, list_pending_identity_verifications,
+    reject_identity_hold_order, release_identity_hold_order, release_identity_holds,
+    review_identity_verification, revoke_identity, submit_identity_verification,
     terms_accepted,
 )
 from keyboards import main_menu
@@ -77,6 +78,8 @@ HOLD_REJECT_REASONS = {
 # {آیدی ادمین: {prefix, id, chat_id, message_id, photo, at}}
 _PENDING_REASON: dict[int, dict] = {}
 REASON_TTL = 15 * 60
+_PENDING_MANUAL_TG: dict[int, dict] = {}  # admin_tg → {'at': ts}
+MANUAL_TG_TTL = 5 * 60
 
 
 def fa(value) -> str:
@@ -233,10 +236,18 @@ def hold_user_text(order_id, state, ask=None) -> str:
 
 
 def held_order_admin_keyboard(order_id, prefix='idva'):
-    """سه تصمیم برای سفارشِ منتظرِ احراز؛ prefix=skyc برای سفارش‌های سایت."""
+    """تصمیم‌های سفارشِ منتظرِ احراز؛ prefix=skyc برای سفارش‌های سایت.
+
+    تایید دائمی سطح ۱/۲ احراز کاربر را برای همیشه باز می‌کند؛ آزادسازی بدون
+    احراز فقط همین سفارش را باز می‌کند.
+    """
     oid = int(order_id)
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('▶️ آزادسازی بدون احراز', callback_data=f'{prefix}_rel_{oid}')],
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۱', callback_data=f'{prefix}_g1_{oid}')],
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۲', callback_data=f'{prefix}_g2_{oid}')],
+        [InlineKeyboardButton('🔒 بستن احراز کاربر', callback_data=f'{prefix}_rv_{oid}')],
+        [InlineKeyboardButton('▶️ آزادسازی بدون احراز (فقط این سفارش)',
+                              callback_data=f'{prefix}_rel_{oid}')],
         [InlineKeyboardButton('↩️ رد + برگشت پول به کیف پول', callback_data=f'{prefix}_ref_{oid}')],
         [InlineKeyboardButton('⛔ رد بدون بازگشت وجه', callback_data=f'{prefix}_keep_{oid}')],
     ])
@@ -902,6 +913,44 @@ async def identity_reason_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raise ApplicationHandlerStop
 
 
+class _AwaitingManualTg(filters.MessageFilter):
+    """فقط پیامِ ادمینی که «تایید/بستن با آیدی» را زده."""
+
+    def filter(self, message):
+        user = getattr(message, 'from_user', None)
+        pending = _PENDING_MANUAL_TG.get(getattr(user, 'id', None))
+        if pending and time.time() - pending['at'] > MANUAL_TG_TTL:
+            _PENDING_MANUAL_TG.pop(user.id, None)
+            return False
+        return bool(pending)
+
+
+async def identity_manual_tg_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """آیدی تلگرامی که ادمین بعد از «تایید/بستن با آیدی» می‌فرستد."""
+    message = update.effective_message
+    admin = update.effective_user
+    if not _PENDING_MANUAL_TG.pop(getattr(admin, 'id', None), None) or not is_admin(admin.id):
+        return
+    text = ' '.join((message.text or '').split())
+    if text in ('انصراف', 'لغو', 'cancel'):
+        await message.reply_text('لغو شد.', reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
+        ]))
+        raise ApplicationHandlerStop
+    digits = re.sub(r'\D+', '', text)
+    if not digits or len(digits) < 5:
+        _PENDING_MANUAL_TG[admin.id] = {'at': time.time()}
+        await message.reply_text('آیدی عددی تلگرام را بفرست (یا: انصراف).')
+        raise ApplicationHandlerStop
+    tg = int(digits)
+    have = await asyncio.to_thread(identity_level, tg)
+    held = await asyncio.to_thread(list_identity_held_orders, tg, 20)
+    await message.reply_text(
+        f'🪪 مدیریت احراز کاربر `{tg}`\nسطح فعلی: {have}\nسفارش منتظر: {len(held)}',
+        reply_markup=_user_manage_keyboard(tg), parse_mode='Markdown')
+    raise ApplicationHandlerStop
+
+
 def identity_reason_handler():
     """در گروهِ ‎-2‎: پیش از قفلِ عضویت و بقیهٔ گفتگوها، فقط برای همان ادمین."""
     return MessageHandler(filters.TEXT & ~filters.COMMAND & _AwaitingReason(), identity_reason_text)
@@ -978,8 +1027,73 @@ async def _site_review(query, ctx, verification_id, approve, reason, name):
 # ── پنل ادمین ───────────────────────────────────────────────────────
 
 
+def _user_manage_keyboard(tg_id):
+    """دکمه‌های تایید دائمی / بستن برای یک آیدی تلگرام."""
+    tg = int(tg_id)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۱', callback_data=f'idva_ug1_{tg}')],
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۲', callback_data=f'idva_ug2_{tg}')],
+        [InlineKeyboardButton('🔒 بستن احراز', callback_data=f'idva_urv_{tg}')],
+        [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
+    ])
+
+
+async def _grant_bot_user(bot, tg_id, level, reviewer, admin_tg):
+    """تایید دائمی سطح و تحویل سفارش‌های آزادشده. خروجی: پیام برای ادمین."""
+    ok, msg, _have = await asyncio.to_thread(
+        grant_identity_level, tg_id, level, reviewer=reviewer,
+        note=f'تایید دستی سطح {level}')
+    if not ok:
+        return msg
+    try:
+        from db import log_admin_action
+
+        await asyncio.to_thread(log_admin_action, admin_tg, 'identity_granted', 'user', tg_id,
+                                f'level={level}')
+    except Exception:  # noqa: BLE001
+        log.exception('admin action log failed grant tg=%s', tg_id)
+    released = await release_and_deliver(bot, tg_id)
+    try:
+        label = 'عکس مدارک' if int(level) == LEVEL_PHOTOS else 'عکس + ویدیو'
+        await bot.send_message(
+            chat_id=int(tg_id),
+            text=('✅ احراز هویتت در اتومیک شاپ تایید شد '
+                  f'(سطح {level} — {label}).'
+                  + (f'\n{fa(len(released))} سفارش منتظرت در حال تحویل است.' if released else '')
+                  + ('\nاز این به بعد خریدهایت بدون انتظار تحویل می‌شوند.'
+                     if int(level) >= LEVEL_VIDEO else '')),
+            reply_markup=main_menu() if int(level) >= LEVEL_VIDEO else start_keyboard())
+    except Exception as exc:  # noqa: BLE001
+        log.warning('grant notice not delivered tg=%s: %s', tg_id, exc)
+    return msg + (f'\n{fa(len(released))} سفارش آزاد و تحویل شد.' if released else '')
+
+
+async def _revoke_bot_user(bot, tg_id, reviewer, admin_tg):
+    ok, msg = await asyncio.to_thread(
+        revoke_identity, tg_id, reviewer=reviewer, note='بسته شدن احراز توسط ادمین')
+    if not ok:
+        return msg
+    try:
+        from db import log_admin_action
+
+        await asyncio.to_thread(log_admin_action, admin_tg, 'identity_revoked', 'user', tg_id, '')
+    except Exception:  # noqa: BLE001
+        log.exception('admin action log failed revoke tg=%s', tg_id)
+    try:
+        await bot.send_message(
+            chat_id=int(tg_id),
+            text=('🔒 احراز هویتت در اتومیک شاپ بسته شد.\n'
+                  'اگر لازم است دوباره مدارک را از مسیر رسمی بفرست.'),
+            reply_markup=main_menu())
+    except Exception as exc:  # noqa: BLE001
+        log.warning('revoke notice not delivered tg=%s: %s', tg_id, exc)
+    return msg
+
+
 async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """idva_home | idva_open_<id> | idva_order_<id> | idva_rel_<id> | idva_relok_<id>"""
+    """idva_home | idva_open_<id> | idva_order_<id> | idva_rel_<id> | idva_relok_<id>
+    | idva_g1/g2/rv[_ok]_<order> | idva_user_<tg> | idva_ug1/ug2/urv[_ok]_<tg> | idva_manual
+    """
     query = update.callback_query
     if not is_admin(update.effective_user.id):
         await query.answer('دسترسی نداری', show_alert=True)
@@ -1004,7 +1118,8 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f'مدارکِ ربات منتظر بررسی: {pending}\n'
                 f'سفارشِ ربات منتظر احراز: {held_count}\n'
                 f'مدارکِ سایت منتظر بررسی: {site_pending} (در پنل سایت یا پیام‌های بالا)\n'
-                f'سفارشِ سایت منتظر احراز: {site_held}')
+                f'سفارشِ سایت منتظر احراز: {site_held}\n\n'
+                'تایید دائمی سطح ۱/۲ برای مدارک پی‌وی؛ بستن احراز برای لغو تایید.')
         buttons = [[InlineKeyboardButton(
             f'🪪 #{r[0]} · {_masked(r[2])} · {r[1]}' + (' · 🎥' if int(r[5] or 1) >= LEVEL_VIDEO else ''),
             callback_data=f'idva_open_{r[0]}')] for r in rows]
@@ -1012,9 +1127,20 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f'⏸ سفارش #{o[0]} · {max(0, int(o[2] or 0) - int(o[3] or 0)):,} ت'
             + (' · 🎥' if int(o[6] or 1) >= LEVEL_VIDEO else ''),
             callback_data=f'idva_order_{o[0]}')] for o in held]
+        buttons.append([InlineKeyboardButton('🔎 تایید/بستن با آیدی تلگرام',
+                                             callback_data='idva_manual')])
         buttons.append([InlineKeyboardButton('🔄 بروزرسانی', callback_data='idva_home'),
                         InlineKeyboardButton('🚨 مرکز عملیات', callback_data='admx_ops')])
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+    if data == 'idva_manual':
+        _PENDING_MANUAL_TG[update.effective_user.id] = {'at': time.time()}
+        await query.edit_message_text(
+            'آیدی عددی تلگرامِ خریدار را بفرست تا سطح ۱/۲ را تایید یا احراز را ببندی.\n'
+            'برای انصراف: انصراف',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
+            ]))
         return
     parts = data.split('_')
     kind = parts[1] if len(parts) > 1 else ''
@@ -1041,6 +1167,33 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                 legacy_selfie=bool(row[6]), level=int(row[13] or 1))
         await send_for_review(ctx.bot, pk, caption, [row[4], row[5], row[6]],
                               recipients=[update.effective_user.id], video_file_id=row[15] or '')
+    elif kind == 'user':
+        have = await asyncio.to_thread(identity_level, pk)
+        held = await asyncio.to_thread(list_identity_held_orders, pk, 20)
+        await query.edit_message_text(
+            f'🪪 مدیریت احراز کاربر `{pk}`\n'
+            f'سطح فعلی: {have}\n'
+            f'سفارش منتظر: {len(held)}\n\n'
+            'تایید دائمی سطح ۱ یا ۲، یا بستن احراز.',
+            reply_markup=_user_manage_keyboard(pk), parse_mode='Markdown')
+    elif kind in ('ug1', 'ug2', 'urv'):
+        action = kind
+        await query.edit_message_text(
+            {'ug1': f'سطح ۱ کاربر `{pk}` برای همیشه تایید شود؟',
+             'ug2': f'سطح ۲ کاربر `{pk}` برای همیشه تایید شود؟',
+             'urv': f'احراز کاربر `{pk}` بسته شود؟'}[action],
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ بله', callback_data=f'idva_{action}ok_{pk}')],
+                [InlineKeyboardButton('↩️ نه', callback_data=f'idva_user_{pk}')],
+            ]), parse_mode='Markdown')
+    elif kind in ('ug1ok', 'ug2ok', 'urvok'):
+        name = admin_display_name(update.effective_user)
+        if kind == 'urvok':
+            msg = await _revoke_bot_user(ctx.bot, pk, name, update.effective_user.id)
+        else:
+            level = LEVEL_VIDEO if kind == 'ug2ok' else LEVEL_PHOTOS
+            msg = await _grant_bot_user(ctx.bot, pk, level, name, update.effective_user.id)
+        await query.edit_message_text(msg, reply_markup=_user_manage_keyboard(pk))
     elif kind == 'order':
         order = await asyncio.to_thread(get_order, pk)
         if not order or order[3] != 'kyc_hold':
@@ -1048,15 +1201,43 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         held_rows = await asyncio.to_thread(list_identity_held_orders, order[6], 50)
         level = next((int(r[6] or 1) for r in held_rows if int(r[0]) == pk), 1)
+        have = await asyncio.to_thread(identity_level, order[6]) if order[6] else 0
         keyboard = held_order_admin_keyboard(pk)
         await query.edit_message_text(
             f'⏸ سفارش #{pk} منتظر احراز هویت\nمبلغ: {int(order[2] or 0):,} تومان · '
-            f'کاربر: {order[6] or "—"}\nمدرک لازم: {LEVEL_LABELS.get(level, "عکس مدارک")}\n\n'
-            'آزادسازی: اگر خریدار را می‌شناسی. رد + برگشت پول: سفارش لغو و پول به کیف پولش '
-            'برمی‌گردد. رد بدون بازگشت وجه: برای تقلب یا کارتِ مالِ کس دیگر؛ پول برنمی‌گردد.',
+            f'کاربر: {order[6] or "—"} · سطح فعلی کاربر: {have}\n'
+            f'مدرک لازم: {LEVEL_LABELS.get(level, "عکس مدارک")}\n\n'
+            'تایید دائمی سطح ۱/۲: کاربر برای همیشه آزاد می‌شود. '
+            'آزادسازی بدون احراز: فقط همین سفارش. '
+            'رد + برگشت پول / رد بدون بازگشت وجه: لغو سفارش.',
             reply_markup=InlineKeyboardMarkup(list(keyboard.inline_keyboard) + [
                 [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
             ]))
+    elif kind in ('g1', 'g2', 'rv'):
+        labels = {
+            'g1': f'سطح ۱ خریدارِ سفارش #{pk} برای همیشه تایید شود و سفارش‌های تا سطح ۱ آزاد شوند؟',
+            'g2': f'سطح ۲ خریدارِ سفارش #{pk} برای همیشه تایید شود و همهٔ سفارش‌های منتظر آزاد شوند؟',
+            'rv': f'احراز خریدارِ سفارش #{pk} بسته شود؟',
+        }
+        await query.edit_message_text(
+            labels[kind],
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ بله', callback_data=f'idva_{kind}ok_{pk}')],
+                [InlineKeyboardButton('↩️ نه', callback_data=f'idva_order_{pk}')],
+            ]))
+    elif kind in ('g1ok', 'g2ok', 'rvok'):
+        order = await asyncio.to_thread(get_order, pk)
+        tg = order[6] if order else None
+        if not tg:
+            await query.edit_message_text('خریدار این سفارش پیدا نشد.', reply_markup=back)
+            return
+        name = admin_display_name(update.effective_user)
+        if kind == 'rvok':
+            msg = await _revoke_bot_user(ctx.bot, tg, name, update.effective_user.id)
+        else:
+            level = LEVEL_VIDEO if kind == 'g2ok' else LEVEL_PHOTOS
+            msg = await _grant_bot_user(ctx.bot, tg, level, name, update.effective_user.id)
+        await query.edit_message_text(f'سفارش #{pk}\n{msg}', reply_markup=back)
     elif kind == 'rel':
         await query.edit_message_text(
             f'سفارش #{pk} بدون احراز هویت تحویل شود؟ این کار ثبت می‌شود.',
@@ -1124,11 +1305,14 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── سفارشِ منتظرِ احرازِ سایت (دکمه‌های پیامِ صفِ سایت) ─────────────────
 
-_SITE_ACTIONS = {'rel': 'release', 'ref': 'refund', 'keep': 'keep'}
+_SITE_ACTIONS = {
+    'rel': 'release', 'ref': 'refund', 'keep': 'keep',
+    'g1': 'grant1', 'g2': 'grant2', 'rv': 'revoke',
+}
 
 
 async def site_held_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """skyc_<rel|ref|keep>_<id> → تایید/دلیل؛ skyc_do_<rel|ref|keep>_<id>[_<code>] → انجام."""
+    """skyc_<rel|ref|keep|g1|g2|rv>_<id> → تایید؛ skyc_do_<…>_<id>[_<code>] → انجام."""
     query = update.callback_query
     if not is_admin(update.effective_user.id):
         await query.answer('دسترسی نداری', show_alert=True)
@@ -1146,6 +1330,16 @@ async def site_held_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton('✅ بله، بدون احراز آزاد کن', callback_data=f'skyc_do_rel_{pk}')],
                 [InlineKeyboardButton('↩️ نه', callback_data=f'skyc_back_{pk}')],
             ])
+        elif action in ('g1', 'g2', 'rv'):
+            labels = {
+                'g1': '✅ بله، سطح ۱ را برای همیشه تایید کن',
+                'g2': '✅ بله، سطح ۲ را برای همیشه تایید کن',
+                'rv': '🔒 بله، احراز را ببند',
+            }
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(labels[action], callback_data=f'skyc_do_{action}_{pk}')],
+                [InlineKeyboardButton('↩️ نه', callback_data=f'skyc_back_{pk}')],
+            ])
         else:
             keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton(('↩️ ' if action == 'ref' else '⛔ ') + label,
@@ -1159,7 +1353,7 @@ async def site_held_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         pk, action = int(parts[3]), _SITE_ACTIONS[parts[2]]
         code = parts[4] if len(parts) > 4 else ''
-        reason = HOLD_REJECT_REASONS.get(code, '') if action != 'release' else ''
+        reason = HOLD_REJECT_REASONS.get(code, '') if action in ('refund', 'keep') else ''
         name = admin_display_name(update.effective_user)
         result = await asyncio.to_thread(call_site_held_order_action, pk, action,
                                          update.effective_user.id, name, reason)
@@ -1170,10 +1364,19 @@ async def site_held_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await _swap_keyboard(query, None)
             return
         await query.answer('انجام شد')
-        label = {'release': '▶️ آزاد شد و تحویلش شروع شد',
-                 'refund': '↩️ رد شد و پول به کیف پول برگشت',
-                 'keep': '⛔ بدون بازگشت وجه رد شد'}[action]
-        await _append_result(query, f'{label} — {name}' + (f'\nدلیل: {reason}' if reason else ''))
+        label = {
+            'release': '▶️ آزاد شد و تحویلش شروع شد',
+            'refund': '↩️ رد شد و پول به کیف پول برگشت',
+            'keep': '⛔ بدون بازگشت وجه رد شد',
+            'grant1': '✅ سطح ۱ برای همیشه تایید شد',
+            'grant2': '✅ سطح ۲ برای همیشه تایید شد',
+            'revoke': '🔒 احراز بسته شد',
+        }[action]
+        extra = ''
+        if action in ('grant1', 'grant2') and result.get('released'):
+            extra = f'\n{result["released"]} سفارش منتظر آزاد شد.'
+        await _append_result(query, f'{label} — {name}'
+                             + (f'\nدلیل: {reason}' if reason else '') + extra)
         return
     await query.answer('دادهٔ نامعتبر', show_alert=True)
 
@@ -1199,6 +1402,12 @@ async def _append_result(query, line):
     except BadRequest as exc:
         if 'not modified' not in str(exc).lower():
             log.warning('could not show the held-order result: %s', exc)
+
+
+def identity_manual_tg_handler():
+    """در گروهِ ‎-2‎ کنار دلیلِ رد، تا گفتگوها پیام آیدی را نگیرند."""
+    return MessageHandler(filters.TEXT & ~filters.COMMAND & _AwaitingManualTg(),
+                          identity_manual_tg_text)
 
 
 def identity_admin_handlers():

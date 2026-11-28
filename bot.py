@@ -87,7 +87,8 @@ from handlers.site_panel import site_panel_router
 from handlers.site_outbox import site_card_review, site_outbox_loop, site_status_command
 from handlers.card_verify import card_verify_conversation_handler, cverify_review
 from handlers.identity import (
-    identity_admin_handlers, identity_conversation_handler, identity_reason_handler,
+    identity_admin_handlers, identity_conversation_handler, identity_manual_tg_handler,
+    identity_reason_handler,
 )
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
@@ -1004,6 +1005,7 @@ def main():
     # پیش از همهٔ مسیرها، عضویت کاربران عادی در کانال‌های اجباری بررسی می‌شود.
     # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
     app.add_handler(identity_reason_handler(), group=-2)
+    app.add_handler(identity_manual_tg_handler(), group=-2)
     app.add_handler(receipt_reason_handler(), group=-2)
     # دلیلِ نوشته‌شده برای ردِ رسید (و دکمهٔ «نوشتن دلیل دیگر»).
     from handlers.receipt_reasons import receipt_reason_handlers

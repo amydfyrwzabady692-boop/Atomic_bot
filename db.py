@@ -8228,6 +8228,77 @@ def import_site_identity(telegram_id, card_number, phone, level=1):
     return True
 
 
+def grant_identity_level(telegram_id, level, *, reviewer='', note=''):
+    """تایید دائمی سطح ۱ یا ۲ بدون مدارک صف (مثلاً مدارک پی‌وی).
+
+    سطح فعلی را فقط بالا می‌برد. خروجی: (ok, message, approved_level).
+    بعد از این، release_identity_holds را صدا بزن تا سفارش‌های تا همان سطح آزاد شوند.
+    """
+    tg = str(telegram_id or '').strip()
+    if not tg:
+        return False, 'آیدی تلگرام خالی است.', 0
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        return False, 'سطح نامعتبر است.', 0
+    if level not in (LEVEL_PHOTOS, LEVEL_VIDEO):
+        return False, 'سطح باید ۱ یا ۲ باشد.', 0
+    who = (reviewer or 'ادمین')[:120]
+    note = ' '.join(str(note or f'تایید دستی ادمین — سطح {level}').split())[:255]
+    with get_conn() as conn, conn.cursor() as cur:
+        have = _identity_level_cur(cur, tg)
+        if have >= level:
+            conn.rollback()
+            return True, f'این کاربر از قبل سطح {have} را دارد.', have
+        cur.execute(
+            'INSERT INTO "IdentityVerifications" ("TelegramId","CardNumber","Phone","Status",'
+            '"Source","ReviewedBy","ReviewedAt","Level","ApprovedLevel","RejectReason") VALUES '
+            '(%s,\'\',\'\',\'approved\',\'admin\',%s,now(),%s,%s,%s) '
+            'ON CONFLICT ("TelegramId") DO UPDATE SET '
+            '"Status"=\'approved\', "Source"=\'admin\', "ReviewedBy"=EXCLUDED."ReviewedBy", '
+            '"ReviewedAt"=now(), "RejectReason"=EXCLUDED."RejectReason", '
+            '"Level"=GREATEST("IdentityVerifications"."Level",EXCLUDED."Level"), '
+            '"ApprovedLevel"=GREATEST("IdentityVerifications"."ApprovedLevel",EXCLUDED."ApprovedLevel") '
+            'RETURNING "ApprovedLevel"',
+            (tg, who, level, level, note),
+        )
+        approved = int(cur.fetchone()[0] or level)
+        cur.execute('UPDATE "Users" SET "KycStatus"=\'approved\', "KycVerifiedAt"=now(), '
+                    '"KycRejectReason"=\'\' WHERE "TelegramId"=%s', (tg,))
+        conn.commit()
+    _LOG.warning('identity level %s granted manually to tg=%s by %r', level, tg, who)
+    label = 'عکس مدارک' if level == LEVEL_PHOTOS else 'عکس + ویدیو'
+    return True, f'سطح {level} ({label}) برای همیشه تایید شد.', approved
+
+
+def revoke_identity(telegram_id, *, reviewer='', note=''):
+    """بستن احراز تاییدشدهٔ کاربر ربات؛ سطح به صفر برمی‌گردد.
+
+    خروجی: (ok, message). سفارش‌های منتظر سر جایشان می‌مانند.
+    """
+    tg = str(telegram_id or '').strip()
+    if not tg:
+        return False, 'آیدی تلگرام خالی است.'
+    who = (reviewer or 'ادمین')[:120]
+    note = ' '.join(str(note or 'بسته شدن احراز توسط ادمین').split())[:255]
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "IdentityVerifications" SET "Status"=\'rejected\', "ApprovedLevel"=0, '
+            '"RejectReason"=%s, "ReviewedBy"=%s, "ReviewedAt"=now() '
+            'WHERE "TelegramId"=%s AND ("Status" IN (\'approved\', \'pending\') OR "ApprovedLevel">0) '
+            'RETURNING 1',
+            (note, who, tg),
+        )
+        closed = cur.fetchone() is not None
+        cur.execute('UPDATE "Users" SET "KycStatus"=\'rejected\', "KycRejectReason"=%s '
+                    'WHERE "TelegramId"=%s', (note[:200], tg))
+        conn.commit()
+    _LOG.warning('identity revoked for tg=%s by %r closed=%s', tg, who, closed)
+    if not closed:
+        return True, 'این کاربر احراز فعالی نداشت.'
+    return True, 'احراز بسته شد؛ سطح کاربر صفر شد.'
+
+
 def terms_accepted(telegram_id) -> bool:
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute('SELECT COALESCE("TermsAcceptedVersion",0) FROM "Users" WHERE "TelegramId"=%s',
