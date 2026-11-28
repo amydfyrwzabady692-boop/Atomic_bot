@@ -257,6 +257,45 @@ def call_site_held_order_action(order_id, action, admin_tg, admin_name, reason='
     )
 
 
+def fetch_site_admin_user(query, admin_tg):
+    """کاربر سایت با موبایل/ایمیل/شناسه برای پنل مالی ربات."""
+    return _site_request(
+        '/internal/bot/admin/user/',
+        query={'q': str(query or ''), 'admin_tg_id': str(admin_tg or '')},
+        timeout=20,
+    )
+
+
+def call_site_admin_wallet(user_id, amount, admin_tg, admin_name, reason=''):
+    """افزایش/کاهش کیف پول کاربر سایت."""
+    return _site_request(
+        '/internal/bot/admin/wallet/',
+        method='POST',
+        payload={
+            'user_id': int(user_id),
+            'amount': int(amount),
+            'reason': str(reason or '')[:150],
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+        },
+    )
+
+
+def call_site_admin_order(action, order_ref, admin_tg, admin_name, reason=''):
+    """lookup | cancel_refund | deliver برای سفارش سایت."""
+    return _site_request(
+        '/internal/bot/admin/order/',
+        method='POST',
+        payload={
+            'action': str(action or ''),
+            'order': str(order_ref or ''),
+            'reason': str(reason or '')[:150],
+            'admin_tg_id': str(admin_tg or ''),
+            'admin_name': str(admin_name or ''),
+        },
+    )
+
+
 def call_site_review_with_reason(payment_id, admin_tg, admin_name, reason=''):
     """ردِ رسیدِ سایت با دلیلی که برای خریدار فرستاده می‌شود."""
     return _site_request(

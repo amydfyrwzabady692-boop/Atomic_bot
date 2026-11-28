@@ -90,6 +90,7 @@ from handlers.identity import (
     identity_admin_handlers, identity_conversation_handler, identity_manual_tg_handler,
     identity_reason_handler,
 )
+from handlers.site_finance import site_finance_handlers, site_finance_text_handler
 from handlers.order_track import track_button, track_command, track_text
 from handlers import game_events
 from handlers.referral import (
@@ -1006,6 +1007,7 @@ def main():
     # دلیلِ نوشته‌شدهٔ ادمین برای ردِ احراز: پیش از قفلِ عضویت و همهٔ گفتگوها.
     app.add_handler(identity_reason_handler(), group=-2)
     app.add_handler(identity_manual_tg_handler(), group=-2)
+    app.add_handler(site_finance_text_handler(), group=-2)
     app.add_handler(receipt_reason_handler(), group=-2)
     # دلیلِ نوشته‌شده برای ردِ رسید (و دکمهٔ «نوشتن دلیل دیگر»).
     from handlers.receipt_reasons import receipt_reason_handlers
@@ -1112,6 +1114,8 @@ def main():
     app.add_handler(CallbackQueryHandler(site_card_review, pattern=r'^site_card_(?:ok|no)_\d+$'))
     app.add_handler(CallbackQueryHandler(cverify_review, pattern=r'^cverify_(?:ok|no)_\d+$'))
     for handler in identity_admin_handlers():
+        app.add_handler(handler)
+    for handler in site_finance_handlers():
         app.add_handler(handler)
     app.add_handler(CallbackQueryHandler(site_approve, pattern=r'^site_ok_\d+$'))
     app.add_handler(CallbackQueryHandler(site_reject, pattern=r'^site_no_\d+(?:_[a-z]+)?$'))

@@ -830,6 +830,8 @@ def admin_hub_pay_keyboard(counts=None, state=None):
         ],
         [InlineKeyboardButton(_count_label('💰 برگشت به کیف پول', c.get('refunds')),
                               callback_data='admx_refunds')],
+        [InlineKeyboardButton('🌐 مالی سایت (کاربر/سفارش/کیف پول)',
+                              callback_data='sfin_home')],
         [
             InlineKeyboardButton('📒 گزارش پرداخت', callback_data='admx_payments_all'),
             InlineKeyboardButton('❌ پرداخت‌های ناموفق', callback_data='admx_payments_failed'),

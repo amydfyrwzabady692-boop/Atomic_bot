@@ -36,7 +36,8 @@ from telegram.ext import (
 from admin_notify import admin_ids, is_admin, notify_admin
 from db import (
     LEVEL_PHOTOS, LEVEL_VIDEO, accept_terms, claim_identity_hold_notice, count_identity_queue,
-    get_identity_verification, get_or_create_user, get_order, grant_identity_level,
+    get_identity_verification, get_identity_verification_by_tg, get_or_create_user, get_order,
+    grant_identity_level,
     identity_card_owned_by_other, identity_level, identity_state, identity_threshold_toman,
     identity_video_threshold_toman, identity_what_to_ask, identity_window_days,
     import_site_identity, list_identity_held_orders, list_pending_identity_verifications,
@@ -943,11 +944,10 @@ async def identity_manual_tg_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         await message.reply_text('آیدی عددی تلگرام را بفرست (یا: انصراف).')
         raise ApplicationHandlerStop
     tg = int(digits)
-    have = await asyncio.to_thread(identity_level, tg)
-    held = await asyncio.to_thread(list_identity_held_orders, tg, 20)
+    text_out, meta = await _user_status_text(tg)
     await message.reply_text(
-        f'🪪 مدیریت احراز کاربر `{tg}`\nسطح فعلی: {have}\nسفارش منتظر: {len(held)}',
-        reply_markup=_user_manage_keyboard(tg), parse_mode='Markdown')
+        text_out,
+        reply_markup=_user_manage_keyboard(tg, **meta), parse_mode='Markdown')
     raise ApplicationHandlerStop
 
 
@@ -1027,15 +1027,91 @@ async def _site_review(query, ctx, verification_id, approve, reason, name):
 # ── پنل ادمین ───────────────────────────────────────────────────────
 
 
-def _user_manage_keyboard(tg_id):
-    """دکمه‌های تایید دائمی / بستن برای یک آیدی تلگرام."""
+def _user_manage_keyboard(tg_id, *, has_docs=False, pending_id=0, held=None):
+    """دکمه‌های مدیریت احراز برای یک آیدی تلگرام."""
     tg = int(tg_id)
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton('✅ تایید دائمی سطح ۱', callback_data=f'idva_ug1_{tg}')],
-        [InlineKeyboardButton('✅ تایید دائمی سطح ۲', callback_data=f'idva_ug2_{tg}')],
-        [InlineKeyboardButton('🔒 بستن احراز', callback_data=f'idva_urv_{tg}')],
-        [InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')],
-    ])
+    rows = []
+    if has_docs:
+        rows.append([InlineKeyboardButton('🖼 ارسال دوبارهٔ مدارک برایم',
+                                          callback_data=f'idva_uresend_{tg}')])
+    if pending_id:
+        rows.append([InlineKeyboardButton(f'📋 باز کردن مدارک در صف #{pending_id}',
+                                          callback_data=f'idva_open_{int(pending_id)}')])
+    rows += [
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۱ (عکس)', callback_data=f'idva_ug1_{tg}')],
+        [InlineKeyboardButton('✅ تایید دائمی سطح ۲ (عکس+ویدیو)', callback_data=f'idva_ug2_{tg}')],
+        [InlineKeyboardButton('🔒 بستن احراز این کاربر', callback_data=f'idva_urv_{tg}')],
+    ]
+    for order in (held or [])[:5]:
+        oid = int(order[0])
+        rows.append([InlineKeyboardButton(
+            f'⏸ سفارش #{oid}', callback_data=f'idva_order_{oid}')])
+    rows.append([InlineKeyboardButton('🔄 بروزرسانی', callback_data=f'idva_user_{tg}')])
+    rows.append([InlineKeyboardButton('↩️ احراز هویت', callback_data='idva_home')])
+    return InlineKeyboardMarkup(rows)
+
+
+def _status_label(state: str, level: int) -> str:
+    labels = {
+        'approved': f'تایید شده (سطح {level})',
+        'pending': 'مدارک در صف بررسی',
+        'rejected': 'رد شده / بسته شده',
+        'none': 'احرازی ثبت نشده',
+    }
+    return labels.get(state, state or 'نامشخص')
+
+
+async def _user_status_text(tg_id) -> tuple[str, dict]:
+    """متن وضعیت کامل + داده برای کیبورد."""
+    have = await asyncio.to_thread(identity_level, tg_id)
+    state = await asyncio.to_thread(identity_state, tg_id)
+    held = await asyncio.to_thread(list_identity_held_orders, tg_id, 20)
+    row = await asyncio.to_thread(get_identity_verification_by_tg, tg_id)
+    pending_id = 0
+    has_docs = False
+    card = phone = source = reject = ''
+    approved_level = 0
+    if row:
+        # Id, TelegramId, CardNumber, Phone, CardPhoto, National, Selfie, Status, Source,
+        # RejectReason, ReviewedBy, ReviewedAt, CreatedAt, Level, ApprovedLevel, Video
+        has_docs = bool(row[4] or row[5] or row[6] or row[15])
+        card = _masked(row[2]) if row[2] else '—'
+        phone = row[3] or '—'
+        source = row[8] or '—'
+        reject = (row[9] or '').strip()
+        approved_level = int(row[14] or 0)
+        if row[7] == 'pending':
+            pending_id = int(row[0])
+    lines = [
+        f'🪪 مدیریت احراز کاربر `{tg_id}`',
+        '━━━━━━━━━━━━━━━',
+        f'وضعیت: *{_status_label(state, have)}*',
+        f'سطح تاییدشده: *{have}* (عکس=۱ · عکس+ویدیو=۲)',
+        f'ApprovedLevel در دیتابیس: {approved_level}',
+        f'سفارش منتظر احراز: *{len(held)}*',
+    ]
+    if held:
+        for o in held[:5]:
+            lines.append(
+                f'· #{o[0]} · {max(0, int(o[2] or 0) - int(o[3] or 0)):,} ت'
+                + (' · 🎥' if int(o[6] or 1) >= LEVEL_VIDEO else ''))
+    if row:
+        lines += [
+            f'کارت: `{card}`',
+            f'موبایل مدارک: `{phone}`',
+            f'منبع: {source} · وضعیت ردیف: {row[7]}',
+        ]
+        if reject:
+            lines.append(f'یادداشت/دلیل: {reject}')
+        if has_docs:
+            lines.append('مدارک تصویری در سیستم هست — می‌توانی دوباره ببینی.')
+        else:
+            lines.append('مدارک تصویری در سیستم نیست (شاید فقط پی‌وی بوده).')
+    else:
+        lines.append('هیچ ردیف احرازی در ربات برای این کاربر نیست.')
+    lines.append('\nتایید دائمی سطح، بستن احراز، یا ارسال دوبارهٔ مدارک:')
+    meta = {'has_docs': has_docs, 'pending_id': pending_id, 'held': held}
+    return '\n'.join(lines), meta
 
 
 async def _grant_bot_user(bot, tg_id, level, reviewer, admin_tg):
@@ -1168,14 +1244,38 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await send_for_review(ctx.bot, pk, caption, [row[4], row[5], row[6]],
                               recipients=[update.effective_user.id], video_file_id=row[15] or '')
     elif kind == 'user':
-        have = await asyncio.to_thread(identity_level, pk)
-        held = await asyncio.to_thread(list_identity_held_orders, pk, 20)
+        text_out, meta = await _user_status_text(pk)
         await query.edit_message_text(
-            f'🪪 مدیریت احراز کاربر `{pk}`\n'
-            f'سطح فعلی: {have}\n'
-            f'سفارش منتظر: {len(held)}\n\n'
-            'تایید دائمی سطح ۱ یا ۲، یا بستن احراز.',
-            reply_markup=_user_manage_keyboard(pk), parse_mode='Markdown')
+            text_out,
+            reply_markup=_user_manage_keyboard(pk, **meta), parse_mode='Markdown')
+    elif kind == 'uresend':
+        row = await asyncio.to_thread(get_identity_verification_by_tg, pk)
+        if not row or not (row[4] or row[5] or row[6] or row[15]):
+            text_out, meta = await _user_status_text(pk)
+            await query.edit_message_text(
+                text_out + '\n\n❌ مدارکی برای ارسال دوباره نیست.',
+                reply_markup=_user_manage_keyboard(pk, **meta), parse_mode='Markdown')
+            return
+        held = await asyncio.to_thread(list_identity_held_orders, pk, 20)
+        other = await asyncio.to_thread(identity_card_owned_by_other, pk, row[2])
+
+        class _Who:
+            id = pk
+            username = None
+            full_name = ''
+
+        caption = admin_caption(row[0], _Who, row[2], row[3], held, other,
+                                sent_at=row[12], legacy_selfie=bool(row[6]),
+                                level=int(row[13] or 1))
+        caption = ('📤 ارسال دوبارهٔ مدارک (وضعیت فعلی: '
+                   f'{row[7]} · سطح تایید {int(row[14] or 0)})\n\n' + caption)
+        await send_for_review(
+            ctx.bot, row[0], caption, [row[4], row[5], row[6]],
+            recipients=[update.effective_user.id], video_file_id=row[15] or '')
+        text_out, meta = await _user_status_text(pk)
+        await query.edit_message_text(
+            text_out + '\n\n✅ مدارک همین‌جا دوباره برات فرستاده شد.',
+            reply_markup=_user_manage_keyboard(pk, **meta), parse_mode='Markdown')
     elif kind in ('ug1', 'ug2', 'urv'):
         action = kind
         await query.edit_message_text(
@@ -1193,7 +1293,10 @@ async def identity_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             level = LEVEL_VIDEO if kind == 'ug2ok' else LEVEL_PHOTOS
             msg = await _grant_bot_user(ctx.bot, pk, level, name, update.effective_user.id)
-        await query.edit_message_text(msg, reply_markup=_user_manage_keyboard(pk))
+        text_out, meta = await _user_status_text(pk)
+        await query.edit_message_text(
+            f'{msg}\n\n{text_out}',
+            reply_markup=_user_manage_keyboard(pk, **meta), parse_mode='Markdown')
     elif kind == 'order':
         order = await asyncio.to_thread(get_order, pk)
         if not order or order[3] != 'kyc_hold':
